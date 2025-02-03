@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test ESI</title>
+</head>
+<body>
+<h1>Welcome to ESI Test</h1>
+<p>Hello <!--esi User -->!</p>
+<!--esi
+Multi line comment
+-->
+<esi:inline>
+    <p>This content should be removed.</p>
+</esi:inline>
+
+<esi:choose>
+    <esi:when test="$(HTTP_COOKIE{user})">
+        <p>Welcome back, user!</p>
+    </esi:when>
+    <esi:otherwise>
+        <p>Welcome, guest!</p>
+    </esi:otherwise>
+</esi:choose>
+
+<esi:try>
+    <esi:attempt>
+        <p>Attempting to load data...</p>
+    </esi:attempt>
+    <esi:except>
+        <p>Failed to load data.</p>
+    </esi:except>
+</esi:try>
+
+<esi:remove>
+    <p>This content should also be removed.</p>
+</esi:remove>
+
+<esi:vars>
+    <p>ESI Variables: $(HTTP_HOST)</p>
+</esi:vars>
+<esi:include src="/included-content-with-html.html">
+    some html <b>here</b>
+</esi:include>
+
+<esi:include src="/included-content-with-html-comment.html">
+    <!--esi some html <b>here</b> inside comment -->
+</esi:include>
+
+
+<p>Static content remains untouched.</p>
+<esi:include src="/included-content-1.html"/>
+<esi:comment text="This is an ESI comment and should be ignored."/>
+<esi:include src="/included-content-2.html"/>
+
+
+<esi:include src=""/>
+<esi:include >Some content</esi:include>
+</body>
+</html>

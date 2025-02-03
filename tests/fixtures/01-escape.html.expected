@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test ESI</title>
+</head>
+<body>
+comment with spacer here
+[comment without space] here
+Multi line, first line with new line
+Multi line, first line: new line, last line: new line
+
+Multi line, last line: new line
+
+some html <b>tag</b> 
+</body>
+</html>
