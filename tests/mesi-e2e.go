@@ -40,12 +40,22 @@ func sleep(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(index + " Waited " + strconv.Itoa(timeout)))
 }
 
+func returnEsi(w http.ResponseWriter, _ *http.Request) {
+	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:8080/hello\" />]"))
+}
+
+func recursive(w http.ResponseWriter, _ *http.Request) {
+	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:8080/recursive\" />]"))
+}
+
 func startHttpServer(wg *sync.WaitGroup) *http.Server {
 	srv := &http.Server{Addr: ":8080"}
 
 	http.HandleFunc("/hello", hello)
 	http.HandleFunc("/status/code/{id}", statusCode)
 	http.HandleFunc("/sleep/{timeout}/{index}", sleep)
+	http.HandleFunc("/returnEsi", returnEsi)
+	http.HandleFunc("/recursive", recursive)
 	go func() {
 		defer wg.Done()
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
@@ -112,7 +122,7 @@ func main() {
 
 		// Call the parse function.
 		start := time.Now()
-		result := mesi.Parse(string(testData))
+		result := mesi.Parse(string(testData), 5)
 		elapsed := time.Since(start)
 		expected := string(expectedData)
 

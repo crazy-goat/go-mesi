@@ -11,7 +11,8 @@ type Response struct {
 	index   int
 }
 
-func Parse(input string) string {
+func Parse(input string, maxDepth int) string {
+
 	var wg sync.WaitGroup
 
 	var result strings.Builder
@@ -37,7 +38,13 @@ func Parse(input string) string {
 					ch <- res
 					return
 				}
-				res.content = include.toString()
+				content := include.toString()
+
+				if maxDepth > 1 {
+					content = Parse(content, maxDepth-1)
+				}
+
+				res.content = content
 			}
 
 			ch <- res
