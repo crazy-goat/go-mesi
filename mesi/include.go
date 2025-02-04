@@ -35,7 +35,13 @@ func (token *esiIncludeToken) toString() string {
 		if token.OnError == "continue" {
 			return ""
 		}
+
+		if token.Content != "" {
+			return token.Content
+		}
+
 		return err.Error()
 	}
+
 	return data
 }

@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Standard esi:include tests</title>
+</head>
+<body>
+This should print hello world: [Hello World]
+This should print 404: [404: Not Found]
+This should print 500: [500: Internal Server Error]
+This should be empty: []
+This should also be empty: []
+This should print hello world: [Hello World]
+</body>
+</html>

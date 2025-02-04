@@ -1,10 +1,16 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"log"
+	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/crazy-goat/go-mesi/mesi"
 	"github.com/sergi/go-diff/diffmatchpatch"
@@ -16,6 +22,35 @@ func parse(input string) string {
 	return input
 }
 
+func hello(w http.ResponseWriter, _ *http.Request) {
+	w.Write([]byte("Hello World"))
+}
+
+func statusCode(w http.ResponseWriter, r *http.Request) {
+	code, _ := strconv.Atoi(r.PathValue("id"))
+	w.WriteHeader(code)
+	w.Write([]byte(http.StatusText(code)))
+}
+
+func startHttpServer(wg *sync.WaitGroup) *http.Server {
+	srv := &http.Server{Addr: ":8080"}
+
+	http.HandleFunc("/hello", hello)
+	http.HandleFunc("/status/code/{id}", statusCode)
+	go func() {
+		defer wg.Done() // let main know we are done cleaning up
+
+		// always returns error. ErrServerClosed on graceful close
+		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			// unexpected error. port in use?
+			log.Fatalf("ListenAndServe(): %v", err)
+		}
+	}()
+
+	// returning reference so caller can call Shutdown()
+	return srv
+}
+
 func main() {
 	// Check if a directory argument was provided.
 	if len(os.Args) < 2 {
@@ -23,6 +58,11 @@ func main() {
 		os.Exit(1)
 	}
 	dir := os.Args[1]
+
+	httpServerExitDone := &sync.WaitGroup{}
+
+	httpServerExitDone.Add(1)
+	srv := startHttpServer(httpServerExitDone)
 
 	// Read all entries in the provided directory.
 	entries, err := os.ReadDir(dir)
@@ -86,4 +126,9 @@ func main() {
 			fmt.Println(diffText)
 		}
 	}
+	if err := srv.Shutdown(context.TODO()); err != nil {
+		panic(err) // failure/timeout shutting down the server gracefully
+	}
+
+	httpServerExitDone.Wait()
 }

@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Non standard esi:include tests</title>
+</head>
+<body>
+<h1>Standard esi functionality with closing tag</h1>
+This should print hello world: [<esi:include src="http://127.0.0.1:8080/hello" ></esi:include>]
+This should print 404: [<esi:include src="http://127.0.0.1:8080/status/code/404"></esi:include>]
+This should print 500: [<esi:include src="http://127.0.0.1:8080/status/code/404" alt="http://127.0.0.1:8080/status/code/500"></esi:include>]
+This should be empty: [<esi:include onerror="continue" src="http://127.0.0.1:8080/status/code/500"></esi:include>]
+This should also be empty: [<esi:include onerror="continue" src="http://127.0.0.1:8080/status/code/500" alt="http://127.0.0.1:8080/status/code/500"></esi:include>]
+This should print hello world: [<esi:include onerror="continue" src="http://127.0.0.1:8080/status/code/500" alt="http://127.0.0.1:8080/hello"></esi:include>]
+
+<h1>Standard esi functionality with content</h1>
+This should print return internal html: [<esi:include src="http://127.0.0.1:8080/status/code/400" >Something went <strong>wrong</strong></esi:include>]
+This should be empty: [<esi:include src="http://127.0.0.1:8080/status/code/400" onerror="continue">Something went <strong>wrong</strong></esi:include>]
+This should remove comment and return internal html: [<esi:include src="http://127.0.0.1:8080/status/code/400" ><!--esi Something went <strong>wrong</strong>--></esi:include>]
+</body>
+</html>

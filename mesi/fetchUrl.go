@@ -25,7 +25,7 @@ func singleFetchUrl(url string) (data string, err error) {
 		}
 
 		if content.StatusCode >= 400 {
-			return "", errors.New(strconv.Itoa(content.StatusCode))
+			return "", errors.New(strconv.Itoa(content.StatusCode) + ": " + string(data))
 		}
 		return string(data), nil
 	}
