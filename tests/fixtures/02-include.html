@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test ESI</title>
+</head>
+<body>
+<esi:include src="https://raw.githubusercontent.com/crazy-goat/go-mesi/refs/heads/main/examples/includes/include.txt" />
+<esi:include src="https://raw.githubusercontent.com/crazy-goat/go-mesi/refs/heads/main/examples/includes/404.txt" />
+<esi:include onerror="continue" src="https://raw.githubusercontent.com/crazy-goat/go-mesi/refs/heads/main/examples/includes/404.txt" />
+</body>
+</html>
