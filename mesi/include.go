@@ -2,7 +2,6 @@ package mesi
 
 import (
 	"encoding/xml"
-	"fmt"
 )
 
 type esiIncludeToken struct {
@@ -13,14 +12,14 @@ type esiIncludeToken struct {
 	Content string   `xml:",innerxml"`
 }
 
-func parseInclude(input string) esiIncludeToken {
+func parseInclude(input string) (token esiIncludeToken, err error) {
 	var esi esiIncludeToken
-	err := xml.Unmarshal([]byte(input), &esi)
+	err = xml.Unmarshal([]byte(input), &esi)
 	if err != nil {
-		fmt.Println("Błąd podczas parsowania XML:", err)
+		return esi, err
 	}
 
-	return esi
+	return esi, nil
 }
 
 func (token *esiIncludeToken) toString() string {
