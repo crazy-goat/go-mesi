@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Test ESI</title>
+</head>
+<body>
+<h1>Welcome to ESI Test</h1>
+
+<h2>
+<esi:include src="https://raw.githubusercontent.com/crazy-goat/go-mesi/refs/heads/main/examples/includes/include.txt" />
+</h2>
+
+<h3>This should fail</h3>
+<esi:include src="https://raw.githubusercontent.com/crazy-goat/go-mesi/refs/heads/main/examples/includes/not-found.txt" >
+    Failed to load remote content
+</esi:include>
+
+
+</body>
+</html>
