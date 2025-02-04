@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Standard esi:remove tests</title>
+</head>
+<body>
+This should be empty: []
+This should be empty: []
+This should be empty: []
+</body>
+</html>
