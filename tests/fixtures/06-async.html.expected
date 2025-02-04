@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Async request using esi:include</title>
+</head>
+<body>
+This should print hello world: [1 Waited 1]
+This should print hello world: [2 Waited 1]
+This should print hello world: [3 Waited 1]
+This should print hello world: [4 Waited 1]
+This should print hello world: [5 Waited 1]
+</body>
+</html>

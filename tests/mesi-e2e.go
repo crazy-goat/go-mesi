@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/crazy-goat/go-mesi/mesi"
 	"github.com/sergi/go-diff/diffmatchpatch"
@@ -32,27 +33,29 @@ func statusCode(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(http.StatusText(code)))
 }
 
+func sleep(w http.ResponseWriter, r *http.Request) {
+	timeout, _ := strconv.Atoi(r.PathValue("timeout"))
+	index := r.PathValue("index")
+	time.Sleep(time.Duration(timeout) * time.Second)
+	w.Write([]byte(index + " Waited " + strconv.Itoa(timeout)))
+}
+
 func startHttpServer(wg *sync.WaitGroup) *http.Server {
 	srv := &http.Server{Addr: ":8080"}
 
 	http.HandleFunc("/hello", hello)
 	http.HandleFunc("/status/code/{id}", statusCode)
+	http.HandleFunc("/sleep/{timeout}/{index}", sleep)
 	go func() {
-		defer wg.Done() // let main know we are done cleaning up
-
-		// always returns error. ErrServerClosed on graceful close
+		defer wg.Done()
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			// unexpected error. port in use?
 			log.Fatalf("ListenAndServe(): %v", err)
 		}
 	}()
-
-	// returning reference so caller can call Shutdown()
 	return srv
 }
 
 func main() {
-	// Check if a directory argument was provided.
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: go run main.go <directory>")
 		os.Exit(1)
@@ -64,14 +67,12 @@ func main() {
 	httpServerExitDone.Add(1)
 	srv := startHttpServer(httpServerExitDone)
 
-	// Read all entries in the provided directory.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		fmt.Println("Error reading directory:", err)
 		os.Exit(1)
 	}
 
-	// Filter for test files that end with ".html" but not ".expected".
 	var testFiles []os.DirEntry
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -110,14 +111,20 @@ func main() {
 		}
 
 		// Call the parse function.
+		start := time.Now()
 		result := mesi.Parse(string(testData))
+		elapsed := time.Since(start)
 		expected := string(expectedData)
 
 		// Compare the result with the expected value.
 		if result == expected {
-			fmt.Printf("Test %s ok\n", testFileName)
+			if elapsed < 2*time.Second {
+				fmt.Printf("Test %s ok, duration: %s\n", testFileName, elapsed)
+			} else {
+				fmt.Printf("Test %s failed - took to long, duration: %s\n", testFileName, elapsed)
+			}
 		} else {
-			fmt.Printf("Test %s fail\n", testFileName)
+			fmt.Printf("Test %s fail, duration: %s\n", testFileName, elapsed)
 			// Generate a diff between expected and result using diffmatchpatch.
 			dmp := diffmatchpatch.New()
 			diffs := dmp.DiffMain(expected, result, false)
