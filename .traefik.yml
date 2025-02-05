@@ -1,0 +1,6 @@
+displayName: mESI
+type: middleware
+import: github.com/crazy-goat/go-mesi/servers/traefik
+summary: 'Pure implementation of the ESI process'
+
+testData: {}

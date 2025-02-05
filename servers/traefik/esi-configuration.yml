@@ -1,0 +1,21 @@
+http:
+  routers:
+    test-server:
+      middlewares:
+        - mesi
+      entrypoints:
+        - http
+      service: test-server
+      rule: Host(`domain.com`)
+
+  services:
+    test-server:
+      loadBalancer:
+        servers:
+          - url: http://test-server
+        passHostHeader: false
+
+  middlewares:
+    mesi:
+      plugin:
+        mesi: {}
