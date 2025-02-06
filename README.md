@@ -35,9 +35,9 @@
 
 🔄 **Performance & Scalability:**
 - [ ] Add work modes:
- - [x] Fallback
- - [ ] A/B testing with ratio
- - [ ] Concurrent fetching
+  - [x] Fallback
+  - [ ] A/B testing with ratio
+  - [ ] Concurrent fetching
 - [ ] Add timeout parameter for ESI requests
 - [ ] Add max concurrent request limit
 - [ ] Implement worker pool for optimized request handling
