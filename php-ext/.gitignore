@@ -1,0 +1,48 @@
+# Ignorowanie plików binarnych i obiektowych
+*.o
+*.lo
+*.la
+*.so
+*.dll
+*.dylib
+*.a
+
+# Pliki generowane przez kompilację
+Makefile
+Makefile.*
+config.h
+config.h.in
+configure
+configure.ac
+aclocal.m4
+autom4te.cache/
+.libs/
+.deps/
+config.log
+config.nice
+config.status
+libtool
+
+# Ignorowanie katalogów build
+build/
+release/
+debug/
+
+# Ignorowanie plików tymczasowych edytorów
+*.swp
+*.swo
+*~
+
+# Pliki związane z testami
+/tests/*.out
+/tests/*.diff
+/tests/*.exp
+/tests/*.log
+/tests/*.php.log
+/tests/*.sh.log
+run-tests.php
+
+# Pliki specyficzne dla systemu
+.DS_Store
+Thumbs.db
+mesi.dep
