@@ -3,14 +3,6 @@ providers:
     filename: /esi-configuration.yml
     watch: true
 
-api:
-  dashboard: true
-  debug: true
-  insecure: true
-
-pilot:
-  token: 12926953-a7d1-4223-a092-d7dd95a91fa3
-
 experimental:
   localPlugins:
     mesi:
@@ -18,5 +10,3 @@ experimental:
 
 log:
   level: DEBUG
-
-accessLog: {}
