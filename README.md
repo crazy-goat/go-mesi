@@ -18,7 +18,7 @@
 ### Servers Integration
 ✅ **Initial Implementation** – Basic support for ESI processing.  
 🔄 **Upcoming Integrations:**
-- [x] Plugin for Traefik
+- [x] Plugin for Traefik - See [Installation and configuration](servers/traefik/README.md)
 - [ ] Plugin for Caddy
 - [ ] Plugin for RoadRunner
 - [ ] Plugin for FrankenPHP
