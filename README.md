@@ -41,6 +41,7 @@
 - [ ] Add timeout parameter for ESI requests
 - [ ] Add max concurrent request limit
 - [ ] Implement worker pool for optimized request handling
+- [ ] Implement relative include path
 
 ---
 
