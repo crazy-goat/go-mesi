@@ -6,13 +6,22 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
-func singleFetchUrl(url string) (data string, err error) {
+func singleFetchUrl(url string, defaultUrl string) (data string, err error) {
 	client := http.Client{
 		Timeout: 10 * time.Second,
 	}
+
+	if !strings.HasPrefix(url, "http") && !strings.HasPrefix(url, "https") {
+		if defaultUrl == "" {
+			return "", errors.New("default url can't be empty, on relative urls: " + url)
+		}
+		url = defaultUrl + url
+	}
+
 	content, err := client.Get(url)
 	if err != nil {
 		fmt.Println("error fetching url")

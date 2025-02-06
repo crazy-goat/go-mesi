@@ -56,7 +56,11 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	contentType := customWriter.Header().Get("Content-Type")
 
 	if strings.HasPrefix(contentType, "text/html") {
-		processedResponse := mesi.Parse(customWriter.body.String(), p.config.MaxDepth)
+		processedResponse := mesi.Parse(
+			customWriter.body.String(),
+			p.config.MaxDepth,
+			req.URL.Scheme+"://"+req.URL.Host,
+		)
 		rw.Header().Set("Content-Length", strconv.Itoa(len(processedResponse)))
 		for k, v := range customWriter.Header() {
 			rw.Header()[k] = v

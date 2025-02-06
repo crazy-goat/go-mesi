@@ -122,7 +122,7 @@ func main() {
 
 		// Call the parse function.
 		start := time.Now()
-		result := mesi.Parse(string(testData), 5)
+		result := mesi.Parse(string(testData), 5, "http://127.0.0.1:8080")
 		elapsed := time.Since(start)
 		expected := string(expectedData)
 

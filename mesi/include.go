@@ -22,12 +22,12 @@ func parseInclude(input string) (token esiIncludeToken, err error) {
 	return esi, nil
 }
 
-func (token *esiIncludeToken) toString() string {
+func (token *esiIncludeToken) toString(defaultUrl string) string {
 
-	data, err := singleFetchUrl(token.Src)
+	data, err := singleFetchUrl(token.Src, defaultUrl)
 
 	if err != nil && token.Alt != "" {
-		data, err = singleFetchUrl(token.Alt)
+		data, err = singleFetchUrl(token.Alt, defaultUrl)
 	}
 
 	if err != nil {

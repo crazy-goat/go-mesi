@@ -11,7 +11,7 @@ type Response struct {
 	index   int
 }
 
-func Parse(input string, maxDepth int) string {
+func Parse(input string, maxDepth int, defaultUrl string) string {
 
 	var wg sync.WaitGroup
 
@@ -38,10 +38,10 @@ func Parse(input string, maxDepth int) string {
 					ch <- res
 					return
 				}
-				content := include.toString()
+				content := include.toString(defaultUrl)
 
 				if maxDepth > 1 {
-					content = Parse(content, maxDepth-1)
+					content = Parse(content, maxDepth-1, defaultUrl)
 				}
 
 				res.content = content
