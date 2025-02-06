@@ -19,7 +19,7 @@ func singleFetchUrl(url string, defaultUrl string) (data string, err error) {
 		if defaultUrl == "" {
 			return "", errors.New("default url can't be empty, on relative urls: " + url)
 		}
-		url = defaultUrl + url
+		url = strings.TrimRight(defaultUrl, "/") + "/" + strings.TrimLeft(url, "/")
 	}
 
 	content, err := client.Get(url)
