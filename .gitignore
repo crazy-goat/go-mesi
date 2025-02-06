@@ -27,3 +27,4 @@ go.work.sum
 .idea
 /mesi-cli
 /servers/test-server/example-server
+/libgomesi/test-libgomesi

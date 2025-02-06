@@ -1,4 +1,4 @@
-#include "../libgomesi.h"
+#include "libgomesi.h"
 #include <stdio.h>
 #include <stdlib.h>
 
