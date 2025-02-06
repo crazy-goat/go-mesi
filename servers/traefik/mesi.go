@@ -50,6 +50,11 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		body:           &bytes.Buffer{},
 	}
 
+	_, ok := req.Header["Surrogate-Capability"]
+	if ok == false {
+		req.Header.Set("Surrogate-Capability", "ESI/1.0")
+	}
+
 	// Call the next handler
 	p.next.ServeHTTP(customWriter, req)
 
