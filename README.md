@@ -19,12 +19,12 @@
 ✅ **Initial Implementation** – Basic support for ESI processing.  
 🔄 **Upcoming Integrations:**
 - [x] Plugin for Traefik - See [Installation and configuration](servers/traefik/README.md)
+- [x] PHP extension - See [Installation and configuration](php-ext/README.md)
 - [ ] Plugin for Caddy
 - [ ] Plugin for RoadRunner
 - [ ] Plugin for FrankenPHP
 - [ ] Plugin for Nginx (if possible)
 - [ ] Plugin for Apache (if possible)
-- [ ] PHP extension (if possible)
 - [ ] Standalone proxy server
 
 ### Features
