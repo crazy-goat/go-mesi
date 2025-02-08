@@ -28,3 +28,4 @@ go.work.sum
 /mesi-cli
 /servers/test-server/example-server
 /libgomesi/test-libgomesi
+/servers/nginx/libgomesi.h
