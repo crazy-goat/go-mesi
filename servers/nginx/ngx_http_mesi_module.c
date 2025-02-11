@@ -54,6 +54,7 @@ ngx_module_t ngx_http_mesi_module = {
 
 static ngx_int_t ngx_http_html_head_header_filter(ngx_http_request_t *r) {
   ngx_http_html_head_filter_ctx_t *ctx;
+  ngx_table_elt_t *h;
 
   if (r->header_only || r->headers_out.content_length_n == 0) {
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
@@ -79,6 +80,17 @@ static ngx_int_t ngx_http_html_head_header_filter(ngx_http_request_t *r) {
                    "[mESI head filter]: error status code");
     return ngx_http_next_header_filter(r);
   }
+
+  h = ngx_list_push(&r->headers_out.headers);
+  if (h == NULL) {
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "[mESI head filter]: failed to add ");
+    return ngx_http_next_header_filter(r);
+  }
+
+  h->hash = 1;
+  ngx_str_set(&h->key, "Surrogate-Capability");
+  ngx_str_set(&h->value, "ESI/1.0");
 
   ctx = ngx_http_get_module_ctx(r, ngx_http_mesi_module);
   if (ctx == NULL) {
