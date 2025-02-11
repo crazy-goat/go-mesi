@@ -19,14 +19,13 @@ func Parse(input string, maxDepth int, defaultUrl string) string {
 	processed := unescape(input)
 	tokens := esiTokenizer(processed)
 	ch := make(chan Response)
-
+	wg.Add(len(tokens))
 	go func() {
 		wg.Wait()
 		close(ch)
 	}()
 
 	for index, token := range tokens {
-		wg.Add(1)
 		go func(id int, token esiToken, wg *sync.WaitGroup, ch chan<- Response) {
 			defer wg.Done()
 			res := Response{"", id}
