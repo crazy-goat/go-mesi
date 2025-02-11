@@ -1,0 +1,1 @@
+This should not be processed: <esi:include src="https://raw.githubusercontent.com/crazy-goat/go-mesi/refs/heads/main/examples/includes/include.txt" />

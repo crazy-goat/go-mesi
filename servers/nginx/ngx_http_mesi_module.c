@@ -22,6 +22,9 @@ static ngx_int_t ngx_http_html_head_body_filter(ngx_http_request_t *r,
 static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r);
 static ngx_int_t ngx_http_html_head_filter_init(ngx_conf_t *cf);
 
+static ngx_int_t ngx_test_content_compression(ngx_http_request_t *r);
+static ngx_int_t ngx_test_is_html(ngx_http_request_t *r);
+
 typedef char *(*ParseFunc)(char *, int, char *);
 
 static ngx_http_module_t ngx_http_html_head_filter_module_ctx = {
@@ -52,6 +55,31 @@ ngx_module_t ngx_http_mesi_module = {
 static ngx_int_t ngx_http_html_head_header_filter(ngx_http_request_t *r) {
   ngx_http_html_head_filter_ctx_t *ctx;
 
+  if (r->header_only || r->headers_out.content_length_n == 0) {
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "[mESI head filter]: header only, invalid content length");
+
+    return ngx_http_next_header_filter(r);
+  }
+
+  if (ngx_test_content_compression(r) == 1) {
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "[mESI head filter]: compression enabled");
+    return ngx_http_next_header_filter(r);
+  }
+
+  if (ngx_test_is_html(r) == 0) {
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "[mESI head filter]: content type not html");
+    return ngx_http_next_header_filter(r);
+  }
+
+  if (r->headers_out.status > NGX_HTTP_BAD_REQUEST) {
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "[mESI head filter]: error status code");
+    return ngx_http_next_header_filter(r);
+  }
+
   ctx = ngx_http_get_module_ctx(r, ngx_http_mesi_module);
   if (ctx == NULL) {
     ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_html_head_filter_ctx_t));
@@ -63,11 +91,13 @@ static ngx_int_t ngx_http_html_head_header_filter(ngx_http_request_t *r) {
     ctx->done = 0;
     ngx_http_set_ctx(r, ctx, ngx_http_mesi_module);
   }
+
   if (r == r->main) { /* Main request */
 
     ngx_http_clear_content_length(r);
     ngx_http_weak_etag(r);
   }
+
   return ngx_http_next_header_filter(r);
 }
 
@@ -175,6 +205,41 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   output.data[output.len] = '\0';
 
   return output;
+}
+
+static ngx_int_t ngx_test_is_html(ngx_http_request_t *r) {
+
+  if (r->headers_out.content_type.len == 0) {
+    return 0;
+  }
+
+  ngx_str_t content_len = {
+      .len = r->headers_out.content_type.len,
+      .data = ngx_pcalloc(r->pool,
+                          sizeof(u_char) * r->headers_out.content_type.len)};
+
+  if (content_len.data == NULL) {
+    return 0;
+  }
+
+  ngx_strlow(content_len.data, r->headers_out.content_type.data,
+             content_len.len);
+
+  if (ngx_strnstr(content_len.data, "text/html",
+                  r->headers_out.content_type.len) != NULL) {
+    return 1;
+  }
+
+  return 0;
+}
+
+static ngx_int_t ngx_test_content_compression(ngx_http_request_t *r) {
+  if (r->headers_out.content_encoding == NULL ||
+      r->headers_out.content_encoding->value.len == 0) {
+    return 0;
+  }
+
+  return 1;
 }
 
 static ngx_int_t ngx_http_html_head_filter_init(ngx_conf_t *cf) {
