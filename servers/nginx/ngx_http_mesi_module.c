@@ -196,6 +196,20 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
     output.len = 0;
     return output;
   }
+
+  ngx_str_t scheme = r->schema;
+  ngx_str_t host = r->headers_in.host->value;
+  size_t len = scheme.len + sizeof("://") - 1 + host.len + sizeof("/") - 1;
+
+  ngx_str_t base_url;
+  base_url.len = len;
+  base_url.data = ngx_pnalloc(r->pool, len + 1);
+  if (base_url.data == NULL) {
+    return output;
+  }
+
+  ngx_snprintf(base_url.data, len + 1, "%V://%V/", &scheme, &host);
+
   ParseFunc Parse = (ParseFunc)dlsym(go_module, "Parse");
   error = dlerror();
   if (error != NULL) {
@@ -206,16 +220,19 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
     return output;
   }
 
-  const char *message = Parse(ngx_str_to_cstr(&input, r->pool), 5, "");
+  char *message = Parse(ngx_str_to_cstr(&input, r->pool), 5,
+                              ngx_str_to_cstr(&base_url, r->pool));
+  dlclose(go_module);
   output.len = ngx_strlen(message);
   output.data = ngx_palloc(r->pool, output.len);
   if (output.data == NULL) {
+    free(message);
     output.len = 0;
     return output;
   }
   ngx_memcpy(output.data, message, output.len);
   output.data[output.len] = '\0';
-
+  free(message);
   return output;
 }
 
