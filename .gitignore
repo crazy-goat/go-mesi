@@ -7,6 +7,7 @@
 *.dll
 *.so
 *.dylib
+*.a
 
 # Test binary, built with `go test -c`
 *.test
@@ -29,3 +30,6 @@ go.work.sum
 /servers/test-server/example-server
 /libgomesi/test-libgomesi
 /servers/nginx/libgomesi.h
+/servers/nginx/build/
+/libgomesi/libgomesi.h
+

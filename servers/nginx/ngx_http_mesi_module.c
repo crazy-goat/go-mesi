@@ -2,104 +2,208 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
+#include "libgomesi.h"
+
+#ifndef LIB_GOMESI_PATH
+#define LIB_GOMESI_PATH "/usr/lib/libgomesi.a"
+#endif
+
+/* Struktura przechowująca całą zawartość odpowiedzi */
 typedef struct {
-    ngx_flag_t enable_mesi;
-} ngx_http_mesi_loc_conf_t;
+    ngx_str_t  accumulated;  /* Bufor na cały HTML */
+    ngx_flag_t done;         /* Flaga sygnalizująca zakończenie zbierania */
+} ngx_http_html_head_filter_ctx_t;
 
-static ngx_int_t ngx_http_mesi_handler(ngx_http_request_t *r);
-static ngx_int_t ngx_http_mesi_init(ngx_conf_t *cf);
-static void* ngx_http_mesi_create_loc_conf(ngx_conf_t *cf);
-static char* ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void* parent, void* child);
+static ngx_http_output_header_filter_pt  ngx_http_next_header_filter;
+static ngx_http_output_body_filter_pt    ngx_http_next_body_filter;
 
-static ngx_command_t ngx_http_mesi_commands[] = {
-    {
-        ngx_string("enable_mesi"),
-        NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
-        ngx_conf_set_flag_slot,
-        NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_mesi_loc_conf_t, enable_mesi),
-        NULL
-    },
-    ngx_null_command
-};
+static ngx_int_t ngx_http_html_head_header_filter(ngx_http_request_t *r);
+static ngx_int_t ngx_http_html_head_body_filter(ngx_http_request_t *r, ngx_chain_t *in);
+static ngx_str_t parse(ngx_str_t input,  ngx_http_request_t *r);
+static ngx_int_t ngx_http_html_head_filter_init(ngx_conf_t *cf);
 
-static ngx_http_module_t ngx_http_mesi_module_ctx = {
-    NULL,
-    ngx_http_mesi_init,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    ngx_http_mesi_create_loc_conf,
-    ngx_http_mesi_merge_loc_conf
+typedef char* (*ParseFunc)(char*, int, char*);
+
+/* Struktura modułu */
+static ngx_http_module_t ngx_http_html_head_filter_module_ctx = {
+    NULL,                                /* preconfiguration */
+    ngx_http_html_head_filter_init,      /* postconfiguration */
+    NULL,                                /* create main configuration */
+    NULL,                                /* init main configuration */
+    NULL,                                /* create server configuration */
+    NULL,                                /* merge server configuration */
+    NULL,                                /* create location configuration */
+    NULL                                 /* merge location configuration */
 };
 
 ngx_module_t ngx_http_mesi_module = {
     NGX_MODULE_V1,
-    &ngx_http_mesi_module_ctx,
-    ngx_http_mesi_commands,
-    NGX_HTTP_MODULE,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
+    &ngx_http_html_head_filter_module_ctx, /* module context */
+    NULL,                                  /* module directives */
+    NGX_HTTP_MODULE,                       /* module type */
+    NULL,                                  /* init master */
+    NULL,                                  /* init module */
+    NULL,                                  /* init process */
+    NULL,                                  /* init thread */
+    NULL,                                  /* exit thread */
+    NULL,                                  /* exit process */
+    NULL,                                  /* exit master */
     NGX_MODULE_V1_PADDING
 };
 
-static ngx_int_t ngx_http_mesi_handler(ngx_http_request_t *r)
+/* Filtr nagłówków */
+static ngx_int_t
+ngx_http_html_head_header_filter(ngx_http_request_t *r)
 {
-    ngx_http_mesi_loc_conf_t* lcf = ngx_http_get_module_loc_conf(r, ngx_http_mesi_module);
-    if (!lcf->enable_mesi) {
-        return NGX_DECLINED;
+    ngx_http_html_head_filter_ctx_t  *ctx;
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_mesi_module);
+    if (ctx == NULL) {
+        ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_html_head_filter_ctx_t));
+        if (ctx == NULL) {
+            return NGX_ERROR;
+        }
+        ctx->accumulated.len = 0;
+        ctx->accumulated.data = NULL;
+        ctx->done = 0;
+        ngx_http_set_ctx(r, ctx, ngx_http_mesi_module);
     }
-    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "MESI module handler called");
-    ngx_str_t response = ngx_string("Hello, World!\n");
-    r->headers_out.status = NGX_HTTP_OK;
-    r->headers_out.content_length_n = response.len;
-    ngx_http_send_header(r);
-    ngx_buf_t* b = ngx_create_temp_buf(r->pool, response.len);
-    if (b == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    if (r == r->main)
+    {/* Main request */
+
+         ngx_http_clear_content_length(r);
+         ngx_http_weak_etag(r);
+
     }
-    ngx_memcpy(b->pos, response.data, response.len);
-    b->last = b->pos + response.len;
-    b->last_buf = 1;
-    ngx_chain_t out = { b, NULL };
-    return ngx_http_output_filter(r, &out);
+    return ngx_http_next_header_filter(r);
 }
 
-static ngx_int_t ngx_http_mesi_init(ngx_conf_t *cf)
+/* Filtr ciała odpowiedzi */
+static ngx_int_t
+ngx_http_html_head_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
-    ngx_log_error(NGX_LOG_ERR, cf->log, 0, "MESI module init called");
-    ngx_http_handler_pt* h;
-    ngx_http_core_main_conf_t* cmcf;
-    cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
-    h = ngx_array_push(&cmcf->phases[NGX_HTTP_CONTENT_PHASE].handlers);
-    if (h == NULL) {
-        return NGX_ERROR;
+    ngx_http_html_head_filter_ctx_t  *ctx;
+    ctx = ngx_http_get_module_ctx(r, ngx_http_mesi_module);
+    if (ctx == NULL) {
+        return ngx_http_next_body_filter(r, in);
     }
-    *h = ngx_http_mesi_handler;
+
+    ngx_chain_t   *cl;
+    ngx_buf_t     *buf;
+
+    for (cl = in; cl; cl = cl->next) {
+        buf = cl->buf;
+        if (ngx_buf_size(buf) > 0 && !ctx->done) {
+            size_t old_len = ctx->accumulated.len;
+            size_t new_len = old_len + ngx_buf_size(buf);
+
+            u_char *new_data = ngx_palloc(r->pool, new_len);
+            if (new_data == NULL) {
+                return NGX_ERROR;
+            }
+
+            if (ctx->accumulated.data) {
+                ngx_memcpy(new_data, ctx->accumulated.data, old_len);
+            }
+            ngx_memcpy(new_data + old_len, buf->pos, ngx_buf_size(buf));
+
+            ctx->accumulated.data = new_data;
+            ctx->accumulated.len  = new_len;
+        }
+
+        if (buf->last_buf && !ctx->done) {
+            ctx->done = 1;
+            ngx_str_t parsed = parse(ctx->accumulated, r);
+
+            ngx_chain_t *out = ngx_alloc_chain_link(r->pool);
+            if (out == NULL) {
+                return NGX_ERROR;
+            }
+
+            ngx_buf_t *b = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
+            if (b == NULL) {
+                return NGX_ERROR;
+            }
+            /* Aktualizacja Content-Length */
+            r->headers_out.content_length_n = parsed.len;
+
+            b->pos = parsed.data;
+            b->last = parsed.data + parsed.len;
+            b->memory = 1;
+            b->last_buf = 1;
+
+            out->buf = b;
+            out->next = NULL;
+
+            return ngx_http_next_body_filter(r, out);
+        }
+    }
+
     return NGX_OK;
 }
 
-static void* ngx_http_mesi_create_loc_conf(ngx_conf_t *cf)
-{
-    ngx_http_mesi_loc_conf_t* conf;
-    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_mesi_loc_conf_t));
-    if (conf == NULL) {
+/* Konwersja ngx_str_t na NULL-terminated char* */
+static char*
+ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool) {
+    char *cstr = ngx_palloc(pool, input->len + 1);
+    if (cstr == NULL) {
         return NULL;
     }
-    conf->enable_mesi = NGX_CONF_UNSET;
-    return conf;
+    ngx_memcpy(cstr, input->data, input->len);
+    cstr[input->len] = '\0';
+    return cstr;
 }
 
-static char* ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void* parent, void* child)
+/* Funkcja parse(), która na razie tylko zwraca kopię danych */
+static ngx_str_t
+parse(ngx_str_t input, ngx_http_request_t *r)
 {
-    ngx_http_mesi_loc_conf_t* prev = parent;
-    ngx_http_mesi_loc_conf_t* conf = child;
-    ngx_conf_merge_value(conf->enable_mesi, prev->enable_mesi, 0);
-    return NGX_CONF_OK;
+    ngx_str_t output;
+    char *error;
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                "------------Before parse");
+  void *go_module = dlopen(LIB_GOMESI_PATH, RTLD_LAZY); //TODO: no hardcoded path
+  if (!go_module) {
+                  ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "------------Error loading");
+        output.len = 0;
+        return output;
+  }
+    dlerror(); // Wyczyszczenie błędów
+    ParseFunc Parse = (ParseFunc) dlsym(go_module, "Parse");
+
+    if ((error = dlerror()) != NULL)  {
+        fprintf(stderr, "Błąd ładowania funkcji: %s\n", error);
+        dlclose(go_module);
+        output.len = 0;
+        return output;
+    }
+                      ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "------------After loading");
+    const char *message = Parse(ngx_str_to_cstr(&input, r->pool), 5, "");
+    output.len = ngx_strlen(message);
+    output.data = ngx_palloc(r->pool, output.len);
+    if (output.data == NULL) {
+        output.len = 0;
+        return output;
+    }
+    ngx_memcpy(output.data, message, output.len);
+    output.data[output.len] = '\0';
+
+    return output;
+}
+
+
+
+/* Rejestracja filtrów */
+static ngx_int_t
+ngx_http_html_head_filter_init(ngx_conf_t *cf)
+{
+    ngx_http_next_header_filter = ngx_http_top_header_filter;
+    ngx_http_top_header_filter = ngx_http_html_head_header_filter;
+
+    ngx_http_next_body_filter = ngx_http_top_body_filter;
+    ngx_http_top_body_filter = ngx_http_html_head_body_filter;
+
+    return NGX_OK;
 }

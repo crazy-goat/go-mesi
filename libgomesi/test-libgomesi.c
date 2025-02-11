@@ -44,7 +44,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    char* result = Parse(file_contents, 10, "default_url");
+    char* result = Parse(file_contents);
     printf("Result: %s\n", result);
 
     FreeString(result);
