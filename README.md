@@ -20,10 +20,10 @@
 🔄 **Upcoming Integrations:**
 - [x] Plugin for Traefik - See [Installation and configuration](servers/traefik/README.md)
 - [x] PHP extension - See [Installation and configuration](php-ext/README.md)
+- [x] Plugin for Nginx - - See [Installation and configuration](servers/nginx/README.md)
 - [ ] Plugin for Caddy
 - [ ] Plugin for RoadRunner
 - [ ] Plugin for FrankenPHP
-- [ ] Plugin for Nginx (if possible)
 - [ ] Plugin for Apache (if possible)
 - [ ] Standalone proxy server
 
