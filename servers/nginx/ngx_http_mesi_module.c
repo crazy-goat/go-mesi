@@ -162,7 +162,7 @@ parse(ngx_str_t input, ngx_http_request_t *r)
     char *error;
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                 "------------Before parse");
-  void *go_module = dlopen(LIB_GOMESI_PATH, RTLD_LAZY); //TODO: no hardcoded path
+  void *go_module = dlopen(LIB_GOMESI_PATH, RTLD_LAZY);
   if (!go_module) {
                   ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "------------Error loading");
