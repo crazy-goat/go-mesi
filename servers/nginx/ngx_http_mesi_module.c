@@ -8,10 +8,9 @@
 #define LIB_GOMESI_PATH "/usr/lib/libgomesi.a"
 #endif
 
-/* Struktura przechowująca całą zawartość odpowiedzi */
 typedef struct {
-  ngx_str_t accumulated; /* Bufor na cały HTML */
-  ngx_flag_t done;       /* Flaga sygnalizująca zakończenie zbierania */
+  ngx_str_t accumulated;
+  ngx_flag_t done;
 } ngx_http_html_head_filter_ctx_t;
 
 static ngx_http_output_header_filter_pt ngx_http_next_header_filter;
@@ -25,7 +24,6 @@ static ngx_int_t ngx_http_html_head_filter_init(ngx_conf_t *cf);
 
 typedef char *(*ParseFunc)(char *, int, char *);
 
-/* Struktura modułu */
 static ngx_http_module_t ngx_http_html_head_filter_module_ctx = {
     NULL,                           /* preconfiguration */
     ngx_http_html_head_filter_init, /* postconfiguration */
@@ -51,7 +49,6 @@ ngx_module_t ngx_http_mesi_module = {
     NULL,                                  /* exit master */
     NGX_MODULE_V1_PADDING};
 
-/* Filtr nagłówków */
 static ngx_int_t ngx_http_html_head_header_filter(ngx_http_request_t *r) {
   ngx_http_html_head_filter_ctx_t *ctx;
 
@@ -74,7 +71,6 @@ static ngx_int_t ngx_http_html_head_header_filter(ngx_http_request_t *r) {
   return ngx_http_next_header_filter(r);
 }
 
-/* Filtr ciała odpowiedzi */
 static ngx_int_t ngx_http_html_head_body_filter(ngx_http_request_t *r,
                                                 ngx_chain_t *in) {
   ngx_http_html_head_filter_ctx_t *ctx;
@@ -119,7 +115,7 @@ static ngx_int_t ngx_http_html_head_body_filter(ngx_http_request_t *r,
       if (b == NULL) {
         return NGX_ERROR;
       }
-      /* Aktualizacja Content-Length */
+
       r->headers_out.content_length_n = parsed.len;
 
       b->pos = parsed.data;
@@ -137,7 +133,6 @@ static ngx_int_t ngx_http_html_head_body_filter(ngx_http_request_t *r,
   return NGX_OK;
 }
 
-/* Konwersja ngx_str_t na NULL-terminated char* */
 static char *ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool) {
   char *cstr = ngx_palloc(pool, input->len + 1);
   if (cstr == NULL) {
@@ -148,29 +143,27 @@ static char *ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool) {
   return cstr;
 }
 
-/* Funkcja parse(), która na razie tylko zwraca kopię danych */
 static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   ngx_str_t output;
   char *error;
-  ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "------------Before parse");
   void *go_module = dlopen(LIB_GOMESI_PATH, RTLD_LAZY);
   if (!go_module) {
+    error = dlerror();
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                  "------------Error loading");
+                  "Error loading libgomesi: %s", error);
     output.len = 0;
     return output;
   }
-  dlerror(); // Wyczyszczenie błędów
   ParseFunc Parse = (ParseFunc)dlsym(go_module, "Parse");
-
-  if ((error = dlerror()) != NULL) {
-    fprintf(stderr, "Błąd ładowania funkcji: %s\n", error);
+  error = dlerror();
+  if (error != NULL) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "Error executing Parse from libgomesi: %s", error);
     dlclose(go_module);
     output.len = 0;
     return output;
   }
-  ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                "------------After loading");
+
   const char *message = Parse(ngx_str_to_cstr(&input, r->pool), 5, "");
   output.len = ngx_strlen(message);
   output.data = ngx_palloc(r->pool, output.len);
@@ -184,7 +177,6 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   return output;
 }
 
-/* Rejestracja filtrów */
 static ngx_int_t ngx_http_html_head_filter_init(ngx_conf_t *cf) {
   ngx_http_next_header_filter = ngx_http_top_header_filter;
   ngx_http_top_header_filter = ngx_http_html_head_header_filter;
