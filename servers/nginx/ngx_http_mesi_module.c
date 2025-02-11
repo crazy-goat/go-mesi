@@ -16,8 +16,8 @@ typedef struct {
 static ngx_http_output_header_filter_pt ngx_http_next_header_filter;
 static ngx_http_output_body_filter_pt ngx_http_next_body_filter;
 
-static ngx_int_t ngx_http_html_head_header_filter(ngx_http_request_t *r);
-static ngx_int_t ngx_http_html_head_body_filter(ngx_http_request_t *r,
+static ngx_int_t ngx_http_html_mesi_head_filter(ngx_http_request_t *r);
+static ngx_int_t ngx_http_html_mesi_body_filter(ngx_http_request_t *r,
                                                 ngx_chain_t *in);
 static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r);
 static ngx_int_t ngx_http_html_head_filter_init(ngx_conf_t *cf);
@@ -57,7 +57,7 @@ ngx_module_t ngx_http_mesi_module = {
     NULL,                                  /* exit master */
     NGX_MODULE_V1_PADDING};
 
-static ngx_int_t ngx_http_html_head_header_filter(ngx_http_request_t *r) {
+static ngx_int_t ngx_http_html_mesi_head_filter(ngx_http_request_t *r) {
   ngx_http_html_head_filter_ctx_t *ctx;
   ngx_table_elt_t *h;
 
@@ -118,7 +118,7 @@ static ngx_int_t ngx_http_html_head_header_filter(ngx_http_request_t *r) {
   return ngx_http_next_header_filter(r);
 }
 
-static ngx_int_t ngx_http_html_head_body_filter(ngx_http_request_t *r,
+static ngx_int_t ngx_http_html_mesi_body_filter(ngx_http_request_t *r,
                                                 ngx_chain_t *in) {
   ngx_http_html_head_filter_ctx_t *ctx;
   ctx = ngx_http_get_module_ctx(r, ngx_http_mesi_module);
@@ -259,10 +259,10 @@ static ngx_int_t ngx_test_content_compression(ngx_http_request_t *r) {
 
 static ngx_int_t ngx_http_html_head_filter_init(ngx_conf_t *cf) {
   ngx_http_next_header_filter = ngx_http_top_header_filter;
-  ngx_http_top_header_filter = ngx_http_html_head_header_filter;
+  ngx_http_top_header_filter = ngx_http_html_mesi_head_filter;
 
   ngx_http_next_body_filter = ngx_http_top_body_filter;
-  ngx_http_top_body_filter = ngx_http_html_head_body_filter;
+  ngx_http_top_body_filter = ngx_http_html_mesi_body_filter;
 
   return NGX_OK;
 }
