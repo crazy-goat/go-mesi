@@ -29,6 +29,7 @@ make -j8
 
 cp objs/ngx_http_mesi_module.so ../../"$BUILD_MODULE_DIR"
 cp objs/nginx "../../$BUILD_DIR/nginx/"
+cp conf/mime.types "../../$BUILD_DIR/nginx/"
 
 cd ../../
 rm -rf "$SRC_DIR" "$MESI_DIR"
