@@ -5,7 +5,7 @@
 #include "libgomesi.h"
 
 #ifndef LIB_GOMESI_PATH
-#define LIB_GOMESI_PATH "/usr/lib/libgomesi.a"
+#define LIB_GOMESI_PATH "/usr/lib/libgomesi.so"
 #endif
 
 typedef struct {
@@ -22,10 +22,15 @@ static ngx_int_t ngx_http_html_head_body_filter(ngx_http_request_t *r,
 static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r);
 static ngx_int_t ngx_http_html_head_filter_init(ngx_conf_t *cf);
 
+static void ngx_http_mesi_thread_exit(ngx_cycle_t *cycle);
+static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle);
+
 static ngx_int_t ngx_test_content_compression(ngx_http_request_t *r);
 static ngx_int_t ngx_test_is_html(ngx_http_request_t *r);
 
 typedef char *(*ParseFunc)(char *, int, char *);
+static void *go_module = NULL;
+ParseFunc EsiParse = NULL;
 
 static ngx_http_module_t ngx_http_html_head_filter_module_ctx = {
     NULL,                           /* preconfiguration */
@@ -45,10 +50,10 @@ ngx_module_t ngx_http_mesi_module = {
     NGX_HTTP_MODULE,                       /* module type */
     NULL,                                  /* init master */
     NULL,                                  /* init module */
-    NULL,                                  /* init process */
+    ngx_http_mesi_thread_init,             /* init process */
     NULL,                                  /* init thread */
     NULL,                                  /* exit thread */
-    NULL,                                  /* exit process */
+    ngx_http_mesi_thread_exit,             /* exit process */
     NULL,                                  /* exit master */
     NGX_MODULE_V1_PADDING};
 
@@ -117,7 +122,7 @@ static ngx_int_t ngx_http_html_head_body_filter(ngx_http_request_t *r,
                                                 ngx_chain_t *in) {
   ngx_http_html_head_filter_ctx_t *ctx;
   ctx = ngx_http_get_module_ctx(r, ngx_http_mesi_module);
-  if (ctx == NULL) {
+  if (ctx == NULL || go_module == NULL) {
     return ngx_http_next_body_filter(r, in);
   }
 
@@ -187,15 +192,6 @@ static char *ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool) {
 
 static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   ngx_str_t output;
-  char *error;
-  void *go_module = dlopen(LIB_GOMESI_PATH, RTLD_LAZY);
-  if (!go_module) {
-    error = dlerror();
-    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                  "Error loading libgomesi: %s", error);
-    output.len = 0;
-    return output;
-  }
 
   ngx_str_t scheme = r->schema;
   ngx_str_t host = r->headers_in.host->value;
@@ -210,19 +206,9 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
 
   ngx_snprintf(base_url.data, len + 1, "%V://%V/", &scheme, &host);
 
-  ParseFunc Parse = (ParseFunc)dlsym(go_module, "Parse");
-  error = dlerror();
-  if (error != NULL) {
-    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                  "Error executing Parse from libgomesi: %s", error);
-    dlclose(go_module);
-    output.len = 0;
-    return output;
-  }
+  char *message = EsiParse(ngx_str_to_cstr(&input, r->pool), 5,
+                           ngx_str_to_cstr(&base_url, r->pool));
 
-  char *message = Parse(ngx_str_to_cstr(&input, r->pool), 5,
-                              ngx_str_to_cstr(&base_url, r->pool));
-  dlclose(go_module);
   output.len = ngx_strlen(message);
   output.data = ngx_palloc(r->pool, output.len);
   if (output.data == NULL) {
@@ -279,4 +265,33 @@ static ngx_int_t ngx_http_html_head_filter_init(ngx_conf_t *cf) {
   ngx_http_top_body_filter = ngx_http_html_head_body_filter;
 
   return NGX_OK;
+}
+
+static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
+  char *error;
+  go_module = dlopen(LIB_GOMESI_PATH, RTLD_NOW);
+
+  if (!go_module) {
+    dlerror();
+    return NGX_ERROR;
+  }
+
+  EsiParse = (ParseFunc)dlsym(go_module, "Parse");
+
+  error = dlerror();
+  if (error != NULL) {
+    ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                  "Error executing Parse from libgomesi: %s", error);
+
+    return NGX_ERROR;
+  }
+
+  return NGX_OK;
+}
+
+static void ngx_http_mesi_thread_exit(ngx_cycle_t *cycle) {
+  if (go_module) {
+    dlclose(go_module);
+    go_module = NULL;
+  }
 }
