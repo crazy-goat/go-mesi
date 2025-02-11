@@ -9,6 +9,10 @@
 #endif
 
 typedef struct {
+  ngx_flag_t enable_mesi;
+} ngx_http_mesi_loc_conf_t;
+
+typedef struct {
   ngx_str_t accumulated;
   ngx_flag_t done;
 } ngx_http_html_head_filter_ctx_t;
@@ -28,9 +32,19 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle);
 static ngx_int_t ngx_test_content_compression(ngx_http_request_t *r);
 static ngx_int_t ngx_test_is_html(ngx_http_request_t *r);
 
+static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf);
+static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
+                                          void *child);
+
 typedef char *(*ParseFunc)(char *, int, char *);
 static void *go_module = NULL;
 ParseFunc EsiParse = NULL;
+
+static ngx_command_t ngx_http_mesi_commands[] = {
+    {ngx_string("enable_mesi"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
+     ngx_conf_set_flag_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, enable_mesi), NULL},
+    ngx_null_command};
 
 static ngx_http_module_t ngx_http_html_head_filter_module_ctx = {
     NULL,                           /* preconfiguration */
@@ -39,14 +53,14 @@ static ngx_http_module_t ngx_http_html_head_filter_module_ctx = {
     NULL,                           /* init main configuration */
     NULL,                           /* create server configuration */
     NULL,                           /* merge server configuration */
-    NULL,                           /* create location configuration */
-    NULL                            /* merge location configuration */
+    ngx_http_mesi_create_loc_conf,  /* create location configuration */
+    ngx_http_mesi_merge_loc_conf    /* merge location configuration */
 };
 
 ngx_module_t ngx_http_mesi_module = {
     NGX_MODULE_V1,
     &ngx_http_html_head_filter_module_ctx, /* module context */
-    NULL,                                  /* module directives */
+    ngx_http_mesi_commands,                /* module directives */
     NGX_HTTP_MODULE,                       /* module type */
     NULL,                                  /* init master */
     NULL,                                  /* init module */
@@ -58,6 +72,12 @@ ngx_module_t ngx_http_mesi_module = {
     NGX_MODULE_V1_PADDING};
 
 static ngx_int_t ngx_http_html_mesi_head_filter(ngx_http_request_t *r) {
+  ngx_http_mesi_loc_conf_t *lcf =
+      ngx_http_get_module_loc_conf(r, ngx_http_mesi_module);
+  if (!lcf->enable_mesi) {
+    return ngx_http_next_header_filter(r);
+  }
+
   ngx_http_html_head_filter_ctx_t *ctx;
   ngx_table_elt_t *h;
 
@@ -120,6 +140,13 @@ static ngx_int_t ngx_http_html_mesi_head_filter(ngx_http_request_t *r) {
 
 static ngx_int_t ngx_http_html_mesi_body_filter(ngx_http_request_t *r,
                                                 ngx_chain_t *in) {
+  ngx_http_mesi_loc_conf_t *lcf =
+      ngx_http_get_module_loc_conf(r, ngx_http_mesi_module);
+
+  if (!lcf->enable_mesi) {
+    return ngx_http_next_body_filter(r, in);
+  }
+
   ngx_http_html_head_filter_ctx_t *ctx;
   ctx = ngx_http_get_module_ctx(r, ngx_http_mesi_module);
   if (ctx == NULL || go_module == NULL) {
@@ -294,4 +321,22 @@ static void ngx_http_mesi_thread_exit(ngx_cycle_t *cycle) {
     dlclose(go_module);
     go_module = NULL;
   }
+}
+
+static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
+  ngx_http_mesi_loc_conf_t *conf;
+  conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_mesi_loc_conf_t));
+  if (conf == NULL) {
+    return NULL;
+  }
+  conf->enable_mesi = NGX_CONF_UNSET;
+  return conf;
+}
+
+static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
+                                          void *child) {
+  ngx_http_mesi_loc_conf_t *prev = parent;
+  ngx_http_mesi_loc_conf_t *conf = child;
+  ngx_conf_merge_value(conf->enable_mesi, prev->enable_mesi, 0);
+  return NGX_CONF_OK;
 }
