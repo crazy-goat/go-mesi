@@ -16,6 +16,12 @@ type EsiParserConfig struct {
 	maxDepth   uint
 }
 
+func (c EsiParserConfig) DecreaseMaxDepth() EsiParserConfig {
+	c.maxDepth = max(c.maxDepth-1, 0)
+
+	return c
+}
+
 // Deprecated: FunctionName is deprecated, please use mEsiParse
 func Parse(input string, maxDepth int, defaultUrl string) string {
 	config := EsiParserConfig{
@@ -51,10 +57,10 @@ func mEsiParse(input string, config EsiParserConfig) string {
 					ch <- res
 					return
 				}
-				content := include.toString(config.defaultUrl)
+				content := include.toString(config)
 
 				if config.maxDepth > 1 {
-					newConfig := EsiParserConfig{defaultUrl: config.defaultUrl, maxDepth: config.maxDepth - 1}
+					newConfig := config.DecreaseMaxDepth()
 					content = mEsiParse(content, newConfig)
 				}
 
