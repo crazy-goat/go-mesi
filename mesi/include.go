@@ -2,12 +2,14 @@ package mesi
 
 import (
 	"encoding/xml"
+	"time"
 )
 
 type esiIncludeToken struct {
 	XMLName xml.Name `xml:"include"`
 	Src     string   `xml:"src,attr"`
 	Alt     string   `xml:"alt,attr"`
+	Timeout string   `xml:"timeout,attr"`
 	OnError string   `xml:"onerror,attr"`
 	Content string   `xml:",innerxml"`
 }
@@ -23,11 +25,11 @@ func parseInclude(input string) (token esiIncludeToken, err error) {
 }
 
 func (token *esiIncludeToken) toString(config EsiParserConfig) string {
-
-	data, err := singleFetchUrl(token.Src, config.defaultUrl)
+	start := time.Now()
+	data, err := singleFetchUrl(token.Src, config)
 
 	if err != nil && token.Alt != "" {
-		data, err = singleFetchUrl(token.Alt, config.defaultUrl)
+		data, err = singleFetchUrl(token.Alt, config.WithElapsedTime(time.Since(start)))
 	}
 
 	if err != nil {

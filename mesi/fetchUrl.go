@@ -2,24 +2,26 @@ package mesi
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 )
 
-func singleFetchUrl(url string, defaultUrl string) (data string, err error) {
+func singleFetchUrl(url string, config EsiParserConfig) (data string, err error) {
+	if config.timeout <= 0 {
+		return "", errors.New("exceeded time budget")
+	}
+
 	client := http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: config.timeout,
 	}
 
 	if !strings.HasPrefix(url, "http") && !strings.HasPrefix(url, "https") {
-		if defaultUrl == "" {
+		if config.defaultUrl == "" {
 			return "", errors.New("default url can't be empty, on relative urls: " + url)
 		}
-		url = strings.TrimRight(defaultUrl, "/") + "/" + strings.TrimLeft(url, "/")
+		url = strings.TrimRight(config.defaultUrl, "/") + "/" + strings.TrimLeft(url, "/")
 	}
 
 	req, _ := http.NewRequest("GET", url, nil)
@@ -27,12 +29,10 @@ func singleFetchUrl(url string, defaultUrl string) (data string, err error) {
 
 	content, err := client.Do(req)
 	if err != nil {
-		fmt.Println("error fetching url")
 		return "", err
 	} else {
 		data, err := io.ReadAll(content.Body)
 		if err != nil {
-			fmt.Println("error reading body")
 			return "", err
 		}
 

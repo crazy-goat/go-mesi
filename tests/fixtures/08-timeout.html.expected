@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Async request using esi:include</title>
+</head>
+<body>
+Large timeout: [Timeout]
+Close timeout: [Timeout]
+No timeout: [3 Waited 1]
+No timeout on first error: [4 Waited 1]
+Alt timeout: [Timeout]
+No alt on timeout: [Timeout]
+</body>
+</html>

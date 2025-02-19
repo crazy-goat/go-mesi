@@ -2,8 +2,10 @@ package mesi
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Response struct {
@@ -14,10 +16,32 @@ type Response struct {
 type EsiParserConfig struct {
 	defaultUrl string
 	maxDepth   uint
+	timeout    time.Duration
+}
+
+func (c EsiParserConfig) CanGoDeeper(t time.Duration) bool {
+	return c.maxDepth > 1 && c.timeout > t
 }
 
 func (c EsiParserConfig) DecreaseMaxDepth() EsiParserConfig {
 	c.maxDepth = max(c.maxDepth-1, 0)
+
+	return c
+}
+
+func (c EsiParserConfig) WithElapsedTime(t time.Duration) EsiParserConfig {
+	c.timeout = max(c.timeout-t, 0)
+
+	return c
+}
+
+func (c EsiParserConfig) OverrideConfig(token esiIncludeToken) EsiParserConfig {
+	if token.Timeout != "" {
+		tokenTimeout, err := strconv.ParseFloat(token.Timeout, 64)
+		if err == nil && tokenTimeout > 0 {
+			c.timeout = min(c.timeout, time.Duration(tokenTimeout*float64(time.Second)))
+		}
+	}
 
 	return c
 }
@@ -27,12 +51,14 @@ func Parse(input string, maxDepth int, defaultUrl string) string {
 	config := EsiParserConfig{
 		defaultUrl: defaultUrl,
 		maxDepth:   uint(maxDepth),
+		timeout:    10 * time.Second, // default value 5 sec
 	}
 
 	return mEsiParse(input, config)
 }
 
 func mEsiParse(input string, config EsiParserConfig) string {
+	start := time.Now()
 	var wg sync.WaitGroup
 
 	var result strings.Builder
@@ -52,16 +78,17 @@ func mEsiParse(input string, config EsiParserConfig) string {
 			if !token.isEsi() {
 				res.content = token.staticContent
 			} else if token.esiTagType == "include" {
+
 				include, err := parseInclude(token.esiTagContent)
 				if err != nil {
 					ch <- res
 					return
 				}
-				content := include.toString(config)
+				newConfig := config.OverrideConfig(include).WithElapsedTime(time.Since(start))
+				content := include.toString(newConfig)
 
-				if config.maxDepth > 1 {
-					newConfig := config.DecreaseMaxDepth()
-					content = mEsiParse(content, newConfig)
+				if config.CanGoDeeper(time.Since(start)) {
+					content = mEsiParse(content, newConfig.DecreaseMaxDepth().WithElapsedTime(time.Since(start)))
 				}
 
 				res.content = content
