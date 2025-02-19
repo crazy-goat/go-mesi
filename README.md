@@ -116,7 +116,8 @@ we can download this code fragment using FetchAPI or htmlx
 - [ ] Plugin for RoadRunner
 - [ ] Plugin for FrankenPHP
 - [ ] Plugin for Apache (if possible)
-- [ ] Standalone proxy server
+- [ ] Standalone proxy server - for testing
+- [ ] CLI - for testing
 
 ### Features
 🔄 **Performance & Scalability:**
