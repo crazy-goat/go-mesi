@@ -11,8 +11,22 @@ type Response struct {
 	index   int
 }
 
-func Parse(input string, maxDepth int, defaultUrl string) string {
+type EsiParserConfig struct {
+	defaultUrl string
+	maxDepth   uint
+}
 
+// Deprecated: FunctionName is deprecated, please use mEsiParse
+func Parse(input string, maxDepth int, defaultUrl string) string {
+	config := EsiParserConfig{
+		defaultUrl: defaultUrl,
+		maxDepth:   uint(maxDepth),
+	}
+
+	return mEsiParse(input, config)
+}
+
+func mEsiParse(input string, config EsiParserConfig) string {
 	var wg sync.WaitGroup
 
 	var result strings.Builder
@@ -37,10 +51,11 @@ func Parse(input string, maxDepth int, defaultUrl string) string {
 					ch <- res
 					return
 				}
-				content := include.toString(defaultUrl)
+				content := include.toString(config.defaultUrl)
 
-				if maxDepth > 1 {
-					content = Parse(content, maxDepth-1, defaultUrl)
+				if config.maxDepth > 1 {
+					newConfig := EsiParserConfig{defaultUrl: config.defaultUrl, maxDepth: config.maxDepth - 1}
+					content = mEsiParse(content, newConfig)
 				}
 
 				res.content = content
