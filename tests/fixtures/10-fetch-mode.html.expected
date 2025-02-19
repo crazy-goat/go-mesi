@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Async request using esi:include</title>
+</head>
+<body>
+---Fallback---
+fallback set: [A]
+fallback not set: [A]
+bad mode set: [A]
+
+---AB---
+Should return A: [A]
+Should return B: [B]
+No alt, should return A: [A]
+
+---Concurrent---
+Should pick 1: [1 Waited 1]
+Should pick 4: [4 Waited 1]
+</body>
+</html>

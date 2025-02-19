@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Async request using esi:include</title>
+</head>
+<body>
+---Fallback---
+fallback set: [<esi:include fetch-mode="falback" src="http://127.0.0.1:8080/returnString/A" alt="http://127.0.0.1:8080/returnString/B" />]
+fallback not set: [<esi:include src="http://127.0.0.1:8080/returnString/A" alt="http://127.0.0.1:8080/returnString/B" />]
+bad mode set: [<esi:include fetch-mode="foo" src="http://127.0.0.1:8080/returnString/A" alt="http://127.0.0.1:8080/returnString/B" />]
+
+---AB---
+Should return A: [<esi:include fetch-mode="ab" ab-ratio="100:0" src="http://127.0.0.1:8080/returnString/A" alt="http://127.0.0.1:8080/returnString/B" />]
+Should return B: [<esi:include fetch-mode="ab" ab-ratio="0:100" src="http://127.0.0.1:8080/returnString/A" alt="http://127.0.0.1:8080/returnString/B" />]
+No alt, should return A: [<esi:include fetch-mode="ab" ab-ratio="0:100" src="http://127.0.0.1:8080/returnString/A" />]
+
+---Concurrent---
+Should pick 1: [<esi:include fetch-mode="concurrent" src="http://127.0.0.1:8080/sleep/1/1" alt="http://127.0.0.1:8080/sleep/2/2" />]
+Should pick 4: [<esi:include fetch-mode="concurrent" src="http://127.0.0.1:8080/sleep/2/3" alt="http://127.0.0.1:8080/sleep/1/4" />]
+</body>
+</html>
