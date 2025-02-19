@@ -21,9 +21,10 @@ The parser configuration is defined using the following structure:
 
 ```go
 type EsiParserConfig struct {
-    defaultUrl string
-    maxDepth   uint
-    timeout    time.Duration
+  DefaultUrl    string
+  MaxDepth      uint
+  Timeout       time.Duration
+  ParseOnHeader bool
 }
 ```
 ### Configuration Parameters
@@ -53,6 +54,11 @@ _NOTE:_
  - In case of recursion, the timeout value is reduced by the time it took to execute the previous step.
  - When a timeout value is set in both `EsiParserConfig` and `esi:include`, the smaller value will be chosen.
 
+**ParseOnHeader**
+
+Here's the English translation:
+
+If set to true, then server responses will process ESI tags only when the response contains the `Edge-control: dca=esi` header
 ## Roadmap
 
 ### Servers Integration

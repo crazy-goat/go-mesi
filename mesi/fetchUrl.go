@@ -8,20 +8,26 @@ import (
 	"strings"
 )
 
-func singleFetchUrl(url string, config EsiParserConfig) (data string, err error) {
-	if config.timeout <= 0 {
-		return "", errors.New("exceeded time budget")
+func isEsiResponse(response *http.Response) bool {
+	header := strings.ToLower(response.Header.Get("Edge-control"))
+
+	return strings.Contains(header, "dca=esi")
+}
+
+func singleFetchUrl(url string, config EsiParserConfig) (data string, esiResponse bool, err error) {
+	if config.Timeout <= 0 {
+		return "", false, errors.New("exceeded time budget")
 	}
 
 	client := http.Client{
-		Timeout: config.timeout,
+		Timeout: config.Timeout,
 	}
 
 	if !strings.HasPrefix(url, "http") && !strings.HasPrefix(url, "https") {
-		if config.defaultUrl == "" {
-			return "", errors.New("default url can't be empty, on relative urls: " + url)
+		if config.DefaultUrl == "" {
+			return "", false, errors.New("default url can't be empty, on relative urls: " + url)
 		}
-		url = strings.TrimRight(config.defaultUrl, "/") + "/" + strings.TrimLeft(url, "/")
+		url = strings.TrimRight(config.DefaultUrl, "/") + "/" + strings.TrimLeft(url, "/")
 	}
 
 	req, _ := http.NewRequest("GET", url, nil)
@@ -29,16 +35,16 @@ func singleFetchUrl(url string, config EsiParserConfig) (data string, err error)
 
 	content, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", false, err
 	} else {
 		data, err := io.ReadAll(content.Body)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 
 		if content.StatusCode >= 400 {
-			return "", errors.New(strconv.Itoa(content.StatusCode) + ": " + string(data))
+			return "", false, errors.New(strconv.Itoa(content.StatusCode) + ": " + string(data))
 		}
-		return string(data), nil
+		return string(data), isEsiResponse(content), nil
 	}
 }

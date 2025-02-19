@@ -14,27 +14,28 @@ type Response struct {
 }
 
 type EsiParserConfig struct {
-	defaultUrl string
-	maxDepth   uint
-	timeout    time.Duration
+	DefaultUrl    string
+	MaxDepth      uint
+	Timeout       time.Duration
+	ParseOnHeader bool
 }
 
 func (c EsiParserConfig) CanGoDeeper(t time.Duration) bool {
-	return c.maxDepth >= 1 && c.timeout > t
+	return c.MaxDepth >= 1 && c.Timeout > t
 }
 
 func (c EsiParserConfig) ParseOnly() bool {
-	return c.maxDepth < 1
+	return c.MaxDepth < 1
 }
 
 func (c EsiParserConfig) DecreaseMaxDepth() EsiParserConfig {
-	c.maxDepth = max(c.maxDepth-1, 0)
+	c.MaxDepth = max(c.MaxDepth-1, 0)
 
 	return c
 }
 
 func (c EsiParserConfig) WithElapsedTime(t time.Duration) EsiParserConfig {
-	c.timeout = max(c.timeout-t, 0)
+	c.Timeout = max(c.Timeout-t, 0)
 
 	return c
 }
@@ -43,14 +44,14 @@ func (c EsiParserConfig) OverrideConfig(token esiIncludeToken) EsiParserConfig {
 	if token.Timeout != "" {
 		tokenTimeout, err := strconv.ParseFloat(token.Timeout, 64)
 		if err == nil && tokenTimeout > 0 {
-			c.timeout = min(c.timeout, time.Duration(tokenTimeout*float64(time.Second)))
+			c.Timeout = min(c.Timeout, time.Duration(tokenTimeout*float64(time.Second)))
 		}
 	}
 
 	if token.MaxDepth != "" {
 		tokenMaxDepth, err := strconv.Atoi(token.MaxDepth)
 		if err == nil && tokenMaxDepth >= 0 {
-			c.maxDepth = min(c.maxDepth, uint(tokenMaxDepth)+1)
+			c.MaxDepth = min(c.MaxDepth, uint(tokenMaxDepth)+1)
 		}
 	}
 
@@ -60,15 +61,15 @@ func (c EsiParserConfig) OverrideConfig(token esiIncludeToken) EsiParserConfig {
 // Deprecated: FunctionName is deprecated, please use mEsiParse
 func Parse(input string, maxDepth int, defaultUrl string) string {
 	config := EsiParserConfig{
-		defaultUrl: defaultUrl,
-		maxDepth:   uint(maxDepth),
-		timeout:    10 * time.Second, // default value 5 sec
+		DefaultUrl: defaultUrl,
+		MaxDepth:   uint(maxDepth),
+		Timeout:    10 * time.Second, // default value 5 sec
 	}
 
-	return mEsiParse(input, config)
+	return MESIParse(input, config)
 }
 
-func mEsiParse(input string, config EsiParserConfig) string {
+func MESIParse(input string, config EsiParserConfig) string {
 	start := time.Now()
 	var wg sync.WaitGroup
 
@@ -96,10 +97,10 @@ func mEsiParse(input string, config EsiParserConfig) string {
 					return
 				}
 				newConfig := config.OverrideConfig(include).WithElapsedTime(time.Since(start))
-				content := include.toString(newConfig)
+				content, isEsiReposne := include.toString(newConfig)
 
-				if config.CanGoDeeper(time.Since(start)) {
-					content = mEsiParse(content, newConfig.DecreaseMaxDepth().WithElapsedTime(time.Since(start)))
+				if config.CanGoDeeper(time.Since(start)) && (isEsiReposne || newConfig.ParseOnHeader == false) {
+					content = MESIParse(content, newConfig.DecreaseMaxDepth().WithElapsedTime(time.Since(start)))
 				}
 
 				res.content = content

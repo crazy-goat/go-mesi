@@ -26,31 +26,32 @@ func parseInclude(input string) (token esiIncludeToken, err error) {
 	return esi, nil
 }
 
-func (token *esiIncludeToken) toString(config EsiParserConfig) string {
+func (token *esiIncludeToken) toString(config EsiParserConfig) (string, bool) {
 	start := time.Now()
 	var data string
 	var err error
+	var isEsiResponse bool
 
 	if config.ParseOnly() {
 		err = errors.New("esi max depth")
 	} else {
-		data, err = singleFetchUrl(token.Src, config)
+		data, isEsiResponse, err = singleFetchUrl(token.Src, config)
 		if err != nil && token.Alt != "" {
-			data, err = singleFetchUrl(token.Alt, config.WithElapsedTime(time.Since(start)))
+			data, isEsiResponse, err = singleFetchUrl(token.Alt, config.WithElapsedTime(time.Since(start)))
 		}
 	}
 
 	if err != nil {
 		if token.OnError == "continue" {
-			return ""
+			return "", false
 		}
 
 		if token.Content != "" {
-			return token.Content
+			return token.Content, false
 		}
 
-		return err.Error()
+		return err.Error(), false
 	}
 
-	return data
+	return data, isEsiResponse
 }

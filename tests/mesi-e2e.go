@@ -41,10 +41,16 @@ func sleep(w http.ResponseWriter, r *http.Request) {
 }
 
 func returnEsi(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Add("Edge-control", "dca=esi")
+	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:8080/hello\" />]"))
+}
+
+func returnEsiNoHeader(w http.ResponseWriter, _ *http.Request) {
 	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:8080/hello\" />]"))
 }
 
 func recursive(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Add("Edge-control", "dca=esi")
 	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:8080/recursive\" />]"))
 }
 
@@ -55,6 +61,7 @@ func startHttpServer(wg *sync.WaitGroup) *http.Server {
 	http.HandleFunc("/status/code/{id}", statusCode)
 	http.HandleFunc("/sleep/{timeout}/{index}", sleep)
 	http.HandleFunc("/returnEsi", returnEsi)
+	http.HandleFunc("/returnNonEsiHeader", returnEsiNoHeader)
 	http.HandleFunc("/recursive", recursive)
 	go func() {
 		defer wg.Done()
@@ -122,7 +129,13 @@ func main() {
 
 		// Call the parse function.
 		start := time.Now()
-		result := mesi.Parse(string(testData), 5, "http://127.0.0.1:8080")
+
+		result := mesi.MESIParse(string(testData), mesi.EsiParserConfig{
+			DefaultUrl:    "http://127.0.0.1:8080",
+			MaxDepth:      5,
+			ParseOnHeader: true,
+			Timeout:       5 * time.Second,
+		})
 		elapsed := time.Since(start)
 		expected := string(expectedData)
 
