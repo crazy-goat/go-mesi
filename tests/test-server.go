@@ -39,6 +39,10 @@ func recursive(w http.ResponseWriter, _ *http.Request) {
 	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:8080/recursive\" />]"))
 }
 
+func returnString(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte(r.PathValue("data")))
+}
+
 func main() {
 	srv := &http.Server{Addr: ":8080"}
 
@@ -48,6 +52,8 @@ func main() {
 	http.HandleFunc("/returnEsi", returnEsi)
 	http.HandleFunc("/returnNonEsiHeader", returnEsiNoHeader)
 	http.HandleFunc("/recursive", recursive)
+	http.HandleFunc("/returnString/{data}", returnString)
+
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("ListenAndServe(): %v", err)
 	}
