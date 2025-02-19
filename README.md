@@ -12,7 +12,10 @@
 - **Parallel Fetching** – Unlike many other ESI implementations, **mESI** supports parallel fetching of ESI fragments, improving response times for dynamic content.
 - **Lightweight & Minimal** – Focuses on essential ESI features while remaining easy to integrate and extend.
 - **Multi-Server Support** – Can be integrated with various web servers to enhance content delivery performance.
-
+- **A/B testing** - Set `fetch-mode="ab"` to easily compare the effectiveness of two versions of content to see which one appeals more to people visiting web pages / viewing specific information.
+- **Concurrent fetch** - You need ultra performance - set `fetch-mode="concurrent"` to always fetch content from the fastest source.
+- **esi:include timeout** - Timeout can be set both globally and specifically for a selected `esi:include` tag. In combination with fallback content, you can easily manage the page generation time.
+- **Fallback content** - Set the content to be displayed if remote content download fails.
 ## ESI Parser Configuration
 This document describes the configuration structure for the mESI parser.
 
@@ -82,6 +85,24 @@ If missing `alt` attribute, `src` will be always used.
 <esi:include fetch-mode="ab" ab-ratio="90:10" src="http://foo.bar/A" alt="http://foo.bar/B" />]
 ```
 I this case `B` will be fetched 10% of the time.
+
+## Fallback content
+By default, the `esi:include` tag does not contain a body. mESI allows you to set the so-called fallback content, 
+or the content that will be displayed in case the download of remote content fails. Example:
+```html
+<esi:include src="https://foo.bar/bad-url">
+    Failed to load remote content
+</esi:include>
+```
+A fallback will be displayed both when we get an error in the server response or when the response time is too long.
+In combination with the `timeout` attribute, we can easily manage the page generation time. For example, if `250ms` is exceeded, 
+we can download this code fragment using FetchAPI or htmlx
+
+```html
+<esi:include timeout="0.25" src="https://foo.bar/can-be-slow">
+  <div hx-trigger="load" hx-swap="outerHTML" hx-get="https://foo.bar/can-be-slow"></div>
+</esi:include>
+```
 
 ## Roadmap
 
