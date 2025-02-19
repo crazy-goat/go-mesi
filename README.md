@@ -13,6 +13,43 @@
 - **Lightweight & Minimal** – Focuses on essential ESI features while remaining easy to integrate and extend.
 - **Multi-Server Support** – Can be integrated with various web servers to enhance content delivery performance.
 
+## ESI Parser Configuration
+This document describes the configuration structure for the mESI parser.
+
+### Configuration Structure
+The parser configuration is defined using the following structure:
+
+```go
+type EsiParserConfig struct {
+    defaultUrl string
+    maxDepth   uint
+    timeout    time.Duration
+}
+```
+**DefaultUrl**
+
+Base URL that will be used as a prefix for relative URL paths. If the provided URL in ESI tags doesn't start with "http://" or "https://", this base URL will be prepended to paths starting with "/".
+
+**MaxDepth**
+
+Defines the maximum allowed recursion depth for esi:include tags. This parameter prevents infinite loops that could occur when ESI templates reference each other.
+
+**Timeout**
+
+Specifies the maximum time to wait for a server response when processing esi:include tags. The request will be terminated if this timeout is exceeded.
+Timeout can also be defined independently in the `esi:include` tag. The timeout attribute value is given in seconds. 
+Decimal values can be given, the decimal separator is a dot, e.g. `1.2`
+
+```html
+<esi:include timeout="0.2" src="http://foo.bar/some-long request" />
+```
+_NOTE:_
+ - If the `alt` attribute is provided and first request fails the time budget will be split between both requests.
+ - In case of recursion, the timeout value is reduced by the time it took to execute the previous step.
+ - When a timeout value is set in both `EsiParserConfig` and `esi:include`, the smaller value will be chosen.
+
+### Configuration Parameters
+
 ## Roadmap
 
 ### Servers Integration
@@ -34,14 +71,14 @@
 - [ ] Add Memcached cache support
 
 🔄 **Performance & Scalability:**
+- [x] Implement include path without host
+- [x] Add timeout parameter for ESI requests
 - [ ] Add work modes:
   - [x] Fallback
   - [ ] A/B testing with ratio
   - [ ] Concurrent fetching
-- [ ] Add timeout parameter for ESI requests
 - [ ] Add max concurrent request limit
 - [ ] Implement worker pool for optimized request handling
-- [x] Implement include path without host
 
 ---
 

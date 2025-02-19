@@ -5,8 +5,6 @@
 </head>
 <body>
 Recursive parse 1 response: [included: [Hello World]]
-
-Recursive parse response: [included: [included: [included: [included: [included: [<esi:include src="http://127.0.0.1:8080/recursive" />]]]]]]
-
+Recursive parse response: [included: [included: [included: [included: [included: [esi max depth]]]]]]
 </body>
 </html>

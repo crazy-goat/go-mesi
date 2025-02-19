@@ -20,7 +20,11 @@ type EsiParserConfig struct {
 }
 
 func (c EsiParserConfig) CanGoDeeper(t time.Duration) bool {
-	return c.maxDepth > 1 && c.timeout > t
+	return c.maxDepth >= 1 && c.timeout > t
+}
+
+func (c EsiParserConfig) ParseOnly() bool {
+	return c.maxDepth < 1
 }
 
 func (c EsiParserConfig) DecreaseMaxDepth() EsiParserConfig {

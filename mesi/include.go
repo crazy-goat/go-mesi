@@ -2,6 +2,7 @@ package mesi
 
 import (
 	"encoding/xml"
+	"errors"
 	"time"
 )
 
@@ -26,10 +27,16 @@ func parseInclude(input string) (token esiIncludeToken, err error) {
 
 func (token *esiIncludeToken) toString(config EsiParserConfig) string {
 	start := time.Now()
-	data, err := singleFetchUrl(token.Src, config)
+	var data string
+	var err error
 
-	if err != nil && token.Alt != "" {
-		data, err = singleFetchUrl(token.Alt, config.WithElapsedTime(time.Since(start)))
+	if config.ParseOnly() {
+		err = errors.New("esi max depth")
+	} else {
+		data, err = singleFetchUrl(token.Src, config)
+		if err != nil && token.Alt != "" {
+			data, err = singleFetchUrl(token.Alt, config.WithElapsedTime(time.Since(start)))
+		}
 	}
 
 	if err != nil {
