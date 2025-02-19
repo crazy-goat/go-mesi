@@ -1,3 +1,5 @@
+build-cli:
+	cd cli && go build mesi-cli.go
 build-libgomesi:
 	cd libgomesi && make
 build-php-ext: build-libgomesi

@@ -26,10 +26,9 @@ go.work.sum
 .env
 
 .idea
-/mesi-cli
 /servers/test-server/example-server
 /libgomesi/test-libgomesi
 /servers/nginx/libgomesi.h
 /servers/nginx/build/
 /libgomesi/libgomesi.h
-
+/cli/mesi-cli
