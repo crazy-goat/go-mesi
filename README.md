@@ -112,12 +112,12 @@ we can download this code fragment using FetchAPI or htmlx
 - [x] Plugin for Traefik - See [Installation and configuration](servers/traefik/README.md)
 - [x] PHP extension - See [Installation and configuration](php-ext/README.md)
 - [x] Plugin for Nginx - - See [Installation and configuration](servers/nginx/README.md)
+- [x] CLI - for testing
 - [ ] Plugin for Caddy
 - [ ] Plugin for RoadRunner
 - [ ] Plugin for FrankenPHP
 - [ ] Plugin for Apache (if possible)
 - [ ] Standalone proxy server - for testing
-- [ ] CLI - for testing
 
 ### Features
 🔄 **Performance & Scalability:**
@@ -130,6 +130,7 @@ we can download this code fragment using FetchAPI or htmlx
   - [x] Concurrent fetching
 - [ ] Add max concurrent request limit
 - [ ] Implement worker pool for optimized request handling
+- [ ] Debug mode - add a lot of debug messages
 
 🔄 **Caching Enhancements:**
 - [ ] Add in memory cache
