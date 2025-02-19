@@ -82,6 +82,7 @@ If set to true, then server responses will process ESI tags only when the respon
 🔄 **Performance & Scalability:**
 - [x] Implement include path without host
 - [x] Add timeout parameter for ESI requests
+- [x] Option to parse esi only when `Edge-control: dca=esi` header
 - [ ] Add work modes:
   - [x] Fallback
   - [ ] A/B testing with ratio
