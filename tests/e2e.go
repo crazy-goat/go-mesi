@@ -1,76 +1,15 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"log"
-	"net/http"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/crazy-goat/go-mesi/mesi"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
-
-// parse is a mock function that returns the input as is.
-func parse(input string) string {
-	// Replace this with your actual parsing logic.
-	return input
-}
-
-func hello(w http.ResponseWriter, _ *http.Request) {
-	w.Write([]byte("Hello World"))
-}
-
-func statusCode(w http.ResponseWriter, r *http.Request) {
-	code, _ := strconv.Atoi(r.PathValue("id"))
-	w.WriteHeader(code)
-	w.Write([]byte(http.StatusText(code)))
-}
-
-func sleep(w http.ResponseWriter, r *http.Request) {
-	timeout, _ := strconv.Atoi(r.PathValue("timeout"))
-	index := r.PathValue("index")
-	time.Sleep(time.Duration(timeout) * time.Second)
-	w.Write([]byte(index + " Waited " + strconv.Itoa(timeout)))
-}
-
-func returnEsi(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Add("Edge-control", "dca=esi")
-	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:8080/hello\" />]"))
-}
-
-func returnEsiNoHeader(w http.ResponseWriter, _ *http.Request) {
-	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:8080/hello\" />]"))
-}
-
-func recursive(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Add("Edge-control", "dca=esi")
-	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:8080/recursive\" />]"))
-}
-
-func startHttpServer(wg *sync.WaitGroup) *http.Server {
-	srv := &http.Server{Addr: ":8080"}
-
-	http.HandleFunc("/hello", hello)
-	http.HandleFunc("/status/code/{id}", statusCode)
-	http.HandleFunc("/sleep/{timeout}/{index}", sleep)
-	http.HandleFunc("/returnEsi", returnEsi)
-	http.HandleFunc("/returnNonEsiHeader", returnEsiNoHeader)
-	http.HandleFunc("/recursive", recursive)
-	go func() {
-		defer wg.Done()
-		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("ListenAndServe(): %v", err)
-		}
-	}()
-	return srv
-}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -78,11 +17,6 @@ func main() {
 		os.Exit(1)
 	}
 	dir := os.Args[1]
-
-	httpServerExitDone := &sync.WaitGroup{}
-
-	httpServerExitDone.Add(1)
-	srv := startHttpServer(httpServerExitDone)
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -156,9 +90,4 @@ func main() {
 			fmt.Println(diffText)
 		}
 	}
-	if err := srv.Shutdown(context.TODO()); err != nil {
-		panic(err) // failure/timeout shutting down the server gracefully
-	}
-
-	httpServerExitDone.Wait()
 }

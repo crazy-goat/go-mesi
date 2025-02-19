@@ -92,5 +92,8 @@ If set to true, then server responses will process ESI tags only when the respon
 
 ---
 
+## Running tests
+To run E2E test just type `make test-e2e`
+
 🚀 **Looking for contributors!** If you are interested in helping with development, feel free to submit PRs or open issues.  
 
