@@ -13,3 +13,5 @@ test-php-ext: build-php-ext
 
 test-e2e: build-test
 	cd tests && ./run-test.sh
+
+all: build-cli build-libgomesi build-test

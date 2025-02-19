@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func isEsiResponse(response *http.Response) bool {
+func IsEsiResponse(response *http.Response) bool {
 	header := strings.ToLower(response.Header.Get("Edge-control"))
 
 	return strings.Contains(header, "dca=esi")
@@ -45,6 +45,6 @@ func singleFetchUrl(url string, config EsiParserConfig) (data string, esiRespons
 		if content.StatusCode >= 400 {
 			return "", false, errors.New(strconv.Itoa(content.StatusCode) + ": " + string(data))
 		}
-		return string(data), isEsiResponse(content), nil
+		return string(data), IsEsiResponse(content), nil
 	}
 }

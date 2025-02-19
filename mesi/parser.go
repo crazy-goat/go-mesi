@@ -20,6 +20,15 @@ type EsiParserConfig struct {
 	ParseOnHeader bool
 }
 
+func CreateDefaultConfig() EsiParserConfig {
+	return EsiParserConfig{
+		DefaultUrl:    "http://127.0.0.1/",
+		MaxDepth:      5,
+		Timeout:       10 * time.Second,
+		ParseOnHeader: false,
+	}
+}
+
 func (c EsiParserConfig) CanGoDeeper(t time.Duration) bool {
 	return c.MaxDepth >= 1 && c.Timeout > t
 }
@@ -97,9 +106,9 @@ func MESIParse(input string, config EsiParserConfig) string {
 					return
 				}
 				newConfig := config.OverrideConfig(include).WithElapsedTime(time.Since(start))
-				content, isEsiReposne := include.toString(newConfig)
+				content, isEsiResponse := include.toString(newConfig)
 
-				if config.CanGoDeeper(time.Since(start)) && (isEsiReposne || newConfig.ParseOnHeader == false) {
+				if config.CanGoDeeper(time.Since(start)) && (isEsiResponse || newConfig.ParseOnHeader == false) {
 					content = MESIParse(content, newConfig.DecreaseMaxDepth().WithElapsedTime(time.Since(start)))
 				}
 
