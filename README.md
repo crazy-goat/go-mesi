@@ -26,6 +26,7 @@ type EsiParserConfig struct {
     timeout    time.Duration
 }
 ```
+### Configuration Parameters
 **DefaultUrl**
 
 Base URL that will be used as a prefix for relative URL paths. If the provided URL in ESI tags doesn't start with "http://" or "https://", this base URL will be prepended to paths starting with "/".
@@ -33,6 +34,10 @@ Base URL that will be used as a prefix for relative URL paths. If the provided U
 **MaxDepth**
 
 Defines the maximum allowed recursion depth for esi:include tags. This parameter prevents infinite loops that could occur when ESI templates reference each other.
+The recursion count value can be lowered for a selected `esi:include` tag using the `max-depth` attribute:
+```html
+<esi:include max-depth="1" src="http://foo.bar/recursive"/>
+```
 
 **Timeout**
 
@@ -47,8 +52,6 @@ _NOTE:_
  - If the `alt` attribute is provided and first request fails the time budget will be split between both requests.
  - In case of recursion, the timeout value is reduced by the time it took to execute the previous step.
  - When a timeout value is set in both `EsiParserConfig` and `esi:include`, the smaller value will be chosen.
-
-### Configuration Parameters
 
 ## Roadmap
 

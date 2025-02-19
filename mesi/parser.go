@@ -47,6 +47,13 @@ func (c EsiParserConfig) OverrideConfig(token esiIncludeToken) EsiParserConfig {
 		}
 	}
 
+	if token.MaxDepth != "" {
+		tokenMaxDepth, err := strconv.Atoi(token.MaxDepth)
+		if err == nil && tokenMaxDepth >= 0 {
+			c.maxDepth = min(c.maxDepth, uint(tokenMaxDepth)+1)
+		}
+	}
+
 	return c
 }
 

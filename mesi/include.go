@@ -7,12 +7,13 @@ import (
 )
 
 type esiIncludeToken struct {
-	XMLName xml.Name `xml:"include"`
-	Src     string   `xml:"src,attr"`
-	Alt     string   `xml:"alt,attr"`
-	Timeout string   `xml:"timeout,attr"`
-	OnError string   `xml:"onerror,attr"`
-	Content string   `xml:",innerxml"`
+	XMLName  xml.Name `xml:"include"`
+	Src      string   `xml:"src,attr"`
+	Alt      string   `xml:"alt,attr"`
+	Timeout  string   `xml:"timeout,attr"`
+	MaxDepth string   `xml:"max-depth,attr"`
+	OnError  string   `xml:"onerror,attr"`
+	Content  string   `xml:",innerxml"`
 }
 
 func parseInclude(input string) (token esiIncludeToken, err error) {
