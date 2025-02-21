@@ -34,3 +34,6 @@ go.work.sum
 /cli/mesi-cli
 /tests/e2e
 /tests/test-server
+/servers/roadrunner/rr
+/servers/roadrunner/worker/vendor/
+/servers/roadrunner/worker/composer.lock

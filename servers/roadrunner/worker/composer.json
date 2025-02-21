@@ -1,0 +1,19 @@
+{
+    "name": "piotr/worker",
+    "autoload": {
+        "psr-4": {
+        }
+    },
+    "authors": [
+        {
+            "name": "Hałas Piotr",
+            "email": "halaspiotr@gmail.com"
+        }
+    ],
+    "require": {
+        "spiral/roadrunner": "^2024.3",
+        "nyholm/psr7": "^1.8",
+        "spiral/roadrunner-cli": "^2.7",
+        "spiral/roadrunner-http": "^3.5"
+    }
+}
