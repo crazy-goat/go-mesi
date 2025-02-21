@@ -1,6 +1,7 @@
 package mesi
 
 import (
+	"github.com/eko/gocache/lib/v4/cache"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ type EsiParserConfig struct {
 	MaxDepth      uint
 	Timeout       time.Duration
 	ParseOnHeader bool
+	CacheManager  *cache.Cache[[]byte]
 }
 
 func CreateDefaultConfig() EsiParserConfig {
@@ -26,6 +28,7 @@ func CreateDefaultConfig() EsiParserConfig {
 		MaxDepth:      5,
 		Timeout:       10 * time.Second,
 		ParseOnHeader: false,
+		CacheManager:  nil,
 	}
 }
 

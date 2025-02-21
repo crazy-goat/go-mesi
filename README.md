@@ -133,7 +133,7 @@ we can download this code fragment using FetchAPI or htmlx
 - [ ] Debug mode - add a lot of debug messages
 
 🔄 **Caching Enhancements:**
-- [ ] Add in memory cache
+- [ ] Add in memory cache - for testing
 - [ ] Add cache key option
 - [ ] Add Redis cache support
 - [ ] Add Memcached cache support

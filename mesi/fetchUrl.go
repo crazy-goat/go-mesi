@@ -1,6 +1,7 @@
 package mesi
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -28,6 +29,18 @@ func singleFetchUrl(url string, config EsiParserConfig) (data string, esiRespons
 			return "", false, errors.New("default url can't be empty, on relative urls: " + url)
 		}
 		url = strings.TrimRight(config.DefaultUrl, "/") + "/" + strings.TrimLeft(url, "/")
+	}
+
+	cacheKey := url
+
+	ctx := context.Background()
+	cacheManager := config.CacheManager
+
+	if cacheManager != nil {
+		cache, err := cacheManager.Get(ctx, cacheKey)
+		if err == nil {
+			return string(cache), true, nil
+		}
 	}
 
 	req, _ := http.NewRequest("GET", url, nil)
