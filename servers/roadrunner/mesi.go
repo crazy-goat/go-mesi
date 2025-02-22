@@ -2,7 +2,6 @@ package roadrunner
 
 import (
 	"bytes"
-	"fmt"
 	"github.com/crazy-goat/go-mesi/mesi"
 	"net/http"
 	"strconv"
@@ -29,8 +28,6 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(customWriter, r)
 
-		//fmt.Println(mesi.ESI_CHOOSE)
-
 		contentType := customWriter.Header().Get("Content-Type")
 		if strings.HasPrefix(contentType, "text/html") {
 			processedResponse := mesi.Parse(
@@ -40,7 +37,6 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 			)
 
 			w.Header().Set("Content-Length", strconv.Itoa(len(processedResponse)))
-			fmt.Println(strconv.Itoa(len(processedResponse)))
 			for k, v := range customWriter.Header() {
 				w.Header()[k] = v
 			}
