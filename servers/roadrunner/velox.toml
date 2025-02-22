@@ -182,6 +182,11 @@ ref = "v5.1.4"
 owner = "roadrunner-server"
 repository = "tcp"
 
+[gitlab.plugins.test_plugin_1]
+ref = "main"
+owner = "rustatian"
+repository = "36405203"
+
 [github.plugins.mesi]
 ref = "main"
 owner = "crazy-goat"
