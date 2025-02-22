@@ -2,7 +2,7 @@
 A lightweight implementation of Edge Side Includes (ESI) middleware for RoadRunner
 
 ## Building RoadRunner with mESI middleware
-To add the mesi middleware to the RoadRunner server, you need to compile it properly. The best way to do this is to use the velox compiler
+To add the mesi middleware to the RoadRunner server, you need to compile it properly. The best way to do this is to use the [velox compiler](https://github.com/roadrunner-server/velox)
 
 ```shell
 go install github.com/roadrunner-server/velox/v2024/cmd/vx@latest

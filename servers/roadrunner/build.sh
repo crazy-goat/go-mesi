@@ -17,3 +17,4 @@ replace = "$UP_TWO_LEVELS"
 EOF
 
 vx build -c velox.toml -o "$UP_TWO_LEVELS"
+rm velox.toml
