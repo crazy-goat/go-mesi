@@ -37,3 +37,4 @@ go.work.sum
 /servers/roadrunner/rr
 /servers/roadrunner/worker/vendor/
 /servers/roadrunner/worker/composer.lock
+/servers/caddy/caddy

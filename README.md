@@ -112,9 +112,9 @@ we can download this code fragment using FetchAPI or htmlx
 - [x] Plugin for Traefik - See [Installation and configuration](servers/traefik/README.md)
 - [x] Plugin for RoadRunner - See [Installation and configuration](servers/roadrunner/README.md)
 - [x] PHP extension - See [Installation and configuration](php-ext/README.md)
-- [x] Plugin for Nginx - - See [Installation and configuration](servers/nginx/README.md)
+- [x] Plugin for Nginx - See [Installation and configuration](servers/nginx/README.md)
+- [ ] Plugin for Caddy - See [Installation and configuration](servers/caddy/README.md)
 - [x] CLI - for testing
-- [ ] Plugin for Caddy
 - [ ] Plugin for FrankenPHP
 - [ ] Plugin for Apache (if possible)
 - [ ] Standalone proxy server - for testing
