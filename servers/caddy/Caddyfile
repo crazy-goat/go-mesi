@@ -1,0 +1,10 @@
+{
+    admin off
+    order mesi before file_server
+}
+
+:8080 {
+    root * ../../examples
+    mesi
+    file_server
+}
