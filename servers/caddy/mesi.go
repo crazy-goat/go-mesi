@@ -13,7 +13,7 @@ import (
 )
 
 func init() {
-	httpcaddyfile.RegisterHandlerDirective("file_server", parseCaddyfile)
+	httpcaddyfile.RegisterHandlerDirective("mesi", parseCaddyfile)
 	caddy.RegisterModule(MesiMiddleware{})
 }
 
