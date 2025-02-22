@@ -110,7 +110,7 @@ we can download this code fragment using FetchAPI or htmlx
 ✅ **Initial Implementation** – Basic support for ESI processing.  
 🔄 **Upcoming Integrations:**
 - [x] Plugin for Traefik - See [Installation and configuration](servers/traefik/README.md)
-- [ ] Plugin for RoadRunner - See [Installation and configuration](servers/roadrunner/README.md)
+- [x] Plugin for RoadRunner - See [Installation and configuration](servers/roadrunner/README.md)
 - [x] PHP extension - See [Installation and configuration](php-ext/README.md)
 - [x] Plugin for Nginx - - See [Installation and configuration](servers/nginx/README.md)
 - [x] CLI - for testing
