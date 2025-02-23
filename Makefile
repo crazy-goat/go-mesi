@@ -1,5 +1,5 @@
 build-cli:
-	cd cli && go build mesi-cli.go
+	cd cli && go build -trimpath -ldflags="-s -w" mesi-cli.go
 build-libgomesi:
 	cd libgomesi && make
 build-test:

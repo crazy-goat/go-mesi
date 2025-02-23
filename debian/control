@@ -1,0 +1,13 @@
+Source: go-mesi
+Section: utils
+Priority: optional
+Maintainer: Piotr Halas <halaspiotr@gmail.com   >
+Build-Depends: debhelper-compat (=13), golang-go, dh-golang
+Standards-Version: 4.6.0
+Homepage: https://github.com/crazy-goat/go-mesi
+Rules-Requires-Root: no
+
+Package: go-mesi
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Lightweight implementation of Edge Side Includes (ESI) in Golang
