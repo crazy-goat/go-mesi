@@ -1,10 +1,10 @@
-go-mesi (0.5.0ubuntu1) unstable; urgency=medium
+libgomesi (0.5.1) unstable; urgency=medium
 
   * add libgomesi and libgomes-dev
 
- -- Piotr Halas <halaspiotr@gmail.com> Sun, 23 Feb 2025 21:13:16 +0100
+ -- Piotr Halas <halaspiotr@gmail.com>  Sun, 23 Feb 2025 21:13:16 +0100
 
-go-mesi (0.5.0) unstable; urgency=medium
+libgomesi (0.5.0) unstable; urgency=medium
 
   * Initial release
 
