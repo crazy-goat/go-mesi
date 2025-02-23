@@ -11,3 +11,14 @@ Package: go-mesi
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Lightweight implementation of Edge Side Includes (ESI) in Golang
+
+Package: libgomesi
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Shared library for go-mesi functionalities
+
+Package: libgomesi-dev
+Architecture: any
+Multi-Arch: same
+Depends: libgomesi (= ${binary:Version}), ${misc:Depends}
+Description: Development files for libgomesi
