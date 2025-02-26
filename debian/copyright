@@ -1,0 +1,7 @@
+Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: libgomesi
+Source: https://github.com/crazy-goat/go-mesi
+
+Files: *
+Copyright: 2025 Piotr Halas <halaspiotr@gmail.com>
+License: MIT
