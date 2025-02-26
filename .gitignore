@@ -43,3 +43,4 @@ go.work.sum
 /debian/go-mesi/
 /debian/libgomesi/
 /debian/libgomesi-dev/
+/servers/frankenphp/frankenphp
