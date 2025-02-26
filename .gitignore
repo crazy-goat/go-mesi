@@ -38,3 +38,8 @@ go.work.sum
 /servers/roadrunner/worker/vendor/
 /servers/roadrunner/worker/composer.lock
 /servers/caddy/caddy
+/obj-x86_64-linux-gnu/
+/debian/.debhelper/
+/debian/go-mesi/
+/debian/libgomesi/
+/debian/libgomesi-dev/
