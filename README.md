@@ -114,8 +114,8 @@ we can download this code fragment using FetchAPI or htmlx
 - [x] PHP extension - See [Installation and configuration](php-ext/README.md)
 - [x] Plugin for Nginx - See [Installation and configuration](servers/nginx/README.md)
 - [x] Plugin for Caddy - See [Installation and configuration](servers/caddy/README.md)
+- [x] Plugin for FrankenPHP - See [Installation and configuration](servers/frankenphp/README.md)
 - [x] CLI - for testing
-- [ ] Plugin for FrankenPHP
 - [ ] Plugin for Apache (if possible)
 - [ ] Standalone proxy server - for testing
 
