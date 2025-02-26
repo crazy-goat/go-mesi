@@ -48,3 +48,5 @@ go.work.sum
 /servers/apache/mod_mesi.la
 /servers/apache/mod_mesi.lo
 /servers/apache/mod_mesi.slo
+/servers/apache/minimal.conf
+/servers/apache/apache2.pid

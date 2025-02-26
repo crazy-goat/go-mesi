@@ -2,9 +2,24 @@
 #include "http_config.h"
 #include "http_protocol.h"
 #include "http_request.h"
+#include "http_core.h"
+#include "http_log.h"
+#include "util_filter.h"
 #include "apr_strings.h"
+#include "http_log.h"
 
 #include "libgomesi.h"
+#include "dlfcn.h"
+
+#ifndef LIB_GOMESI_PATH
+#define LIB_GOMESI_PATH "/usr/lib/libgomesi.so"
+#endif
+
+typedef char *(*ParseFunc)(char *, int, char *);
+
+typedef struct {
+    apr_bucket_brigade *bb;
+} response_filter_ctx;
 
 module AP_MODULE_DECLARE_DATA mod_mesi_module;
 
@@ -44,6 +59,7 @@ static int mesi_request_handler(request_rec *r) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(r->server->module_config, &mod_mesi_module);
     if (conf->enable_mesi) {
         apr_table_set(r->headers_in, "Surrogate-Capability", "ESI/1.0");
+        ap_add_output_filter("MESI_RESPONSE", NULL, r, r->connection);
     }
     return DECLINED;
 }
@@ -55,34 +71,65 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     }
 
     if (!f->r->content_type || strncmp(f->r->content_type, "text/html", 9) != 0 || f->r->status > 400) {
+        if (!f->r->content_type) {
+            ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, f->r, "No content type, %s", f->r->uri);
+        } else {
+            ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, f->r, "Content type: %s", f->r->content_type);
+        }
+
+
         return ap_pass_brigade(f->next, bb);
     }
 
+    apr_status_t rv;
     apr_bucket *b;
+    apr_size_t len;
+    char *html = NULL;
+    response_filter_ctx *ctx;
+
+    ctx = f->ctx;
+    if (!ctx) {
+        ctx = apr_pcalloc(f->r->pool, sizeof(response_filter_ctx));
+        f->ctx = ctx;
+    }
+
     for (b = APR_BRIGADE_FIRST(bb); b != APR_BRIGADE_SENTINEL(bb); b = APR_BUCKET_NEXT(b)) {
-        if (APR_BUCKET_IS_EOS(b)) {
-            continue;
-        }
-
         const char *data;
-        apr_size_t len;
-        if (apr_bucket_read(b, &data, &len, APR_BLOCK_READ) == APR_SUCCESS) {
-            char *html = strdup(data);
-            char *esi = Parse(html, 5, "http://127.0.0.1/");
-            free(html);
+        apr_size_t data_len;
 
-            apr_bucket *new_bucket = apr_bucket_pool_create(esi, strlen(esi), f->r->pool, f->c->bucket_alloc);
-            APR_BUCKET_INSERT_BEFORE(b, new_bucket);
-            apr_bucket_delete(b);
-            free(esi);
+        if (apr_bucket_read(b, &data, &data_len, APR_BLOCK_READ) == APR_SUCCESS) {
+            if (!html) {
+                html = apr_pstrndup(f->r->pool, data, data_len);
+            } else {
+                html = apr_pstrcat(f->r->pool, html, data, NULL);
+            }
         }
     }
+
+    void *go_module = dlopen(LIB_GOMESI_PATH, RTLD_NOW);
+
+    if (!go_module) {
+        dlerror();
+        return ap_pass_brigade(f->next, bb);
+    }
+
+    ParseFunc EsiParse = (ParseFunc)dlsym(go_module, "Parse");
+    char *esi = EsiParse(html, 5, "http://127.0.0.1");
+
+    dlclose(go_module);
+
+    apr_brigade_cleanup(bb);
+    b = apr_bucket_pool_create(esi, strlen(esi), f->r->pool, bb->bucket_alloc);
+    APR_BRIGADE_INSERT_TAIL(bb, b);
+    APR_BRIGADE_INSERT_TAIL(bb, apr_bucket_eos_create(bb->bucket_alloc));
+
     return ap_pass_brigade(f->next, bb);
 }
 
+
 static void register_hooks(apr_pool_t *p) {
     ap_hook_post_read_request(mesi_request_handler, NULL, NULL, APR_HOOK_MIDDLE);
-    ap_register_output_filter("MESI_RESPONSE", mesi_response_filter, NULL, AP_FTYPE_RESOURCE);
+    ap_register_output_filter("MESI_RESPONSE", mesi_response_filter, NULL, AP_FTYPE_CONTENT_SET);
 }
 
 static const command_rec mesi_directives[] = {
