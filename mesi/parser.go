@@ -38,13 +38,21 @@ func (c EsiParserConfig) ParseOnly() bool {
 }
 
 func (c EsiParserConfig) DecreaseMaxDepth() EsiParserConfig {
-	c.MaxDepth = max(c.MaxDepth-1, 0)
+	if c.MaxDepth > 0 {
+		c.MaxDepth = c.MaxDepth - 1
+	} else {
+		c.MaxDepth = 0
+	}
 
 	return c
 }
 
 func (c EsiParserConfig) WithElapsedTime(t time.Duration) EsiParserConfig {
-	c.Timeout = max(c.Timeout-t, 0)
+	if c.Timeout-t > 0 {
+		c.Timeout = c.Timeout - t
+	} else {
+		c.Timeout = 0
+	}
 
 	return c
 }
@@ -53,14 +61,20 @@ func (c EsiParserConfig) OverrideConfig(token esiIncludeToken) EsiParserConfig {
 	if token.Timeout != "" {
 		tokenTimeout, err := strconv.ParseFloat(token.Timeout, 64)
 		if err == nil && tokenTimeout > 0 {
-			c.Timeout = min(c.Timeout, time.Duration(tokenTimeout*float64(time.Second)))
+			timeoutLimit := time.Duration(tokenTimeout * float64(time.Second))
+			if c.Timeout > timeoutLimit {
+				c.Timeout = timeoutLimit
+			}
 		}
 	}
 
 	if token.MaxDepth != "" {
 		tokenMaxDepth, err := strconv.Atoi(token.MaxDepth)
 		if err == nil && tokenMaxDepth >= 0 {
-			c.MaxDepth = min(c.MaxDepth, uint(tokenMaxDepth)+1)
+			limit := uint(tokenMaxDepth) + 1
+			if c.MaxDepth > limit {
+				c.MaxDepth = limit
+			}
 		}
 	}
 
