@@ -1,0 +1,28 @@
+ServerRoot "."
+PidFile ./apache2.pid
+
+LoadModule mod_mesi_module "./.libs/mod_mesi.so"
+LoadModule mpm_worker_module "/usr/lib/apache2/modules/mod_mpm_worker.so"
+LoadModule authz_core_module "/usr/lib/apache2/modules/mod_authz_core.so"
+LoadModule authz_host_module "/usr/lib/apache2/modules/mod_authz_host.so"
+LoadModule dir_module /usr/lib/apache2/modules/mod_dir.so
+LoadModule headers_module /usr/lib/apache2/modules/mod_headers.so
+LoadModule mime_module /usr/lib/apache2/modules/mod_mime.so
+Listen 8080
+ServerName localhost
+
+<VirtualHost 127.0.0.1:8080>
+DefaultType text/html
+    EnableMesi On
+    DocumentRoot "${MY_DOC_ROOT}"
+    <Directory "${MY_DOC_ROOT}">
+
+        DirectoryIndex index.html
+        AllowOverride None
+        Require all granted
+    </Directory>
+
+</VirtualHost>
+
+ErrorLog /dev/stderr
+
