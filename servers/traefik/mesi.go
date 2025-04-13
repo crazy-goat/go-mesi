@@ -74,8 +74,11 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 		// Write the processed response
 		rw.Write([]byte(processedResponse))
+
+		return
 	}
 
+	rw.Write(customWriter.body.Bytes())
 }
 
 type responseWriter struct {
