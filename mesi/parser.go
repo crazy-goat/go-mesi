@@ -23,9 +23,19 @@ type EsiParserConfig struct {
 	ParseOnHeader         bool
 	AllowedHosts          []string
 	BlockPrivateIPs       bool
-	MaxResponseSize       int64        // 0 = unlimited, default 10MB
-	MaxConcurrentRequests int          // 0 = unlimited (backward compatible)
-	HTTPClient            *http.Client // shared client for connection pooling, nil = create per request
+	MaxResponseSize       int64         // 0 = unlimited, default 10MB
+	MaxConcurrentRequests int           // 0 = unlimited (backward compatible)
+	HTTPClient            *http.Client  // shared client for connection pooling, nil = create per request
+	requestSemaphore      chan struct{} // semaphore for limiting HTTP requests
+}
+
+func (c EsiParserConfig) getSemaphore() chan struct{} {
+	return c.requestSemaphore
+}
+
+func (c EsiParserConfig) setSemaphore(s chan struct{}) EsiParserConfig {
+	c.requestSemaphore = s
+	return c
 }
 
 func (c EsiParserConfig) SetContext(ctx context.Context) EsiParserConfig {
@@ -136,10 +146,12 @@ func MESIParse(input string, config EsiParserConfig) string {
 	wg.Add(len(tokens))
 
 	var semaphore chan struct{}
+	if config.MaxConcurrentRequests < 0 {
+		config.MaxConcurrentRequests = 0
+	}
 	if config.MaxConcurrentRequests > 0 {
 		semaphore = make(chan struct{}, config.MaxConcurrentRequests)
-	} else if config.MaxConcurrentRequests < 0 {
-		config.MaxConcurrentRequests = 0
+		config = config.setSemaphore(semaphore)
 	}
 
 	go func() {
@@ -149,10 +161,6 @@ func MESIParse(input string, config EsiParserConfig) string {
 
 	for index, token := range tokens {
 		go func(id int, token esiToken, wg *sync.WaitGroup, ch chan<- Response, cfg EsiParserConfig) {
-			if semaphore != nil {
-				semaphore <- struct{}{}
-				defer func() { <-semaphore }()
-			}
 			defer wg.Done()
 			res := Response{"", id}
 			if !token.isEsi() {

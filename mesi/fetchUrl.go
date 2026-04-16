@@ -97,6 +97,11 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		ctx = context.Background()
 	}
 
+	if semaphore := config.getSemaphore(); semaphore != nil {
+		semaphore <- struct{}{}
+		defer func() { <-semaphore }()
+	}
+
 	if config.Timeout <= 0 {
 		return "", false, errors.New("exceeded time budget")
 	}
