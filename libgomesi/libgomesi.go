@@ -18,7 +18,11 @@ import (
 //	FreeString(result);
 func ParseDefault(input *C.char) *C.char {
 	goInput := C.GoString(input)
-	result := mesi.Parse(goInput, 5, "http://127.0.0.1/")
+	config := mesi.EsiParserConfig{
+		DefaultUrl: "http://127.0.0.1/",
+		MaxDepth:   5,
+	}
+	result := mesi.MESIParse(goInput, config)
 	return C.CString(result)
 }
 
@@ -40,7 +44,11 @@ func Parse(input *C.char, maxDepth C.int, defaultUrl *C.char) *C.char {
 	goInput := C.GoString(input)
 	goMaxDepth := int(maxDepth)
 	goDefaultUrl := C.GoString(defaultUrl)
-	result := mesi.Parse(goInput, goMaxDepth, goDefaultUrl)
+	config := mesi.EsiParserConfig{
+		DefaultUrl: goDefaultUrl,
+		MaxDepth:   uint(goMaxDepth),
+	}
+	result := mesi.MESIParse(goInput, config)
 	return C.CString(result)
 }
 
