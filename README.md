@@ -16,6 +16,7 @@
 - **Concurrent fetch** - You need ultra performance - set `fetch-mode="concurrent"` to always fetch content from the fastest source.
 - **esi:include timeout** - Timeout can be set both globally and specifically for a selected `esi:include` tag. In combination with fallback content, you can easily manage the page generation time.
 - **Fallback content** - Set the content to be displayed if remote content download fails.
+- **SSRF Protection** – Built-in protection against Server-Side Request Forgery attacks with private IP blocking and optional host whitelisting.
 ## ESI Parser Configuration
 This document describes the configuration structure for the mESI parser.
 
@@ -24,10 +25,12 @@ The parser configuration is defined using the following structure:
 
 ```go
 type EsiParserConfig struct {
-  DefaultUrl    string
-  MaxDepth      uint
-  Timeout       time.Duration
-  ParseOnHeader bool
+  DefaultUrl     string
+  MaxDepth       uint
+  Timeout        time.Duration
+  ParseOnHeader  bool
+  AllowedHosts   []string
+  BlockPrivateIPs bool
 }
 ```
 ### Configuration Parameters
@@ -60,6 +63,22 @@ _NOTE:_
 **ParseOnHeader**
 
 If set to true, then server responses will process ESI tags only when the response contains the `Edge-control: dca=esi` header
+
+**BlockPrivateIPs**
+
+Protects against Server-Side Request Forgery (SSRF) attacks by blocking requests to private and reserved IP addresses. When enabled (default: `true`), the parser will reject ESI includes that resolve to:
+
+- Private networks: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
+- Loopback: `127.0.0.0/8`, `localhost`
+- Link-local: `169.254.0.0/16`
+- Unspecified: `0.0.0.0`
+- Multicast: `224.0.0.0/4`, `240.0.0.0/4`
+
+**AllowedHosts**
+
+When set, specifies a whitelist of allowed hostnames for ESI includes. If defined, only requests to matching hosts will be allowed. Supports exact matches and subdomain matching (e.g., `example.com` matches `www.example.com`).
+
+This is useful when you want to restrict ESI includes to a specific set of trusted domains while still blocking private IP ranges.
 
 **fetch-mode** - `esi:include` tag only
 

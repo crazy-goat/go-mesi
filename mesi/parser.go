@@ -14,18 +14,21 @@ type Response struct {
 }
 
 type EsiParserConfig struct {
-	DefaultUrl    string
-	MaxDepth      uint
-	Timeout       time.Duration
-	ParseOnHeader bool
+	DefaultUrl      string
+	MaxDepth        uint
+	Timeout         time.Duration
+	ParseOnHeader   bool
+	AllowedHosts    []string
+	BlockPrivateIPs bool
 }
 
 func CreateDefaultConfig() EsiParserConfig {
 	return EsiParserConfig{
-		DefaultUrl:    "http://127.0.0.1/",
-		MaxDepth:      5,
-		Timeout:       10 * time.Second,
-		ParseOnHeader: false,
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        5,
+		Timeout:         10 * time.Second,
+		ParseOnHeader:   false,
+		BlockPrivateIPs: true,
 	}
 }
 
@@ -84,9 +87,10 @@ func (c EsiParserConfig) OverrideConfig(token esiIncludeToken) EsiParserConfig {
 // Deprecated: FunctionName is deprecated, please use mEsiParse
 func Parse(input string, maxDepth int, defaultUrl string) string {
 	config := EsiParserConfig{
-		DefaultUrl: defaultUrl,
-		MaxDepth:   uint(maxDepth),
-		Timeout:    10 * time.Second, // default value 5 sec
+		DefaultUrl:      defaultUrl,
+		MaxDepth:        uint(maxDepth),
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: true,
 	}
 
 	return MESIParse(input, config)
