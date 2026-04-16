@@ -25,12 +25,13 @@ The parser configuration is defined using the following structure:
 
 ```go
 type EsiParserConfig struct {
-  DefaultUrl     string
-  MaxDepth       uint
-  Timeout        time.Duration
-  ParseOnHeader  bool
-  AllowedHosts   []string
+  DefaultUrl      string
+  MaxDepth        uint
+  Timeout         time.Duration
+  ParseOnHeader   bool
+  AllowedHosts    []string
   BlockPrivateIPs bool
+  MaxResponseSize int64
 }
 ```
 ### Configuration Parameters
@@ -79,6 +80,15 @@ Protects against Server-Side Request Forgery (SSRF) attacks by blocking requests
 When set, specifies a whitelist of allowed hostnames for ESI includes. If defined, only requests to matching hosts will be allowed. Supports exact matches and subdomain matching (e.g., `example.com` matches `www.example.com`).
 
 This is useful when you want to restrict ESI includes to a specific set of trusted domains while still blocking private IP ranges.
+
+**MaxResponseSize**
+
+Sets the maximum allowed size for HTTP response bodies (in bytes) when fetching ESI includes. Helps prevent OOM attacks from malicious or compromised upstream servers returning arbitrarily large responses.
+
+- Default: `10 * 1024 * 1024` (10 MB)
+- Set to `0` for unlimited (backward compatible)
+
+When a response exceeds the limit, an error is returned with the message: `response body exceeds maximum allowed size of X bytes`
 
 **fetch-mode** - `esi:include` tag only
 

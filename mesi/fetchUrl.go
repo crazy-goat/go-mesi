@@ -3,6 +3,7 @@ package mesi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -132,15 +133,30 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	content, err := client.Do(req)
 	if err != nil {
 		return "", false, err
-	} else {
-		data, err := io.ReadAll(content.Body)
+	}
+	defer func() { _ = content.Body.Close() }()
+
+	var dataBytes []byte
+	if config.MaxResponseSize > 0 {
+		// Use LimitReader to cap response size
+		limitedReader := io.LimitReader(content.Body, config.MaxResponseSize+1)
+		dataBytes, err = io.ReadAll(limitedReader)
 		if err != nil {
 			return "", false, err
 		}
-
-		if content.StatusCode >= 400 {
-			return "", false, errors.New("upstream returned status " + strconv.Itoa(content.StatusCode))
+		if int64(len(dataBytes)) > config.MaxResponseSize {
+			return "", false, fmt.Errorf("response body exceeds maximum allowed size of %d bytes", config.MaxResponseSize)
 		}
-		return string(data), IsEsiResponse(content), nil
+	} else {
+		// No limit - backward compatibility
+		dataBytes, err = io.ReadAll(content.Body)
+		if err != nil {
+			return "", false, err
+		}
 	}
+
+	if content.StatusCode >= 400 {
+		return "", false, errors.New("upstream returned status " + strconv.Itoa(content.StatusCode))
+	}
+	return string(dataBytes), IsEsiResponse(content), nil
 }

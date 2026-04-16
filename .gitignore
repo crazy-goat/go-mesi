@@ -48,3 +48,11 @@ tests/tests
 /debian/libgomesi/
 /debian/libgomesi-dev/
 /servers/frankenphp/frankenphp
+
+# Agent skills and specs (local development)
+.agents/
+docs/superpowers/
+skills-lock.json
+
+# Manual test files
+libgomesi/test-libgomesi.c.manual
