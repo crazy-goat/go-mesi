@@ -120,6 +120,9 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	} else {
 		client = &http.Client{Timeout: config.Timeout}
 	}
+	// Note: When HTTPClient is provided, callers are responsible for setting
+	// appropriate timeouts on the client. The config.Timeout field is only
+	// applied when using the default per-request client.
 
 	var urlToFetch string
 	if parsed.Scheme == "" {

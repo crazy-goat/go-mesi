@@ -119,6 +119,7 @@ func TestMaxConcurrentRequestsZeroMeansUnlimited(t *testing.T) {
 
 func TestSharedHTTPClientIsUsed(t *testing.T) {
 	var clientCount int64
+	var transportCalls int64
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&clientCount, 1)
@@ -127,8 +128,9 @@ func TestSharedHTTPClientIsUsed(t *testing.T) {
 	}))
 	defer server.Close()
 
+	customTransport := &customTransport{rt: http.DefaultTransport, calls: &transportCalls}
 	config := CreateDefaultConfig()
-	config.HTTPClient = &http.Client{}
+	config.HTTPClient = &http.Client{Transport: customTransport}
 	config.DefaultUrl = server.URL + "/"
 	config.MaxDepth = 1
 	config.BlockPrivateIPs = false
@@ -139,5 +141,43 @@ func TestSharedHTTPClientIsUsed(t *testing.T) {
 
 	if atomic.LoadInt64(&clientCount) != 3 {
 		t.Errorf("HTTP client used %d times, expected 3 (shared client)", atomic.LoadInt64(&clientCount))
+	}
+	if atomic.LoadInt64(&transportCalls) != 3 {
+		t.Errorf("Transport used %d times, expected 3 (same client instance)", atomic.LoadInt64(&transportCalls))
+	}
+}
+
+type customTransport struct {
+	rt    http.RoundTripper
+	calls *int64
+}
+
+func (ct *customTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	atomic.AddInt64(ct.calls, 1)
+	return ct.rt.RoundTrip(r)
+}
+
+func TestNilHTTPClientFallsBackToDefault(t *testing.T) {
+	var requestCount int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&requestCount, 1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("content"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.HTTPClient = nil
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	input := `<!--esi <esi:include src="` + server.URL + `/1"/>-->`
+
+	MESIParse(input, config)
+
+	if atomic.LoadInt64(&requestCount) != 1 {
+		t.Errorf("Request count = %d, expected 1", atomic.LoadInt64(&requestCount))
 	}
 }
