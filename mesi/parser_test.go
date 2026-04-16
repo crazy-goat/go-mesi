@@ -1,6 +1,12 @@
 package mesi
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 func TestParse(t *testing.T) {
 	cases := []struct {
@@ -40,5 +46,73 @@ func TestParse(t *testing.T) {
 				t.Errorf("Parse() = %q, want %q", result, c.expected)
 			}
 		})
+	}
+}
+
+func TestMaxConcurrentRequestsLimitsConcurrency(t *testing.T) {
+	var maxConcurrent int64
+	var current atomic.Int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inc := current.Add(1)
+		old := atomic.LoadInt64(&maxConcurrent)
+		if inc > old {
+			atomic.CompareAndSwapInt64(&maxConcurrent, old, inc)
+		}
+
+		time.Sleep(50 * time.Millisecond)
+
+		current.Add(-1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("content"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxConcurrentRequests = 2
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	input := `<!--esi <esi:include src="` + server.URL + `/1"/>--><!--esi <esi:include src="` + server.URL + `/2"/>--><!--esi <esi:include src="` + server.URL + `/3"/>--><!--esi <esi:include src="` + server.URL + `/4"/>--><!--esi <esi:include src="` + server.URL + `/5"/>-->`
+
+	MESIParse(input, config)
+
+	if atomic.LoadInt64(&maxConcurrent) > 2 {
+		t.Errorf("Max concurrent = %d, expected <= 2", atomic.LoadInt64(&maxConcurrent))
+	}
+}
+
+func TestMaxConcurrentRequestsZeroMeansUnlimited(t *testing.T) {
+	var maxConcurrent int64
+	var current atomic.Int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inc := current.Add(1)
+		old := atomic.LoadInt64(&maxConcurrent)
+		if inc > old {
+			atomic.CompareAndSwapInt64(&maxConcurrent, old, inc)
+		}
+
+		time.Sleep(20 * time.Millisecond)
+
+		current.Add(-1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("content"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxConcurrentRequests = 0
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	input := `<!--esi <esi:include src="` + server.URL + `/1"/>--><!--esi <esi:include src="` + server.URL + `/2"/>--><!--esi <esi:include src="` + server.URL + `/3"/>-->`
+
+	MESIParse(input, config)
+
+	if atomic.LoadInt64(&maxConcurrent) != 3 {
+		t.Errorf("Max concurrent = %d, expected 3 (unlimited)", atomic.LoadInt64(&maxConcurrent))
 	}
 }

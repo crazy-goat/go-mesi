@@ -15,14 +15,15 @@ type Response struct {
 }
 
 type EsiParserConfig struct {
-	Context         context.Context
-	DefaultUrl      string
-	MaxDepth        uint
-	Timeout         time.Duration
-	ParseOnHeader   bool
-	AllowedHosts    []string
-	BlockPrivateIPs bool
-	MaxResponseSize int64 // 0 = unlimited, default 10MB
+	Context               context.Context
+	DefaultUrl            string
+	MaxDepth              uint
+	Timeout               time.Duration
+	ParseOnHeader         bool
+	AllowedHosts          []string
+	BlockPrivateIPs       bool
+	MaxResponseSize       int64 // 0 = unlimited, default 10MB
+	MaxConcurrentRequests int   // 0 = unlimited (backward compatible)
 }
 
 func (c EsiParserConfig) SetContext(ctx context.Context) EsiParserConfig {
@@ -131,6 +132,14 @@ func MESIParse(input string, config EsiParserConfig) string {
 	tokens := esiTokenizer(processed)
 	ch := make(chan Response, len(tokens))
 	wg.Add(len(tokens))
+
+	var semaphore chan struct{}
+	if config.MaxConcurrentRequests > 0 {
+		semaphore = make(chan struct{}, config.MaxConcurrentRequests)
+	} else if config.MaxConcurrentRequests < 0 {
+		config.MaxConcurrentRequests = 0
+	}
+
 	go func() {
 		wg.Wait()
 		close(ch)
@@ -138,6 +147,10 @@ func MESIParse(input string, config EsiParserConfig) string {
 
 	for index, token := range tokens {
 		go func(id int, token esiToken, wg *sync.WaitGroup, ch chan<- Response, cfg EsiParserConfig) {
+			if semaphore != nil {
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
+			}
 			defer wg.Done()
 			res := Response{"", id}
 			if !token.isEsi() {
