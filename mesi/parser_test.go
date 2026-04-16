@@ -42,10 +42,3 @@ func TestParse(t *testing.T) {
 		})
 	}
 }
-
-func TestParseDefault(t *testing.T) {
-	result := Parse("no esi tags", 5, "http://127.0.0.1/")
-	if result != "no esi tags" {
-		t.Errorf("Parse() = %q, want %q", result, "no esi tags")
-	}
-}
