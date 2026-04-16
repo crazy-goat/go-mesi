@@ -4,7 +4,9 @@ go 1.23.5
 
 require github.com/caddyserver/caddy/v2 v2.9.1
 
-require github.com/crazy-goat/go-mesi v0.4.0
+require github.com/crazy-goat/go-mesi v0.4.1
+
+replace github.com/crazy-goat/go-mesi => ../..
 
 require (
 	dario.cat/mergo v1.0.1 // indirect

@@ -1,10 +1,10 @@
 package traefik
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"github.com/crazy-goat/go-mesi/mesi"
+	"github.com/crazy-goat/go-mesi/middleware"
 	"net/http"
 	"strconv"
 	"strings"
@@ -44,11 +44,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
-	// Create a custom response writer to capture the response
-	customWriter := &responseWriter{
-		ResponseWriter: rw,
-		body:           &bytes.Buffer{},
-	}
+	customWriter := middleware.NewResponseWriter(rw)
 
 	_, ok := req.Header["Surrogate-Capability"]
 	if ok == false {
@@ -62,7 +58,7 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	if strings.HasPrefix(contentType, "text/html") {
 		processedResponse := mesi.Parse(
-			customWriter.body.String(),
+			customWriter.Body().String(),
 			p.config.MaxDepth,
 			req.URL.Scheme+"://"+req.URL.Host,
 		)
@@ -70,7 +66,7 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		for k, v := range customWriter.Header() {
 			rw.Header()[k] = v
 		}
-		rw.WriteHeader(customWriter.statusCode)
+		rw.WriteHeader(customWriter.StatusCode())
 
 		// Write the processed response
 		rw.Write([]byte(processedResponse))
@@ -78,20 +74,5 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	rw.Write(customWriter.body.Bytes())
-}
-
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-	body       *bytes.Buffer
-}
-
-func (rw *responseWriter) Write(b []byte) (int, error) {
-
-	return rw.body.Write(b)
-}
-
-func (rw *responseWriter) WriteHeader(statusCode int) {
-	rw.statusCode = statusCode
+	rw.Write(customWriter.Body().Bytes())
 }

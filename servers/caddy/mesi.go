@@ -1,12 +1,12 @@
 package caddy
 
 import (
-	"bytes"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/crazy-goat/go-mesi/mesi"
+	"github.com/crazy-goat/go-mesi/middleware"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,11 +29,7 @@ func (MesiMiddleware) CaddyModule() caddy.ModuleInfo {
 func (MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	r.Header.Set("Surrogate-Capability", "ESI/1.0")
 
-	customWriter := &responseWriter{
-		ResponseWriter: w,
-		body:           &bytes.Buffer{},
-		statusCode:     http.StatusOK,
-	}
+	customWriter := middleware.NewResponseWriter(w)
 
 	err := next.ServeHTTP(customWriter, r)
 	if err != nil {
@@ -43,7 +39,7 @@ func (MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next cad
 	contentType := customWriter.Header().Get("Content-Type")
 	if strings.HasPrefix(contentType, "text/html") {
 		processedResponse := mesi.Parse(
-			customWriter.body.String(),
+			customWriter.Body().String(),
 			5,
 			r.URL.Scheme+"://"+r.URL.Host,
 		)
@@ -52,25 +48,11 @@ func (MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next cad
 		for k, v := range customWriter.Header() {
 			w.Header()[k] = v
 		}
-		w.WriteHeader(customWriter.statusCode)
+		w.WriteHeader(customWriter.StatusCode())
 		w.Write([]byte(processedResponse))
 	}
 
 	return nil
-}
-
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-	body       *bytes.Buffer
-}
-
-func (rw *responseWriter) Write(b []byte) (int, error) {
-	return rw.body.Write(b)
-}
-
-func (rw *responseWriter) WriteHeader(statusCode int) {
-	rw.statusCode = statusCode
 }
 
 func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
