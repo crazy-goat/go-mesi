@@ -8,6 +8,11 @@ import (
 )
 
 type ResponseWriter struct {
+	// ResponseWriter wraps an http.ResponseWriter to capture the response body.
+	// Note: Write() buffers data internally, so Flush() only works for HTTP/2
+	// compatibility but not for true streaming (SSE, chunked transfer).
+	// For streaming responses, consider bypassing this wrapper or using a
+	// different architecture that writes directly to the underlying writer.
 	http.ResponseWriter
 	statusCode int
 	body       *bytes.Buffer
