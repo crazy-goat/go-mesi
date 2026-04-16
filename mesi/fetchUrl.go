@@ -18,6 +18,10 @@ func IsEsiResponse(response *http.Response) bool {
 	return strings.Contains(header, "dca=esi")
 }
 
+type httpDoer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
 func isURLSafe(requestedURL string, config EsiParserConfig) error {
 	if config.BlockPrivateIPs {
 		parsedURL, err := url.Parse(requestedURL)
@@ -110,9 +114,15 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		return "", false, errors.New("ssrf validation failed: " + err.Error())
 	}
 
-	client := http.Client{
-		Timeout: config.Timeout,
+	var client httpDoer
+	if config.HTTPClient != nil {
+		client = config.HTTPClient
+	} else {
+		client = &http.Client{Timeout: config.Timeout}
 	}
+	// Note: When HTTPClient is provided, callers are responsible for setting
+	// appropriate timeouts on the client. The config.Timeout field is only
+	// applied when using the default per-request client.
 
 	var urlToFetch string
 	if parsed.Scheme == "" {
