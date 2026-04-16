@@ -8,6 +8,18 @@ import (
 	"unsafe"
 )
 
+func defaultValues() (int, string) {
+	return 5, "http://127.0.0.1/"
+}
+
+//export ParseDefault
+func ParseDefault(input *C.char) *C.char {
+	goInput := C.GoString(input)
+	maxDepth, defaultUrl := defaultValues()
+	result := mesi.Parse(goInput, maxDepth, defaultUrl)
+	return C.CString(result)
+}
+
 //export Parse
 func Parse(input *C.char, maxDepth C.int, defaultUrl *C.char) *C.char {
 	goInput := C.GoString(input)
