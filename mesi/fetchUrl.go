@@ -92,15 +92,24 @@ func singleFetchUrl(requestedURL string, config EsiParserConfig) (data string, e
 		Timeout: config.Timeout,
 	}
 
-	url := requestedURL
-	if !strings.HasPrefix(url, "http") && !strings.HasPrefix(url, "https") {
-		if config.DefaultUrl == "" {
-			return "", false, errors.New("default url can't be empty, on relative urls: " + url)
-		}
-		url = strings.TrimRight(config.DefaultUrl, "/") + "/" + strings.TrimLeft(url, "/")
+	parsed, err := url.Parse(requestedURL)
+	if err != nil {
+		return "", false, errors.New("invalid url: " + err.Error())
 	}
 
-	req, err := http.NewRequest("GET", url, nil)
+	var urlToFetch string
+	if parsed.Scheme == "" {
+		if config.DefaultUrl == "" {
+			return "", false, errors.New("default url can't be empty, on relative urls: " + requestedURL)
+		}
+		urlToFetch = strings.TrimRight(config.DefaultUrl, "/") + "/" + strings.TrimLeft(requestedURL, "/")
+	} else if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", false, errors.New("invalid url scheme: " + parsed.Scheme)
+	} else {
+		urlToFetch = requestedURL
+	}
+
+	req, err := http.NewRequest("GET", urlToFetch, nil)
 	if err != nil {
 		return "", false, errors.New("failed to create request: " + err.Error())
 	}
