@@ -84,6 +84,15 @@ func singleFetchUrl(requestedURL string, config EsiParserConfig) (data string, e
 		return "", false, errors.New("exceeded time budget")
 	}
 
+	parsed, err := url.Parse(requestedURL)
+	if err != nil {
+		return "", false, errors.New("invalid url: " + err.Error())
+	}
+
+	if parsed.Scheme != "" && parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", false, errors.New("invalid url scheme: " + parsed.Scheme)
+	}
+
 	if err := isURLSafe(requestedURL, config); err != nil {
 		return "", false, errors.New("ssrf validation failed: " + err.Error())
 	}
@@ -92,19 +101,12 @@ func singleFetchUrl(requestedURL string, config EsiParserConfig) (data string, e
 		Timeout: config.Timeout,
 	}
 
-	parsed, err := url.Parse(requestedURL)
-	if err != nil {
-		return "", false, errors.New("invalid url: " + err.Error())
-	}
-
 	var urlToFetch string
 	if parsed.Scheme == "" {
 		if config.DefaultUrl == "" {
 			return "", false, errors.New("default url can't be empty, on relative urls: " + requestedURL)
 		}
 		urlToFetch = strings.TrimRight(config.DefaultUrl, "/") + "/" + strings.TrimLeft(requestedURL, "/")
-	} else if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", false, errors.New("invalid url scheme: " + parsed.Scheme)
 	} else {
 		urlToFetch = requestedURL
 	}
