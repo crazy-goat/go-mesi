@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -125,6 +126,39 @@ func TestSingleFetchUrlWithServer(t *testing.T) {
 		_, _, err := singleFetchUrl(server.URL+"/notexist", config)
 		if err == nil {
 			t.Errorf("expected error for 404")
+		}
+	})
+
+	t.Run("error message does not leak response body", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			statusCode int
+			body       string
+		}{
+			{"500 internal error", http.StatusInternalServerError, "INTERNAL_ERROR_SECRET_DATA"},
+			{"404 not found", http.StatusNotFound, "SECRET_NOT_FOUND_DETAILS"},
+			{"403 forbidden", http.StatusForbidden, "SECRET_FORBIDDEN_REASON"},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(tt.statusCode)
+					_, _ = w.Write([]byte(tt.body))
+				}))
+				defer server.Close()
+
+				_, _, err := singleFetchUrl(server.URL+"/secret", config)
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if strings.Contains(err.Error(), tt.body) {
+					t.Errorf("error message leaks response body: %q", err.Error())
+				}
+				if !strings.Contains(err.Error(), strconv.Itoa(tt.statusCode)) {
+					t.Errorf("error message should contain status code: %q", err.Error())
+				}
+			})
 		}
 	})
 }
