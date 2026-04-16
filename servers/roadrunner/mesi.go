@@ -19,22 +19,6 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
-func getScheme(r *http.Request) string {
-	if r.TLS != nil {
-		return "https"
-	}
-	return "http"
-}
-
-func getDefaultUrl(r *http.Request) string {
-	scheme := getScheme(r)
-	host := r.Host
-	if host == "" {
-		host = "localhost"
-	}
-	return scheme + "://" + host
-}
-
 func (p *Plugin) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Surrogate-Capability", "ESI/1.0")
@@ -48,7 +32,7 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 			config := mesi.EsiParserConfig{
 				Context:         r.Context(),
 				MaxDepth:        5,
-				DefaultUrl:      getDefaultUrl(r),
+				DefaultUrl:      middleware.GetDefaultUrl(r),
 				Timeout:         10 * time.Second,
 				BlockPrivateIPs: true,
 			}

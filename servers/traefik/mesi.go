@@ -44,22 +44,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}, nil
 }
 
-func getScheme(r *http.Request) string {
-	if r.TLS != nil {
-		return "https"
-	}
-	return "http"
-}
-
-func getDefaultUrl(r *http.Request) string {
-	scheme := getScheme(r)
-	host := r.Host
-	if host == "" {
-		host = "localhost"
-	}
-	return scheme + "://" + host
-}
-
 func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	customWriter := middleware.NewResponseWriter(rw)
@@ -77,7 +61,7 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		config := mesi.EsiParserConfig{
 			Context:         req.Context(),
 			MaxDepth:        uint(p.config.MaxDepth),
-			DefaultUrl:      getDefaultUrl(req),
+			DefaultUrl:      middleware.GetDefaultUrl(req),
 			Timeout:         10 * time.Second,
 			BlockPrivateIPs: true,
 		}

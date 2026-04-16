@@ -92,7 +92,7 @@ func (c EsiParserConfig) OverrideConfig(token esiIncludeToken) EsiParserConfig {
 	return c
 }
 
-func handleContextCancellation(results []Response, result strings.Builder) string {
+func assembleResults(results []Response, result strings.Builder) string {
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].index < results[j].index
 	})
@@ -162,26 +162,18 @@ func MESIParse(input string, config EsiParserConfig) string {
 	}
 
 	var results []Response
+ResultLoop:
 	for {
 		select {
 		case <-config.Context.Done():
-			return handleContextCancellation(results, result)
+			return assembleResults(results, result)
 		case res, ok := <-ch:
 			if !ok {
-				goto done
+				break ResultLoop
 			}
 			results = append(results, res)
 		}
 	}
-done:
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].index < results[j].index
-	})
-
-	for _, res := range results {
-		result.WriteString(res.content)
-	}
-
-	return result.String()
+	return assembleResults(results, result)
 }

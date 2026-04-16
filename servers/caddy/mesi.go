@@ -21,22 +21,6 @@ func init() {
 
 type MesiMiddleware struct{}
 
-func getScheme(r *http.Request) string {
-	if r.TLS != nil {
-		return "https"
-	}
-	return "http"
-}
-
-func getDefaultUrl(r *http.Request) string {
-	scheme := getScheme(r)
-	host := r.Host
-	if host == "" {
-		host = "localhost"
-	}
-	return scheme + "://" + host
-}
-
 func (MesiMiddleware) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.mesi",
@@ -59,7 +43,7 @@ func (MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next cad
 		config := mesi.EsiParserConfig{
 			Context:         r.Context(),
 			MaxDepth:        5,
-			DefaultUrl:      getDefaultUrl(r),
+			DefaultUrl:      middleware.GetDefaultUrl(r),
 			Timeout:         10 * time.Second,
 			BlockPrivateIPs: true,
 		}
