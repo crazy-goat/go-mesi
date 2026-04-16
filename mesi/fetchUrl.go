@@ -139,7 +139,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		}
 
 		if content.StatusCode >= 400 {
-			return "", false, errors.New(strconv.Itoa(content.StatusCode) + ": " + string(data))
+			return "", false, errors.New("upstream returned status " + strconv.Itoa(content.StatusCode))
 		}
 		return string(data), IsEsiResponse(content), nil
 	}
