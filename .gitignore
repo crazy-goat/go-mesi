@@ -27,6 +27,7 @@ go.work.sum
 
 # Compiled binaries
 cli/cli
+tests/tests
 
 .idea
 /servers/test-server/example-server
