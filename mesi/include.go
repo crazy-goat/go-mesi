@@ -98,41 +98,39 @@ func (ratio abRatio) selectUrl(token *esiIncludeToken) string {
 }
 
 func fetchAB(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
-	return singleFetchUrl(token.parseAB().selectUrl(token), config)
+	return singleFetchUrlWithContext(token.parseAB().selectUrl(token), config, config.Context)
 }
 
 func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
-	url1 := token.Src
-	url2 := token.Alt
-
-	if url2 == "" {
-		url2 = token.Src
+	if token.Alt == "" {
+		return singleFetchUrlWithContext(token.Src, config, config.Context)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if config.Context != nil {
+		ctx, cancel = context.WithCancel(config.Context)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
 	defer cancel()
-	resultChan := make(chan esiResponse)
+
+	resultChan := make(chan esiResponse, 2)
+	doneChan := make(chan struct{})
 
 	runTask := func(url string) {
+		data, isEsiResponse, err := singleFetchUrlWithContext(url, config, ctx)
 		select {
-		case <-ctx.Done():
-			return
-		default:
-			data, isEsiResponse, err := singleFetchUrl(url, config)
-			select {
-			case resultChan <- esiResponse{Data: data, IsEsiResponse: isEsiResponse, Error: err}:
-			case <-ctx.Done():
-				return
-			}
+		case resultChan <- esiResponse{Data: data, IsEsiResponse: isEsiResponse, Error: err}:
+		case <-doneChan:
 		}
 	}
 
-	go runTask(url1)
-	go runTask(url2)
+	go runTask(token.Src)
+	go runTask(token.Alt)
 
 	result := <-resultChan
-	cancel()
-	close(resultChan)
+	close(doneChan)
 
 	return result.Data, result.IsEsiResponse, result.Error
 }
@@ -143,9 +141,9 @@ func fetchFallback(token *esiIncludeToken, config EsiParserConfig) (string, bool
 	var err error
 	var isEsiResponse bool
 
-	data, isEsiResponse, err = singleFetchUrl(token.Src, config)
+	data, isEsiResponse, err = singleFetchUrlWithContext(token.Src, config, config.Context)
 	if err != nil && token.Alt != "" {
-		return singleFetchUrl(token.Alt, config.WithElapsedTime(time.Since(start)))
+		return singleFetchUrlWithContext(token.Alt, config.WithElapsedTime(time.Since(start)), config.Context)
 	}
 
 	return data, isEsiResponse, err

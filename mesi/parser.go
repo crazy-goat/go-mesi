@@ -1,6 +1,7 @@
 package mesi
 
 import (
+	"context"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ type Response struct {
 }
 
 type EsiParserConfig struct {
+	Context         context.Context
 	DefaultUrl      string
 	MaxDepth        uint
 	Timeout         time.Duration
@@ -22,8 +24,14 @@ type EsiParserConfig struct {
 	BlockPrivateIPs bool
 }
 
+func (c EsiParserConfig) SetContext(ctx context.Context) EsiParserConfig {
+	c.Context = ctx
+	return c
+}
+
 func CreateDefaultConfig() EsiParserConfig {
 	return EsiParserConfig{
+		Context:         context.Background(),
 		DefaultUrl:      "http://127.0.0.1/",
 		MaxDepth:        5,
 		Timeout:         10 * time.Second,
@@ -84,9 +92,22 @@ func (c EsiParserConfig) OverrideConfig(token esiIncludeToken) EsiParserConfig {
 	return c
 }
 
+func assembleResults(results []Response, result strings.Builder) string {
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].index < results[j].index
+	})
+
+	for _, res := range results {
+		result.WriteString(res.content)
+	}
+
+	return result.String()
+}
+
 // Deprecated: FunctionName is deprecated, please use mEsiParse
 func Parse(input string, maxDepth int, defaultUrl string) string {
 	config := EsiParserConfig{
+		Context:         context.Background(),
 		DefaultUrl:      defaultUrl,
 		MaxDepth:        uint(maxDepth),
 		Timeout:         10 * time.Second,
@@ -97,13 +118,16 @@ func Parse(input string, maxDepth int, defaultUrl string) string {
 }
 
 func MESIParse(input string, config EsiParserConfig) string {
+	if config.Context == nil {
+		config.Context = context.Background()
+	}
 	start := time.Now()
 	var wg sync.WaitGroup
 
 	var result strings.Builder
 	processed := unescape(input)
 	tokens := esiTokenizer(processed)
-	ch := make(chan Response)
+	ch := make(chan Response, len(tokens))
 	wg.Add(len(tokens))
 	go func() {
 		wg.Wait()
@@ -111,7 +135,7 @@ func MESIParse(input string, config EsiParserConfig) string {
 	}()
 
 	for index, token := range tokens {
-		go func(id int, token esiToken, wg *sync.WaitGroup, ch chan<- Response) {
+		go func(id int, token esiToken, wg *sync.WaitGroup, ch chan<- Response, cfg EsiParserConfig) {
 			defer wg.Done()
 			res := Response{"", id}
 			if !token.isEsi() {
@@ -123,10 +147,10 @@ func MESIParse(input string, config EsiParserConfig) string {
 					ch <- res
 					return
 				}
-				newConfig := config.OverrideConfig(include).WithElapsedTime(time.Since(start))
+				newConfig := cfg.OverrideConfig(include).WithElapsedTime(time.Since(start))
 				content, isEsiResponse := include.toString(newConfig)
 
-				if config.CanGoDeeper(time.Since(start)) && (isEsiResponse || !newConfig.ParseOnHeader) {
+				if cfg.CanGoDeeper(time.Since(start)) && (isEsiResponse || !newConfig.ParseOnHeader) {
 					content = MESIParse(content, newConfig.DecreaseMaxDepth().WithElapsedTime(time.Since(start)))
 				}
 
@@ -134,21 +158,22 @@ func MESIParse(input string, config EsiParserConfig) string {
 			}
 
 			ch <- res
-		}(index, token, &wg, ch)
+		}(index, token, &wg, ch, config)
 	}
 
 	var results []Response
-	for res := range ch {
-		results = append(results, res)
+ResultLoop:
+	for {
+		select {
+		case <-config.Context.Done():
+			return assembleResults(results, result)
+		case res, ok := <-ch:
+			if !ok {
+				break ResultLoop
+			}
+			results = append(results, res)
+		}
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].index < results[j].index
-	})
-
-	for _, res := range results {
-		result.WriteString(res.content)
-	}
-
-	return result.String()
+	return assembleResults(results, result)
 }

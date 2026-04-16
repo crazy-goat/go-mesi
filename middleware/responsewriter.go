@@ -34,3 +34,19 @@ func (rw *ResponseWriter) StatusCode() int {
 func (rw *ResponseWriter) Body() *bytes.Buffer {
 	return rw.body
 }
+
+func GetScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func GetDefaultUrl(r *http.Request) string {
+	scheme := GetScheme(r)
+	host := r.Host
+	if host == "" {
+		host = "localhost"
+	}
+	return scheme + "://" + host
+}
