@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -65,6 +66,7 @@ func main() {
 		start := time.Now()
 
 		result := mesi.MESIParse(string(testData), mesi.EsiParserConfig{
+			Context:       context.Background(),
 			DefaultUrl:    "http://127.0.0.1:8080",
 			MaxDepth:      5,
 			ParseOnHeader: true,

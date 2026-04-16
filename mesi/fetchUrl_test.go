@@ -1,8 +1,10 @@
 package mesi
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -186,4 +188,171 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestSingleFetchUrlWithContextCancellation(t *testing.T) {
+	requestReceived := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestReceived)
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(5 * time.Second):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("SHOULD NOT SEE THIS"))
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	config := EsiParserConfig{
+		Context:         ctx,
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	go func() {
+		<-requestReceived
+		cancel()
+	}()
+
+	_, _, err := singleFetchUrl(server.URL+"/slow", config)
+
+	if err == nil {
+		t.Error("expected context cancelled error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "context") {
+		t.Errorf("expected error containing 'context', got: %v", err)
+	}
+}
+
+func TestSingleFetchUrlWithContextTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("DONE"))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	config := EsiParserConfig{
+		Context:         ctx,
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	_, _, err := singleFetchUrl(server.URL+"/slow", config)
+
+	if err == nil {
+		t.Error("expected timeout error, got nil")
+	}
+}
+
+func TestSingleFetchUrlWithNilContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		Context:         nil,
+		DefaultUrl:      server.URL,
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	data, _, err := singleFetchUrl(server.URL+"/ok", config)
+	if err != nil {
+		t.Errorf("unexpected error with nil context: %v", err)
+	}
+	if data != "OK" {
+		t.Errorf("expected 'OK', got %q", data)
+	}
+}
+
+func TestMESIParseContextPropagation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(5 * time.Second):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("SLOW_RESPONSE"))
+		}
+	}))
+	defer server.Close()
+
+	html := `<html><body><esi:include src="` + server.URL + `/slow"/></body></html>`
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	config := EsiParserConfig{
+		Context:         ctx,
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        5,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	cancel()
+
+	start := time.Now()
+	result := MESIParse(html, config)
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Errorf("MESIParse took too long (%v) - context not propagated properly", elapsed)
+	}
+
+	if result == "" {
+		t.Log("result is empty (expected with cancelled context)")
+	}
+}
+
+func TestMESIParseContextCancellationStopsAllGoroutines(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(5 * time.Second):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("SLOW"))
+		}
+	}))
+	defer server.Close()
+
+	html := `<html><body><esi:include src="` + server.URL + `/slow"/><esi:include src="` + server.URL + `/slow"/></body></html>`
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	config := EsiParserConfig{
+		Context:         ctx,
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        5,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	cancel()
+
+	start := time.Now()
+	result := MESIParse(html, config)
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Errorf("MESIParse took too long (%v) with cancelled context", elapsed)
+	}
+
+	_ = result
 }

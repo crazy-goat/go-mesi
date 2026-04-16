@@ -1,15 +1,17 @@
 package caddy
 
 import (
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/crazy-goat/go-mesi/mesi"
 	"github.com/crazy-goat/go-mesi/middleware"
-	"net/http"
-	"strconv"
-	"strings"
 )
 
 func init() {
@@ -18,6 +20,22 @@ func init() {
 }
 
 type MesiMiddleware struct{}
+
+func getScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func getDefaultUrl(r *http.Request) string {
+	scheme := getScheme(r)
+	host := r.Host
+	if host == "" {
+		host = "localhost"
+	}
+	return scheme + "://" + host
+}
 
 func (MesiMiddleware) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
@@ -38,10 +56,16 @@ func (MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next cad
 
 	contentType := customWriter.Header().Get("Content-Type")
 	if strings.HasPrefix(contentType, "text/html") {
-		processedResponse := mesi.Parse(
+		config := mesi.EsiParserConfig{
+			Context:         r.Context(),
+			MaxDepth:        5,
+			DefaultUrl:      getDefaultUrl(r),
+			Timeout:         10 * time.Second,
+			BlockPrivateIPs: true,
+		}
+		processedResponse := mesi.MESIParse(
 			customWriter.Body().String(),
-			5,
-			r.URL.Scheme+"://"+r.URL.Host,
+			config,
 		)
 
 		w.Header().Set("Content-Length", strconv.Itoa(len(processedResponse)))
