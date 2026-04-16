@@ -52,7 +52,7 @@ func TestSingleFetchUrlSchemeValidation(t *testing.T) {
 func TestSingleFetchUrlRelativeUrl(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(r.URL.Path))
+		_, _ = w.Write([]byte(r.URL.Path))
 	}))
 	defer server.Close()
 
@@ -73,14 +73,14 @@ func TestSingleFetchUrlWithServer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/ok" {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
+			_, _ = w.Write([]byte("OK"))
 		} else if r.URL.Path == "/esi" {
 			w.Header().Set("Edge-control", "dca=esi")
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("ESI_CONTENT"))
+			_, _ = w.Write([]byte("ESI_CONTENT"))
 		} else {
 			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte("NOT_FOUND"))
+			_, _ = w.Write([]byte("NOT_FOUND"))
 		}
 	}))
 	defer server.Close()
@@ -157,7 +157,7 @@ func TestSingleFetchUrlEdgeCases(t *testing.T) {
 	t.Run("backslash in relative URL", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(r.URL.Path))
+			_, _ = w.Write([]byte(r.URL.Path))
 		}))
 		defer server.Close()
 
