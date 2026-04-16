@@ -1,8 +1,8 @@
 package roadrunner
 
 import (
-	"bytes"
 	"github.com/crazy-goat/go-mesi/mesi"
+	"github.com/crazy-goat/go-mesi/middleware"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,17 +21,14 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Surrogate-Capability", "ESI/1.0")
 
-		customWriter := &responseWriter{
-			ResponseWriter: w,
-			body:           &bytes.Buffer{},
-		}
+		customWriter := middleware.NewResponseWriter(w)
 
 		next.ServeHTTP(customWriter, r)
 
 		contentType := customWriter.Header().Get("Content-Type")
 		if strings.HasPrefix(contentType, "text/html") {
 			processedResponse := mesi.Parse(
-				customWriter.body.String(),
+				customWriter.Body().String(),
 				5,
 				r.URL.Scheme+"://"+r.URL.Host,
 			)
@@ -40,7 +37,7 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 			for k, v := range customWriter.Header() {
 				w.Header()[k] = v
 			}
-			w.WriteHeader(customWriter.statusCode)
+			w.WriteHeader(customWriter.StatusCode())
 			w.Write([]byte(processedResponse))
 		}
 	})
@@ -48,19 +45,4 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 
 func (p *Plugin) Name() string {
 	return PluginName
-}
-
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-	body       *bytes.Buffer
-}
-
-func (rw *responseWriter) Write(b []byte) (int, error) {
-
-	return rw.body.Write(b)
-}
-
-func (rw *responseWriter) WriteHeader(statusCode int) {
-	rw.statusCode = statusCode
 }
