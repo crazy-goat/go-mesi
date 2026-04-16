@@ -1,11 +1,13 @@
 package roadrunner
 
 import (
-	"github.com/crazy-goat/go-mesi/mesi"
-	"github.com/crazy-goat/go-mesi/middleware"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/crazy-goat/go-mesi/mesi"
+	"github.com/crazy-goat/go-mesi/middleware"
 )
 
 const PluginName = "mesi"
@@ -27,10 +29,16 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 
 		contentType := customWriter.Header().Get("Content-Type")
 		if strings.HasPrefix(contentType, "text/html") {
-			processedResponse := mesi.Parse(
+			config := mesi.EsiParserConfig{
+				Context:         r.Context(),
+				MaxDepth:        5,
+				DefaultUrl:      middleware.GetDefaultUrl(r),
+				Timeout:         10 * time.Second,
+				BlockPrivateIPs: true,
+			}
+			processedResponse := mesi.MESIParse(
 				customWriter.Body().String(),
-				5,
-				r.URL.Scheme+"://"+r.URL.Host,
+				config,
 			)
 
 			w.Header().Set("Content-Length", strconv.Itoa(len(processedResponse)))

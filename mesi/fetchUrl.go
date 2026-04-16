@@ -1,6 +1,7 @@
 package mesi
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -79,7 +80,18 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
 }
 
+// Deprecated: singleFetchUrl does not support context propagation.
+// Use singleFetchUrlWithContext instead for proper cancellation support.
 func singleFetchUrl(requestedURL string, config EsiParserConfig) (data string, esiResponse bool, err error) {
+	return singleFetchUrlWithContext(requestedURL, config, config.Context)
+}
+
+// singleFetchUrlWithContext fetches a URL with context support for proper cancellation.
+func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx context.Context) (data string, esiResponse bool, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	if config.Timeout <= 0 {
 		return "", false, errors.New("exceeded time budget")
 	}
@@ -111,7 +123,7 @@ func singleFetchUrl(requestedURL string, config EsiParserConfig) (data string, e
 		urlToFetch = requestedURL
 	}
 
-	req, err := http.NewRequest("GET", urlToFetch, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", urlToFetch, nil)
 	if err != nil {
 		return "", false, errors.New("failed to create request: " + err.Error())
 	}

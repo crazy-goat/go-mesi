@@ -98,7 +98,7 @@ func (ratio abRatio) selectUrl(token *esiIncludeToken) string {
 }
 
 func fetchAB(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
-	return singleFetchUrl(token.parseAB().selectUrl(token), config)
+	return singleFetchUrlWithContext(token.parseAB().selectUrl(token), config, config.Context)
 }
 
 func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
@@ -110,6 +110,9 @@ func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bo
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	if config.Context != nil {
+		ctx, cancel = context.WithCancel(config.Context)
+	}
 	defer cancel()
 	resultChan := make(chan esiResponse)
 
@@ -118,7 +121,7 @@ func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bo
 		case <-ctx.Done():
 			return
 		default:
-			data, isEsiResponse, err := singleFetchUrl(url, config)
+			data, isEsiResponse, err := singleFetchUrlWithContext(url, config, ctx)
 			select {
 			case resultChan <- esiResponse{Data: data, IsEsiResponse: isEsiResponse, Error: err}:
 			case <-ctx.Done():
@@ -143,9 +146,9 @@ func fetchFallback(token *esiIncludeToken, config EsiParserConfig) (string, bool
 	var err error
 	var isEsiResponse bool
 
-	data, isEsiResponse, err = singleFetchUrl(token.Src, config)
+	data, isEsiResponse, err = singleFetchUrlWithContext(token.Src, config, config.Context)
 	if err != nil && token.Alt != "" {
-		return singleFetchUrl(token.Alt, config.WithElapsedTime(time.Since(start)))
+		return singleFetchUrlWithContext(token.Alt, config.WithElapsedTime(time.Since(start)), config.Context)
 	}
 
 	return data, isEsiResponse, err
