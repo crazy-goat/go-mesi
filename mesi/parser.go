@@ -22,6 +22,7 @@ type EsiParserConfig struct {
 	ParseOnHeader   bool
 	AllowedHosts    []string
 	BlockPrivateIPs bool
+	MaxResponseSize int64 // 0 = unlimited, default 10MB
 }
 
 func (c EsiParserConfig) SetContext(ctx context.Context) EsiParserConfig {
@@ -37,6 +38,7 @@ func CreateDefaultConfig() EsiParserConfig {
 		Timeout:         10 * time.Second,
 		ParseOnHeader:   false,
 		BlockPrivateIPs: true,
+		MaxResponseSize: 10 * 1024 * 1024, // 10MB default
 	}
 }
 
