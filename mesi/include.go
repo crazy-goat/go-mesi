@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
-	"math/rand"
+	"math/rand/v2"
 	"strconv"
 	"strings"
 	"time"
@@ -89,9 +89,9 @@ func (ratio abRatio) selectUrl(token *esiIncludeToken) string {
 		return token.Src
 	}
 
-	randomValue := uint(rand.Intn(int(sum)))
+	randomValue := rand.IntN(int(sum))
 
-	if randomValue < ratio.A {
+	if randomValue < int(ratio.A) {
 		return token.Src
 	}
 	return token.Alt
