@@ -19,7 +19,7 @@ func unescape(input string) string {
 
 		end := strings.Index(input[start:], "-->")
 		if end == -1 {
-			result.WriteString(input[pos:])
+			result.WriteString(input[start:])
 			return result.String()
 		}
 		end += start + 3
