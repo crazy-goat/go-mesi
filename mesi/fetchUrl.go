@@ -28,7 +28,7 @@ func isURLSafe(requestedURL string, config EsiParserConfig) error {
 			return errors.New("url has no host")
 		}
 
-		if config.AllowedHosts != nil && len(config.AllowedHosts) > 0 {
+		if len(config.AllowedHosts) > 0 {
 			allowed := false
 			for _, allowedHost := range config.AllowedHosts {
 				if host == allowedHost || strings.HasSuffix(host, "."+allowedHost) {
