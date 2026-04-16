@@ -26,7 +26,8 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
-          args: --only-new-issues=false ./mesi/...
+          only-new-issues: false
+          args: ./mesi/...
 
   test:
     name: Test
