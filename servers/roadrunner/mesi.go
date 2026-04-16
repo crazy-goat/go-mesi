@@ -42,6 +42,9 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 			)
 
 			w.Header().Set("Content-Length", strconv.Itoa(len(processedResponse)))
+			for k, v := range customWriter.Header() {
+				w.Header()[k] = v
+			}
 			w.WriteHeader(customWriter.StatusCode())
 			w.Write([]byte(processedResponse))
 		} else {
