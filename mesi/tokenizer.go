@@ -6,7 +6,7 @@ import (
 
 const (
 	ESI_INCLUDE = "include"
-	ESI_INLICNE = "inline"
+	ESI_INLINE  = "inline"
 	ESI_CHOOSE  = "choose"
 	ESI_TRY     = "try"
 	ESI_REMOVE  = "remove"
@@ -26,7 +26,7 @@ func (token *esiToken) isEsi() bool {
 
 func esiTokenizer(input string) []esiToken {
 	var esiTokens []esiToken
-	unsupportedTags := []string{ESI_INLICNE, ESI_CHOOSE, ESI_TRY, ESI_REMOVE, ESI_VARS, ESI_COMMENT, ESI_INCLUDE}
+	unsupportedTags := []string{ESI_INLINE, ESI_CHOOSE, ESI_TRY, ESI_REMOVE, ESI_VARS, ESI_COMMENT, ESI_INCLUDE}
 	pos := 0
 	for {
 		start := -1
