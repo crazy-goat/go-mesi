@@ -2,6 +2,7 @@ package mesi
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -482,5 +483,146 @@ func TestFetchConcurrentContextCancellation(t *testing.T) {
 
 	if elapsed > 1*time.Second {
 		t.Errorf("fetchConcurrent took too long (%v) with cancelled context", elapsed)
+	}
+}
+
+func TestIsURLSafe_BlocksPrivateIPs(t *testing.T) {
+	tests := []struct {
+		name      string
+		url       string
+		wantErr   bool
+		errSubstr string
+	}{
+		{"localhost", "http://localhost/test", true, "private/reserved ip"},
+		{"127.0.0.1", "http://127.0.0.1/test", true, "private/reserved ip"},
+		{"10.0.0.1", "http://10.0.0.1/test", true, "private/reserved ip"},
+		{"172.16.0.1", "http://172.16.0.1/test", true, "private/reserved ip"},
+		{"192.168.1.1", "http://192.168.1.1/test", true, "private/reserved ip"},
+		{"169.254.1.1", "http://169.254.1.1/test", true, "private/reserved ip"},
+		{"0.0.0.0", "http://0.0.0.0/test", true, "private/reserved ip"},
+		{"public IP", "http://8.8.8.8/test", false, ""},
+	}
+
+	config := EsiParserConfig{
+		BlockPrivateIPs: true,
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := isURLSafe(tt.url, config)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errSubstr)
+				} else if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.errSubstr)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestIsURLSafe_AllowedHosts(t *testing.T) {
+	tests := []struct {
+		name         string
+		url          string
+		allowedHosts []string
+		wantErr      bool
+	}{
+		{"allowed exact", "http://example.com/test", []string{"example.com"}, false},
+		{"allowed subdomain", "http://api.example.com/test", []string{"example.com"}, false},
+		{"not allowed", "http://other.com/test", []string{"example.com"}, true},
+		{"multiple allowed", "http://foo.com/test", []string{"example.com", "foo.com"}, false},
+		{"empty allowed list", "http://example.com/test", []string{}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := EsiParserConfig{
+				BlockPrivateIPs: true,
+				AllowedHosts:    tt.allowedHosts,
+			}
+			err := isURLSafe(tt.url, config)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestIsURLSafe_Disabled(t *testing.T) {
+	config := EsiParserConfig{
+		BlockPrivateIPs: false,
+	}
+
+	err := isURLSafe("http://127.0.0.1/test", config)
+	if err != nil {
+		t.Errorf("expected no error when BlockPrivateIPs=false, got: %v", err)
+	}
+}
+
+func TestIsPrivateOrReservedIP(t *testing.T) {
+	tests := []struct {
+		name     string
+		ip       string
+		expected bool
+	}{
+		{"loopback", "127.0.0.1", true},
+		{"10.0.0.0/8", "10.0.0.1", true},
+		{"10.255.255.255", "10.255.255.255", true},
+		{"172.16.0.0/12", "172.16.0.1", true},
+		{"172.31.255.255", "172.31.255.255", true},
+		{"192.168.0.0/16", "192.168.1.1", true},
+		{"link-local", "169.254.1.1", true},
+		{"unspecified", "0.0.0.0", true},
+		{"multicast", "224.0.0.1", true},
+		{"reserved", "240.0.0.1", true},
+		{"public", "8.8.8.8", false},
+		{"public 2", "1.1.1.1", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("failed to parse IP %s", tt.ip)
+			}
+			result := isPrivateOrReservedIP(ip)
+			if result != tt.expected {
+				t.Errorf("isPrivateOrReservedIP(%s) = %v, expected %v", tt.ip, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsURLSafe_InvalidURL(t *testing.T) {
+	config := EsiParserConfig{
+		BlockPrivateIPs: true,
+	}
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"invalid url", "://invalid"},
+		{"no host", "http:///path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := isURLSafe(tt.url, config)
+			if err == nil {
+				t.Error("expected error for invalid URL")
+			}
+		})
 	}
 }
