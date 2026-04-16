@@ -18,9 +18,7 @@ jobs:
           cache: true
 
       - name: Build libgomesi
-        run: |
-          cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go
-          sudo cp libgomesi.h /usr/include/
+        run: cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
