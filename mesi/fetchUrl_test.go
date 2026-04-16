@@ -604,6 +604,29 @@ func TestIsURLSafe_Disabled(t *testing.T) {
 	}
 }
 
+func TestIsURLSafe_InvalidURL(t *testing.T) {
+	config := EsiParserConfig{
+		BlockPrivateIPs: true,
+	}
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"invalid url", "://invalid"},
+		{"no host", "http:///path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := isURLSafe(tt.url, config)
+			if err == nil {
+				t.Error("expected error for invalid URL")
+			}
+		})
+	}
+}
+
 func TestIsPrivateOrReservedIP(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -638,25 +661,87 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 	}
 }
 
-func TestIsURLSafe_InvalidURL(t *testing.T) {
-	config := EsiParserConfig{
-		BlockPrivateIPs: true,
-	}
+func TestSingleFetchUrlWithContext_ResponseUnderLimit(t *testing.T) {
+	// Create test server that returns 1KB response
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(make([]byte, 1024)) // 1KB
+	}))
+	defer ts.Close()
 
-	tests := []struct {
-		name string
-		url  string
-	}{
-		{"invalid url", "://invalid"},
-		{"no host", "http:///path"},
-	}
+	config := CreateDefaultConfig()
+	config.MaxResponseSize = 10 * 1024 // 10KB limit
+	config.Timeout = 5 * time.Second
+	config.BlockPrivateIPs = false
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := isURLSafe(tt.url, config)
-			if err == nil {
-				t.Error("expected error for invalid URL")
-			}
-		})
+	data, _, err := singleFetchUrlWithContext(ts.URL, config, context.Background())
+	if err != nil {
+		t.Errorf("Expected no error for response under limit, got: %v", err)
+	}
+	if len(data) != 1024 {
+		t.Errorf("Expected 1024 bytes, got %d", len(data))
+	}
+}
+
+func TestSingleFetchUrlWithContext_ResponseExceedsLimit(t *testing.T) {
+	// Create test server that returns 20KB response
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(make([]byte, 20*1024)) // 20KB
+	}))
+	defer ts.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxResponseSize = 10 * 1024 // 10KB limit
+	config.Timeout = 5 * time.Second
+	config.BlockPrivateIPs = false
+
+	_, _, err := singleFetchUrlWithContext(ts.URL, config, context.Background())
+	if err == nil {
+		t.Error("Expected error for response exceeding limit, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum allowed size") {
+		t.Errorf("Expected error message about size limit, got: %v", err)
+	}
+}
+
+func TestSingleFetchUrlWithContext_ZeroLimitNoRestriction(t *testing.T) {
+	// Create test server that returns 100KB response
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(make([]byte, 100*1024)) // 100KB
+	}))
+	defer ts.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxResponseSize = 0 // No limit
+	config.Timeout = 5 * time.Second
+	config.BlockPrivateIPs = false
+
+	data, _, err := singleFetchUrlWithContext(ts.URL, config, context.Background())
+	if err != nil {
+		t.Errorf("Expected no error with zero limit, got: %v", err)
+	}
+	if len(data) != 100*1024 {
+		t.Errorf("Expected 100KB data, got %d bytes", len(data))
+	}
+}
+
+func TestSingleFetchUrlWithContext_ExactLimit(t *testing.T) {
+	limit := int64(1024)
+	// Create test server that returns exactly at limit
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(make([]byte, limit)) // Exactly at limit
+	}))
+	defer ts.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxResponseSize = limit
+	config.Timeout = 5 * time.Second
+	config.BlockPrivateIPs = false
+
+	data, _, err := singleFetchUrlWithContext(ts.URL, config, context.Background())
+	if err != nil {
+		t.Errorf("Expected no error for response at exact limit, got: %v", err)
+	}
+	if int64(len(data)) != limit {
+		t.Errorf("Expected %d bytes, got %d", limit, len(data))
 	}
 }
