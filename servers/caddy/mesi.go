@@ -53,11 +53,12 @@ func (MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next cad
 		)
 
 		w.Header().Set("Content-Length", strconv.Itoa(len(processedResponse)))
-		for k, v := range customWriter.Header() {
-			w.Header()[k] = v
-		}
 		w.WriteHeader(customWriter.StatusCode())
 		w.Write([]byte(processedResponse))
+	} else {
+		w.Header().Set("Content-Length", strconv.Itoa(customWriter.Body().Len()))
+		w.WriteHeader(customWriter.StatusCode())
+		w.Write(customWriter.Body().Bytes())
 	}
 
 	return nil
