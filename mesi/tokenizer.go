@@ -1,18 +1,17 @@
 package mesi
 
 import (
-	"fmt"
 	"strings"
 )
 
 const (
-	ESI_INCLUDE string = "include"
-	ESI_INLICNE        = "inline"
-	ESI_CHOOSE         = "choose"
-	ESI_TRY            = "try"
-	ESI_REMOVE         = "remove"
-	ESI_COMMENT        = "comment"
-	ESI_VARS           = "vars"
+	ESI_INCLUDE = "include"
+	ESI_INLICNE = "inline"
+	ESI_CHOOSE  = "choose"
+	ESI_TRY     = "try"
+	ESI_REMOVE  = "remove"
+	ESI_COMMENT = "comment"
+	ESI_VARS    = "vars"
 )
 
 type esiToken struct {
@@ -23,22 +22,6 @@ type esiToken struct {
 
 func (token *esiToken) isEsi() bool {
 	return token.esiTagType != "" && token.esiTagContent != ""
-}
-
-func (token *esiToken) isStaticText() bool {
-	return token.staticContent != "" && token.esiTagType == ""
-}
-
-func (token *esiToken) isSupported() bool {
-	return token.esiTagType == "include" && token.isEsi()
-}
-
-func (token *esiToken) printInfo() {
-	if token.staticContent != "" {
-		fmt.Print("s:", token.staticContent)
-	} else {
-		fmt.Print("e<", token.esiTagType, ">:", token.esiTagContent)
-	}
 }
 
 func esiTokenizer(input string) []esiToken {
