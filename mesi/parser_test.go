@@ -116,3 +116,28 @@ func TestMaxConcurrentRequestsZeroMeansUnlimited(t *testing.T) {
 		t.Errorf("Max concurrent = %d, expected 3 (unlimited)", atomic.LoadInt64(&maxConcurrent))
 	}
 }
+
+func TestSharedHTTPClientIsUsed(t *testing.T) {
+	var clientCount int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&clientCount, 1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("content"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.HTTPClient = &http.Client{}
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	input := `<!--esi <esi:include src="` + server.URL + `/1"/>--><!--esi <esi:include src="` + server.URL + `/2"/>--><!--esi <esi:include src="` + server.URL + `/3"/>-->`
+
+	MESIParse(input, config)
+
+	if atomic.LoadInt64(&clientCount) != 3 {
+		t.Errorf("HTTP client used %d times, expected 3 (shared client)", atomic.LoadInt64(&clientCount))
+	}
+}

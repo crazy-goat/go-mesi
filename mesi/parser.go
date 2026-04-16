@@ -2,6 +2,7 @@ package mesi
 
 import (
 	"context"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,8 +23,9 @@ type EsiParserConfig struct {
 	ParseOnHeader         bool
 	AllowedHosts          []string
 	BlockPrivateIPs       bool
-	MaxResponseSize       int64 // 0 = unlimited, default 10MB
-	MaxConcurrentRequests int   // 0 = unlimited (backward compatible)
+	MaxResponseSize       int64        // 0 = unlimited, default 10MB
+	MaxConcurrentRequests int          // 0 = unlimited (backward compatible)
+	HTTPClient            *http.Client // shared client for connection pooling, nil = create per request
 }
 
 func (c EsiParserConfig) SetContext(ctx context.Context) EsiParserConfig {
