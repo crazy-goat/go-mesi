@@ -356,3 +356,131 @@ func TestMESIParseContextCancellationStopsAllGoroutines(t *testing.T) {
 
 	_ = result
 }
+
+func TestFetchConcurrentBothSucceed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/primary" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("PRIMARY"))
+		} else if r.URL.Path == "/alt" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ALT"))
+		}
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	html := `<html><esi:include src="` + server.URL + `/primary" alt="` + server.URL + `/alt" fetch-mode="concurrent" /></html>`
+
+	result := MESIParse(html, config)
+	if !strings.Contains(result, "PRIMARY") && !strings.Contains(result, "ALT") {
+		t.Errorf("expected PRIMARY or ALT in output, got %q", result)
+	}
+}
+
+func TestFetchConcurrentPrimaryFailsAltSucceeds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/primary" {
+			time.Sleep(100 * time.Millisecond)
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("NOT_FOUND"))
+		} else if r.URL.Path == "/alt" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ALT_RESPONSE"))
+		}
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	html := `<html><esi:include src="` + server.URL + `/primary" alt="` + server.URL + `/alt" fetch-mode="concurrent" /></html>`
+
+	result := MESIParse(html, config)
+	if !strings.Contains(result, "ALT_RESPONSE") {
+		t.Errorf("expected ALT_RESPONSE in output (alt finishes first), got %q", result)
+	}
+}
+
+func TestFetchConcurrentBothFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	html := `<html><esi:include src="` + server.URL + `/fail1" alt="` + server.URL + `/fail2" fetch-mode="concurrent" /></html>`
+
+	result := MESIParse(html, config)
+	if !strings.Contains(result, "500") && !strings.Contains(result, "error") {
+		t.Errorf("expected error in output when both URLs fail, got %q", result)
+	}
+}
+
+func TestFetchConcurrentNoAltShortCircuit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/single" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("SINGLE"))
+		}
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	html := `<html><esi:include src="` + server.URL + `/single" fetch-mode="concurrent" /></html>`
+
+	result := MESIParse(html, config)
+	if !strings.Contains(result, "SINGLE") {
+		t.Errorf("expected SINGLE in output, got %q", result)
+	}
+}
+
+func TestFetchConcurrentContextCancellation(t *testing.T) {
+	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer slowServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	config := EsiParserConfig{
+		Context:         ctx,
+		DefaultUrl:      slowServer.URL + "/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	start := time.Now()
+	html := `<html><esi:include src="` + slowServer.URL + `/slow1" alt="` + slowServer.URL + `/slow2" fetch-mode="concurrent" /></html>`
+	_ = MESIParse(html, config)
+	elapsed := time.Since(start)
+
+	if elapsed > 1*time.Second {
+		t.Errorf("fetchConcurrent took too long (%v) with cancelled context", elapsed)
+	}
+}

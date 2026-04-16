@@ -102,40 +102,35 @@ func fetchAB(token *esiIncludeToken, config EsiParserConfig) (string, bool, erro
 }
 
 func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
-	url1 := token.Src
-	url2 := token.Alt
-
-	if url2 == "" {
-		url2 = token.Src
+	if token.Alt == "" {
+		return singleFetchUrlWithContext(token.Src, config, config.Context)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	var ctx context.Context
+	var cancel context.CancelFunc
 	if config.Context != nil {
 		ctx, cancel = context.WithCancel(config.Context)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
 	}
 	defer cancel()
-	resultChan := make(chan esiResponse)
+
+	resultChan := make(chan esiResponse, 2)
+	doneChan := make(chan struct{})
 
 	runTask := func(url string) {
+		data, isEsiResponse, err := singleFetchUrlWithContext(url, config, ctx)
 		select {
-		case <-ctx.Done():
-			return
-		default:
-			data, isEsiResponse, err := singleFetchUrlWithContext(url, config, ctx)
-			select {
-			case resultChan <- esiResponse{Data: data, IsEsiResponse: isEsiResponse, Error: err}:
-			case <-ctx.Done():
-				return
-			}
+		case resultChan <- esiResponse{Data: data, IsEsiResponse: isEsiResponse, Error: err}:
+		case <-doneChan:
 		}
 	}
 
-	go runTask(url1)
-	go runTask(url2)
+	go runTask(token.Src)
+	go runTask(token.Alt)
 
 	result := <-resultChan
-	cancel()
-	close(resultChan)
+	close(doneChan)
 
 	return result.Data, result.IsEsiResponse, result.Error
 }
