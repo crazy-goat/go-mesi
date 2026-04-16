@@ -1,7 +1,9 @@
 package middleware
 
 import (
+	"bufio"
 	"bytes"
+	"net"
 	"net/http"
 )
 
@@ -33,6 +35,19 @@ func (rw *ResponseWriter) StatusCode() int {
 
 func (rw *ResponseWriter) Body() *bytes.Buffer {
 	return rw.body
+}
+
+func (rw *ResponseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (rw *ResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
 }
 
 func GetScheme(r *http.Request) string {

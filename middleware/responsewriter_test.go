@@ -76,3 +76,37 @@ func TestResponseWriter_StatusCode_Default(t *testing.T) {
 		t.Errorf("expected default StatusCode %d, got %d", http.StatusOK, rw.StatusCode())
 	}
 }
+
+func TestResponseWriter_Flush(t *testing.T) {
+	w := httptest.NewRecorder()
+	rw := NewResponseWriter(w)
+
+	rw.Write([]byte("test"))
+	rw.Flush()
+
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		_ = f
+	} else {
+		t.Error("expected ResponseWriter to implement http.Flusher")
+	}
+}
+
+func TestResponseWriter_Hijack(t *testing.T) {
+	w := httptest.NewRecorder()
+	rw := NewResponseWriter(w)
+
+	_, _, err := rw.Hijack()
+	if err != http.ErrNotSupported {
+		t.Errorf("expected http.ErrNotSupported for non-hijacker ResponseWriter, got %v", err)
+	}
+}
+
+func TestResponseWriter_Hijack_ImplementsInterface(t *testing.T) {
+	w := httptest.NewRecorder()
+	rw := NewResponseWriter(w)
+
+	_, ok := interface{}(rw).(http.Hijacker)
+	if !ok {
+		t.Error("ResponseWriter should implement http.Hijacker interface")
+	}
+}
