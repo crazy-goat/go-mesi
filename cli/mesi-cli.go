@@ -51,7 +51,11 @@ func main() {
 		client := http.Client{
 			Timeout: config.Timeout,
 		}
-		req, _ := http.NewRequest("GET", pathOrUrl, nil)
+		req, err := http.NewRequest("GET", pathOrUrl, nil)
+		if err != nil {
+			fmt.Println("Error creating request:", err)
+			os.Exit(1)
+		}
 		req.Header.Set("Surrogate-Capability", "ESI/1.0")
 
 		content, err := client.Do(req)
