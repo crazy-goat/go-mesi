@@ -44,7 +44,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    char* result = Parse(file_contents);
+    char* result = Parse(file_contents, 5, "http://127.0.0.1/");
     printf("Result: %s\n", result);
 
     FreeString(result);

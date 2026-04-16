@@ -126,7 +126,7 @@ func MESIParse(input string, config EsiParserConfig) string {
 				newConfig := config.OverrideConfig(include).WithElapsedTime(time.Since(start))
 				content, isEsiResponse := include.toString(newConfig)
 
-				if config.CanGoDeeper(time.Since(start)) && (isEsiResponse || newConfig.ParseOnHeader == false) {
+				if config.CanGoDeeper(time.Since(start)) && (isEsiResponse || !newConfig.ParseOnHeader) {
 					content = MESIParse(content, newConfig.DecreaseMaxDepth().WithElapsedTime(time.Since(start)))
 				}
 
