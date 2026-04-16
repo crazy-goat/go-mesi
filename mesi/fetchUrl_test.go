@@ -664,7 +664,7 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 func TestSingleFetchUrlWithContext_ResponseUnderLimit(t *testing.T) {
 	// Create test server that returns 1KB response
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(make([]byte, 1024)) // 1KB
+		_, _ = w.Write(make([]byte, 1024)) // 1KB
 	}))
 	defer ts.Close()
 
@@ -685,7 +685,7 @@ func TestSingleFetchUrlWithContext_ResponseUnderLimit(t *testing.T) {
 func TestSingleFetchUrlWithContext_ResponseExceedsLimit(t *testing.T) {
 	// Create test server that returns 20KB response
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(make([]byte, 20*1024)) // 20KB
+		_, _ = w.Write(make([]byte, 20*1024)) // 20KB
 	}))
 	defer ts.Close()
 
@@ -706,7 +706,7 @@ func TestSingleFetchUrlWithContext_ResponseExceedsLimit(t *testing.T) {
 func TestSingleFetchUrlWithContext_ZeroLimitNoRestriction(t *testing.T) {
 	// Create test server that returns 100KB response
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(make([]byte, 100*1024)) // 100KB
+		_, _ = w.Write(make([]byte, 100*1024)) // 100KB
 	}))
 	defer ts.Close()
 
@@ -728,7 +728,7 @@ func TestSingleFetchUrlWithContext_ExactLimit(t *testing.T) {
 	limit := int64(1024)
 	// Create test server that returns exactly at limit
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(make([]byte, limit)) // Exactly at limit
+		_, _ = w.Write(make([]byte, limit)) // Exactly at limit
 	}))
 	defer ts.Close()
 

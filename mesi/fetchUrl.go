@@ -134,7 +134,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	if err != nil {
 		return "", false, err
 	}
-	defer content.Body.Close()
+	defer func() { _ = content.Body.Close() }()
 
 	var dataBytes []byte
 	if config.MaxResponseSize > 0 {
