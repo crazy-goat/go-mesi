@@ -628,6 +628,96 @@ func TestIsURLSafe_InvalidURL(t *testing.T) {
 	}
 }
 
+func TestIsEsiResponse(t *testing.T) {
+	tests := []struct {
+		name           string
+		edgeControl    string
+		expectedResult bool
+	}{
+		{"dca=esi header", "dca=esi", true},
+		{"dca=esi with other directives", "no-store, dca=esi, max-age=3600", true},
+		{"dca=esi case insensitive", "DCA=ESI", true},
+		{"no dca=esi", "no-store, max-age=3600", false},
+		{"empty header", "", false},
+		{"partial match dca", "dca=esionly", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{
+				Header: http.Header{},
+			}
+			if tt.edgeControl != "" {
+				resp.Header.Set("Edge-control", tt.edgeControl)
+			}
+			result := IsEsiResponse(resp)
+			if result != tt.expectedResult {
+				t.Errorf("IsEsiResponse() = %v, expected %v", result, tt.expectedResult)
+			}
+		})
+	}
+}
+
+func TestSingleFetchUrlExceedsTimeBudget(t *testing.T) {
+	config := EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        1,
+		Timeout:         0,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl("http://example.com/test", config)
+	if err == nil {
+		t.Error("expected error for timeout <= 0")
+	}
+	if !strings.Contains(err.Error(), "exceeded time budget") {
+		t.Errorf("expected 'exceeded time budget' error, got: %v", err)
+	}
+
+	config.Timeout = -1 * time.Second
+	_, _, err = singleFetchUrl("http://example.com/test", config)
+	if err == nil {
+		t.Error("expected error for negative timeout")
+	}
+	if !strings.Contains(err.Error(), "exceeded time budget") {
+		t.Errorf("expected 'exceeded time budget' error, got: %v", err)
+	}
+}
+
+func TestSingleFetchUrlSSRFValidation(t *testing.T) {
+	config := EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: true,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl("http://127.0.0.1/test", config)
+	if err == nil {
+		t.Error("expected SSRF error for private IP")
+	}
+	if !strings.Contains(err.Error(), "ssrf validation failed") {
+		t.Errorf("expected SSRF validation error, got: %v", err)
+	}
+}
+
+func TestSingleFetchUrlInvalidRequest(t *testing.T) {
+	config := EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl("http://\x00invalid/test", config)
+	if err == nil {
+		t.Error("expected error for invalid URL in request creation")
+	}
+}
+
 func TestIsPrivateOrReservedIP(t *testing.T) {
 	tests := []struct {
 		name     string
