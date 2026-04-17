@@ -147,11 +147,9 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 			cacheKeyFunc = DefaultCacheKey
 		}
 		cacheKey = cacheKeyFunc(urlToFetch)
-		val, ok, err := config.Cache.Get(ctx, cacheKey)
-		if err != nil {
+		if val, ok, err := config.Cache.Get(ctx, cacheKey); err != nil {
 			log.Printf("mesi: cache get error for key %q: %v", cacheKey, err)
-		}
-		if ok && err == nil {
+		} else if ok {
 			return val, false, nil
 		}
 	}
