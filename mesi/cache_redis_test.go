@@ -13,7 +13,7 @@ func TestRedisCache_SetAndGet(t *testing.T) {
 	if client == nil {
 		t.Skip("Redis not available")
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	cache := NewRedisCache(client, time.Hour)
 	ctx := context.Background()
@@ -31,7 +31,7 @@ func TestRedisCache_SetAndGet(t *testing.T) {
 		t.Fatalf("expected redis_value1, got %s, ok=%v", v, ok)
 	}
 
-	cache.Delete(ctx, "redis_key1")
+	_ = cache.Delete(ctx, "redis_key1")
 	_, ok, _ = cache.Get(ctx, "redis_key1")
 	if ok {
 		t.Fatal("key should be deleted")
@@ -43,7 +43,7 @@ func TestRedisCache_TTL(t *testing.T) {
 	if client == nil {
 		t.Skip("Redis not available")
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	cache := NewRedisCache(client, time.Hour)
 	ctx := context.Background()

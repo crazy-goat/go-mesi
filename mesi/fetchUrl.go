@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -140,9 +141,15 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	}
 
 	cacheKey := ""
-	if config.Cache != nil && config.CacheKeyFunc != nil {
-		cacheKey = config.CacheKeyFunc(urlToFetch)
-		if val, ok, err := config.Cache.Get(ctx, cacheKey); ok && err == nil {
+	if config.Cache != nil {
+		cacheKeyFunc := config.CacheKeyFunc
+		if cacheKeyFunc == nil {
+			cacheKeyFunc = DefaultCacheKey
+		}
+		cacheKey = cacheKeyFunc(urlToFetch)
+		if val, ok, err := config.Cache.Get(ctx, cacheKey); err != nil {
+			log.Printf("mesi: cache get error for key %q: %v", cacheKey, err)
+		} else if ok {
 			return val, false, nil
 		}
 	}
@@ -183,7 +190,9 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	}
 	contentStr := string(dataBytes)
 	if config.Cache != nil && cacheKey != "" {
-		_ = config.Cache.Set(ctx, cacheKey, contentStr, config.CacheTTL)
+		if err := config.Cache.Set(ctx, cacheKey, contentStr, config.CacheTTL); err != nil {
+			log.Printf("mesi: cache set error for key %q: %v", cacheKey, err)
+		}
 	}
 	return contentStr, IsEsiResponse(content), nil
 }

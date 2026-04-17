@@ -13,7 +13,7 @@ func TestMemcachedCache_SetAndGet(t *testing.T) {
 	if mc == nil {
 		t.Skip("Memcached not available")
 	}
-	defer mc.Close()
+	defer func() { _ = mc.Close() }()
 
 	cache := NewMemcachedCache(mc, time.Hour)
 	ctx := context.Background()
@@ -31,7 +31,7 @@ func TestMemcachedCache_SetAndGet(t *testing.T) {
 		t.Fatalf("expected mc_value1, got %s, ok=%v", v, ok)
 	}
 
-	cache.Delete(ctx, "mc_key1")
+	_ = cache.Delete(ctx, "mc_key1")
 	_, ok, _ = cache.Get(ctx, "mc_key1")
 	if ok {
 		t.Fatal("key should be deleted")
@@ -43,12 +43,12 @@ func TestMemcachedCache_TTL(t *testing.T) {
 	if mc == nil {
 		t.Skip("Memcached not available")
 	}
-	defer mc.Close()
+	defer func() { _ = mc.Close() }()
 
 	cache := NewMemcachedCache(mc, time.Hour)
 	ctx := context.Background()
 
-	err := cache.Set(ctx, "mc_ttl_key", "ttl_value", 1)
+	err := cache.Set(ctx, "mc_ttl_key", "ttl_value", 2*time.Second)
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
