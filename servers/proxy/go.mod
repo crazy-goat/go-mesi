@@ -2,7 +2,7 @@ module github.com/crazy-goat/go-mesi/servers/proxy
 
 go 1.23
 
-require github.com/crazy-goat/go-mesi v0.0.0
+require github.com/crazy-goat/go-mesi v0.6.2
 
 require (
 	github.com/bradfitz/gomemcache v0.0.0-20250403215159-8d39553ac7cf // indirect
