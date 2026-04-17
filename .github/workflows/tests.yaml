@@ -48,9 +48,36 @@ jobs:
       - name: Run tests
         run: go test -v ./mesi/...
 
+  apache-test:
+    name: Apache Integration Test
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Build libgomesi
+        run: cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go
+
+      - name: Run Apache tests
+        run: |
+          cd servers/apache
+          docker-compose up --build --abort-on-container-exit
+          docker-compose down
+
+      - name: Cleanup
+        if: always()
+        run: cd servers/apache && docker-compose down -v
+
   ci:
     name: CI
-    needs: [lint, test]
+    needs: [lint, test, apache-test]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -58,3 +85,4 @@ jobs:
         run: |
           if [ "${{ needs.lint.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.apache-test.result }}" != "success" ]; then exit 1; fi
