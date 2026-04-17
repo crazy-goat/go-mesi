@@ -70,7 +70,7 @@ func esiTokenizer(input string) []esiToken {
 		}
 
 		if end == -1 {
-			return append(esiTokens, esiToken{staticContent: input[pos:]})
+			return append(esiTokens, esiToken{staticContent: input[start:]})
 		}
 		end += start + len(endTag)
 
