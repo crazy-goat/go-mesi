@@ -15,8 +15,19 @@ type MemcachedCache struct {
 func NewMemcachedCache(client *memcache.Client, defaultTTL time.Duration) *MemcachedCache {
 	return &MemcachedCache{
 		client:     client,
-		defaultTTL: int32(defaultTTL.Seconds()),
+		defaultTTL: durationToSeconds(defaultTTL),
 	}
+}
+
+func durationToSeconds(d time.Duration) int32 {
+	s := d.Seconds()
+	if s <= 0 {
+		return 0
+	}
+	if s < 1 {
+		return 1
+	}
+	return int32(s)
 }
 
 func (c *MemcachedCache) Get(ctx context.Context, key string) (string, bool, error) {
@@ -33,7 +44,7 @@ func (c *MemcachedCache) Get(ctx context.Context, key string) (string, bool, err
 func (c *MemcachedCache) Set(ctx context.Context, key string, value string, ttl time.Duration) error {
 	expire := c.defaultTTL
 	if ttl > 0 {
-		expire = int32(ttl.Seconds())
+		expire = durationToSeconds(ttl)
 	}
 	return c.client.Set(&memcache.Item{
 		Key:        key,

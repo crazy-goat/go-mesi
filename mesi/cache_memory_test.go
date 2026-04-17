@@ -28,8 +28,8 @@ func TestMemoryCache_Delete(t *testing.T) {
 	cache := NewMemoryCache(100, time.Hour)
 	ctx := context.Background()
 
-	cache.Set(ctx, "key1", "value1", 0)
-	cache.Delete(ctx, "key1")
+	_ = cache.Set(ctx, "key1", "value1", 0)
+	_ = cache.Delete(ctx, "key1")
 
 	_, ok, _ := cache.Get(ctx, "key1")
 	if ok {
@@ -41,10 +41,10 @@ func TestMemoryCache_LRUEviction(t *testing.T) {
 	cache := NewMemoryCache(3, time.Hour)
 	ctx := context.Background()
 
-	cache.Set(ctx, "k1", "v1", 0)
-	cache.Set(ctx, "k2", "v2", 0)
-	cache.Set(ctx, "k3", "v3", 0)
-	cache.Set(ctx, "k4", "v4", 0)
+	_ = cache.Set(ctx, "k1", "v1", 0)
+	_ = cache.Set(ctx, "k2", "v2", 0)
+	_ = cache.Set(ctx, "k3", "v3", 0)
+	_ = cache.Set(ctx, "k4", "v4", 0)
 
 	_, ok, _ := cache.Get(ctx, "k1")
 	if ok {
@@ -61,7 +61,7 @@ func TestMemoryCache_TTL(t *testing.T) {
 	cache := NewMemoryCache(100, time.Hour)
 	ctx := context.Background()
 
-	cache.Set(ctx, "key1", "value1", 50*time.Millisecond)
+	_ = cache.Set(ctx, "key1", "value1", 50*time.Millisecond)
 
 	_, ok, _ := cache.Get(ctx, "key1")
 	if !ok {
