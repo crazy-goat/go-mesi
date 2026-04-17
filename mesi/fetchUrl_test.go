@@ -639,7 +639,7 @@ func TestIsEsiResponse(t *testing.T) {
 		{"dca=esi case insensitive", "DCA=ESI", true},
 		{"no dca=esi", "no-store, max-age=3600", false},
 		{"empty header", "", false},
-		{"partial match dca", "dca=esionly", true},
+		{"partial match dca", "dca=esionly", false},
 	}
 
 	for _, tt := range tests {
@@ -659,29 +659,32 @@ func TestIsEsiResponse(t *testing.T) {
 }
 
 func TestSingleFetchUrlExceedsTimeBudget(t *testing.T) {
-	config := EsiParserConfig{
-		DefaultUrl:      "http://example.com/",
-		MaxDepth:        1,
-		Timeout:         0,
-		BlockPrivateIPs: false,
-		Logger:          DiscardLogger{},
+	tests := []struct {
+		name    string
+		timeout time.Duration
+	}{
+		{"zero timeout", 0},
+		{"negative timeout", -1 * time.Second},
 	}
 
-	_, _, err := singleFetchUrl("http://example.com/test", config)
-	if err == nil {
-		t.Error("expected error for timeout <= 0")
-	}
-	if !strings.Contains(err.Error(), "exceeded time budget") {
-		t.Errorf("expected 'exceeded time budget' error, got: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := EsiParserConfig{
+				DefaultUrl:      "http://example.com/",
+				MaxDepth:        1,
+				Timeout:         tt.timeout,
+				BlockPrivateIPs: false,
+				Logger:          DiscardLogger{},
+			}
 
-	config.Timeout = -1 * time.Second
-	_, _, err = singleFetchUrl("http://example.com/test", config)
-	if err == nil {
-		t.Error("expected error for negative timeout")
-	}
-	if !strings.Contains(err.Error(), "exceeded time budget") {
-		t.Errorf("expected 'exceeded time budget' error, got: %v", err)
+			_, _, err := singleFetchUrl("http://example.com/test", config)
+			if err == nil {
+				t.Error("expected error for timeout <= 0")
+			}
+			if !strings.Contains(err.Error(), "exceeded time budget") {
+				t.Errorf("expected 'exceeded time budget' error, got: %v", err)
+			}
+		})
 	}
 }
 
@@ -714,7 +717,10 @@ func TestSingleFetchUrlInvalidRequest(t *testing.T) {
 
 	_, _, err := singleFetchUrl("http://\x00invalid/test", config)
 	if err == nil {
-		t.Error("expected error for invalid URL in request creation")
+		t.Fatal("expected error for invalid URL in request creation")
+	}
+	if !strings.Contains(err.Error(), "invalid url") {
+		t.Errorf("expected 'invalid url' error, got: %v", err)
 	}
 }
 
