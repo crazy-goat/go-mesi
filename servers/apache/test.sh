@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$SCRIPT_DIR"
 
-docker-compose up -d --build
+docker compose up -d --build
 
 sleep 5
 
@@ -49,7 +49,7 @@ else
     exit 1
 fi
 
-docker-compose down
+docker compose down
 
 echo ""
 echo "=== All tests passed ==="

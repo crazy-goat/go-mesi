@@ -68,12 +68,12 @@ jobs:
       - name: Run Apache tests
         run: |
           cd servers/apache
-          docker-compose up --build --abort-on-container-exit
-          docker-compose down
+          docker compose up --build --abort-on-container-exit
+          docker compose down
 
       - name: Cleanup
         if: always()
-        run: cd servers/apache && docker-compose down -v
+        run: cd servers/apache && docker compose down -v
 
   ci:
     name: CI
