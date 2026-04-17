@@ -98,7 +98,10 @@ func (ratio abRatio) selectUrl(token *esiIncludeToken) string {
 }
 
 func fetchAB(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
-	return singleFetchUrlWithContext(token.parseAB().selectUrl(token), config, config.Context)
+	logger := config.getLogger()
+	selected := token.parseAB().selectUrl(token)
+	logger.Debug("ab_ratio_select", "src", token.Src, "alt", token.Alt, "selected", selected)
+	return singleFetchUrlWithContext(selected, config, config.Context)
 }
 
 func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
@@ -136,6 +139,7 @@ func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bo
 }
 
 func fetchFallback(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
+	logger := config.getLogger()
 	start := time.Now()
 	var data string
 	var err error
@@ -143,6 +147,7 @@ func fetchFallback(token *esiIncludeToken, config EsiParserConfig) (string, bool
 
 	data, isEsiResponse, err = singleFetchUrlWithContext(token.Src, config, config.Context)
 	if err != nil && token.Alt != "" {
+		logger.Debug("fallback_triggered", "primary", token.Src, "alt", token.Alt, "error", err.Error())
 		return singleFetchUrlWithContext(token.Alt, config.WithElapsedTime(time.Since(start)), config.Context)
 	}
 
@@ -150,11 +155,15 @@ func fetchFallback(token *esiIncludeToken, config EsiParserConfig) (string, bool
 }
 
 func (token *esiIncludeToken) toString(config EsiParserConfig) (string, bool) {
+	logger := config.getLogger()
 	var data string
 	var err error
 	var isEsiResponse bool
 
+	logger.Debug("include_start", "src", token.Src, "fetch_mode", token.FetchMode, "max_depth", config.MaxDepth, "timeout", config.Timeout)
+
 	if config.ParseOnly() {
+		logger.Debug("max_depth_reached", "src", token.Src)
 		err = errors.New("esi max depth")
 	} else {
 		switch token.FetchMode {
