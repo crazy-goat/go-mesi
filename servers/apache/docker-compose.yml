@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  apache:
+    build:
+      context: ../..
+      dockerfile: servers/apache/Dockerfile
+    ports:
+      - "8080:80"
+    volumes:
+      - ./tests:/var/www/html:ro
+    depends_on:
+      - backend
+
+  backend:
+    image: python:3.11-slim
+    working_dir: /data
+    volumes:
+      - ./tests:/data
+    command: python -m http.server 8000
+    expose:
+      - "8000"
