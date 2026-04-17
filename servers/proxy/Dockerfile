@@ -4,6 +4,7 @@ WORKDIR /tmp/mesi-proxy
 ENV CGO_ENABLED=0
 ENV GOOS=linux
 ARG TARGETARCH
+ENV GOARCH=${TARGETARCH}
 RUN go mod tidy && go mod download && go build -o mesi-proxy .
 
 FROM alpine
