@@ -18,4 +18,4 @@ docker-build:
 	docker build -t mesi-proxy:latest .
 
 docker-run:
-	docker run --rm -p 8080:8080 -e BACKEND=http://host.docker.internal:8081 mesi-proxy:latest
+	docker run --rm -p 8080:8080 mesi-proxy:latest --backend http://host.docker.internal:8081

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -36,14 +37,17 @@ func main() {
 	}
 
 	config := mesi.CreateDefaultConfig()
-	config.DefaultUrl = *backend
 	config.MaxDepth = *maxDepth
 	config.Timeout = time.Duration(*timeout * float64(time.Second))
 	config.ParseOnHeader = *parseOnHeader
 	config.BlockPrivateIPs = *blockPrivate
 	config.Debug = *debug
 
-	proxy := NewProxy(*backend, config)
+	proxy, err := NewProxy(*backend, config)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating proxy: %v\n", err)
+		os.Exit(1)
+	}
 
 	server := &http.Server{
 		Addr:         *listen,
@@ -67,7 +71,9 @@ func main() {
 	<-quit
 
 	log.Println("Shutting down server...")
-	if err := server.Shutdown(nil); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
 		log.Fatalf("Server shutdown error: %v", err)
 	}
 	log.Println("Server stopped")

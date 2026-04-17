@@ -2,7 +2,7 @@ module github.com/crazy-goat/go-mesi/servers/proxy
 
 go 1.23.5
 
-require github.com/crazy-goat/go-mesi v0.0.0-20250204204515-1f5435b2af61
+require github.com/crazy-goat/go-mesi v0.0.0
 
 require (
 	github.com/bradfitz/gomemcache v0.0.0-20250403215159-8d39553ac7cf // indirect
@@ -12,4 +12,4 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 )
 
-replace github.com/crazy-goat/go-mesi v0.0.0-20250204204515-1f5435b2af61 => ../..
+replace github.com/crazy-goat/go-mesi => ../..
