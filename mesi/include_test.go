@@ -8,11 +8,14 @@ import (
 
 func TestParseIncludeAttributes(t *testing.T) {
 	cases := []struct {
-		name    string
-		input   string
-		wantSrc string
-		wantAlt string
-		want    map[string]string
+		name          string
+		input         string
+		wantSrc       string
+		wantAlt       string
+		wantTimeout   string
+		wantMaxDepth  string
+		wantFetchMode string
+		wantABRatio   string
 	}{
 		{
 			name:    "valid src only",
@@ -26,29 +29,29 @@ func TestParseIncludeAttributes(t *testing.T) {
 			wantAlt: "/fallback.html",
 		},
 		{
-			name:    "with timeout",
-			input:   `<esi:include src="/fragment.html" timeout="5000"/>`,
-			wantSrc: "/fragment.html",
-			want:    map[string]string{"timeout": "5000"},
+			name:        "with timeout",
+			input:       `<esi:include src="/fragment.html" timeout="5000"/>`,
+			wantSrc:     "/fragment.html",
+			wantTimeout: "5000",
 		},
 		{
-			name:    "with max-depth",
-			input:   `<esi:include src="/fragment.html" max-depth="3"/>`,
-			wantSrc: "/fragment.html",
-			want:    map[string]string{"max-depth": "3"},
+			name:         "with max-depth",
+			input:        `<esi:include src="/fragment.html" max-depth="3"/>`,
+			wantSrc:      "/fragment.html",
+			wantMaxDepth: "3",
 		},
 		{
-			name:    "with fetch-mode",
-			input:   `<esi:include src="/fragment.html" fetch-mode="concurrent"/>`,
-			wantSrc: "/fragment.html",
-			want:    map[string]string{"fetch-mode": "concurrent"},
+			name:          "with fetch-mode",
+			input:         `<esi:include src="/fragment.html" fetch-mode="concurrent"/>`,
+			wantSrc:       "/fragment.html",
+			wantFetchMode: "concurrent",
 		},
 		{
-			name:    "with ab-ratio",
-			input:   `<esi:include src="/a.html" alt="/b.html" ab-ratio="70:30"/>`,
-			wantSrc: "/a.html",
-			wantAlt: "/b.html",
-			want:    map[string]string{"ab-ratio": "70:30"},
+			name:        "with ab-ratio",
+			input:       `<esi:include src="/a.html" alt="/b.html" ab-ratio="70:30"/>`,
+			wantSrc:     "/a.html",
+			wantAlt:     "/b.html",
+			wantABRatio: "70:30",
 		},
 	}
 
@@ -64,25 +67,17 @@ func TestParseIncludeAttributes(t *testing.T) {
 			if tc.wantAlt != "" && token.Alt != tc.wantAlt {
 				t.Errorf("Alt = %q, want %q", token.Alt, tc.wantAlt)
 			}
-			for attr, want := range tc.want {
-				switch attr {
-				case "timeout":
-					if token.Timeout != want {
-						t.Errorf("Timeout = %q, want %q", token.Timeout, want)
-					}
-				case "max-depth":
-					if token.MaxDepth != want {
-						t.Errorf("MaxDepth = %q, want %q", token.MaxDepth, want)
-					}
-				case "fetch-mode":
-					if token.FetchMode != want {
-						t.Errorf("FetchMode = %q, want %q", token.FetchMode, want)
-					}
-				case "ab-ratio":
-					if token.ABRatio != want {
-						t.Errorf("ABRatio = %q, want %q", token.ABRatio, want)
-					}
-				}
+			if tc.wantTimeout != "" && token.Timeout != tc.wantTimeout {
+				t.Errorf("Timeout = %q, want %q", token.Timeout, tc.wantTimeout)
+			}
+			if tc.wantMaxDepth != "" && token.MaxDepth != tc.wantMaxDepth {
+				t.Errorf("MaxDepth = %q, want %q", token.MaxDepth, tc.wantMaxDepth)
+			}
+			if tc.wantFetchMode != "" && token.FetchMode != tc.wantFetchMode {
+				t.Errorf("FetchMode = %q, want %q", token.FetchMode, tc.wantFetchMode)
+			}
+			if tc.wantABRatio != "" && token.ABRatio != tc.wantABRatio {
+				t.Errorf("ABRatio = %q, want %q", token.ABRatio, tc.wantABRatio)
 			}
 		})
 	}
