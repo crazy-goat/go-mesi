@@ -26,6 +26,9 @@ type EsiParserConfig struct {
 	MaxResponseSize       int64         // 0 = unlimited, default 10MB
 	MaxConcurrentRequests int           // 0 = unlimited (backward compatible)
 	HTTPClient            *http.Client  // shared client for connection pooling, nil = create per request
+	Cache                 Cache         // nil = no caching (backward compatible)
+	CacheTTL              time.Duration // Default TTL for cached entries
+	CacheKeyFunc          CacheKeyFunc  // Custom cache key function (nil = DefaultCacheKey)
 	requestSemaphore      chan struct{} // semaphore for limiting HTTP requests
 }
 
@@ -52,6 +55,7 @@ func CreateDefaultConfig() EsiParserConfig {
 		ParseOnHeader:   false,
 		BlockPrivateIPs: true,
 		MaxResponseSize: 10 * 1024 * 1024, // 10MB default
+		CacheKeyFunc:    DefaultCacheKey,
 	}
 }
 
