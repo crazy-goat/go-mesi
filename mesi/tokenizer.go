@@ -29,7 +29,7 @@ func (token *esiToken) isStaticText() bool {
 }
 
 func (token *esiToken) isSupported() bool {
-	return token.esiTagType == ESI_INCLUDE
+	return token.isEsi() && token.esiTagType == ESI_INCLUDE
 }
 
 func esiTokenizer(input string) []esiToken {

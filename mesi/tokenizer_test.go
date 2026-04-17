@@ -67,6 +67,31 @@ func TestEsiTokenizer(t *testing.T) {
 			},
 		},
 		{
+			"nested esi tags - include inside choose",
+			"<esi:choose><esi:when test=\"true\"><esi:include src=\"/a\"/></esi:when></esi:choose>",
+			[]esiToken{
+				{esiTagContent: "<esi:choose><esi:when test=\"true\"><esi:include src=\"/a\"/></esi:when></esi:choose>", esiTagType: "choose"},
+				{staticContent: ""},
+			},
+		},
+		{
+			"attribute with greater than sign",
+			`<esi:include src="/a?x=1&gt=2"/>`,
+			[]esiToken{
+				{esiTagContent: `<esi:include src="/a?x=1&gt=2"/>`, esiTagType: "include"},
+				{staticContent: ""},
+			},
+		},
+		{
+			"multiline input",
+			"line1\n<esi:include src=\"/a\"/>\nline3",
+			[]esiToken{
+				{staticContent: "line1\n"},
+				{esiTagContent: "<esi:include src=\"/a\"/>", esiTagType: "include"},
+				{staticContent: "\nline3"},
+			},
+		},
+		{
 			"choose tag with closing",
 			"Start <esi:choose><esi:when test=\"true\">A</esi:when></esi:choose> End",
 			[]esiToken{
@@ -204,6 +229,8 @@ func TestEsiTokenIsSupported(t *testing.T) {
 		{"inline tag", esiToken{esiTagType: "inline", esiTagContent: "test"}, false},
 		{"static only", esiToken{staticContent: "hello"}, false},
 		{"empty", esiToken{}, false},
+		{"include tag type only without content", esiToken{esiTagType: "include"}, false},
+		{"include with static content", esiToken{staticContent: "prefix", esiTagType: "include", esiTagContent: "test"}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
