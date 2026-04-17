@@ -139,6 +139,14 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		urlToFetch = requestedURL
 	}
 
+	cacheKey := ""
+	if config.Cache != nil && config.CacheKeyFunc != nil {
+		cacheKey = config.CacheKeyFunc(urlToFetch)
+		if val, ok, err := config.Cache.Get(ctx, cacheKey); ok && err == nil {
+			return val, false, nil
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", urlToFetch, nil)
 	if err != nil {
 		return "", false, errors.New("failed to create request: " + err.Error())
@@ -173,5 +181,9 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	if content.StatusCode >= 400 {
 		return "", false, errors.New("upstream returned status " + strconv.Itoa(content.StatusCode))
 	}
-	return string(dataBytes), IsEsiResponse(content), nil
+	contentStr := string(dataBytes)
+	if config.Cache != nil && cacheKey != "" {
+		_ = config.Cache.Set(ctx, cacheKey, contentStr, config.CacheTTL)
+	}
+	return contentStr, IsEsiResponse(content), nil
 }
