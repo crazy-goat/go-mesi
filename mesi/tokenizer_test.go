@@ -63,7 +63,7 @@ func TestEsiTokenizer(t *testing.T) {
 			"Start <esi:include src=\"/a\"",
 			[]esiToken{
 				{staticContent: "Start "},
-				{staticContent: "Start <esi:include src=\"/a\""},
+				{staticContent: "<esi:include src=\"/a\""},
 			},
 		},
 		{
