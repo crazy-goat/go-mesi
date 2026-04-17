@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func IsEsiResponse(response *http.Response) bool {
@@ -94,6 +95,7 @@ func singleFetchUrl(requestedURL string, config EsiParserConfig) (data string, e
 
 // singleFetchUrlWithContext fetches a URL with context support for proper cancellation.
 func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx context.Context) (data string, esiResponse bool, err error) {
+	logger := config.getLogger()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -104,6 +106,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	}
 
 	if config.Timeout <= 0 {
+		logger.Debug("fetch_timeout", "url", requestedURL, "error", "exceeded time budget")
 		return "", false, errors.New("exceeded time budget")
 	}
 
@@ -117,6 +120,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	}
 
 	if err := isURLSafe(requestedURL, config); err != nil {
+		logger.Debug("fetch_ssrf_error", "url", requestedURL, "error", err.Error())
 		return "", false, errors.New("ssrf validation failed: " + err.Error())
 	}
 
@@ -160,10 +164,14 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	}
 	req.Header.Set("Surrogate-Capability", "ESI/1.0")
 
+	logger.Debug("fetch_start", "url", urlToFetch, "timeout", config.Timeout)
+	reqStart := time.Now()
 	content, err := client.Do(req)
 	if err != nil {
+		logger.Debug("fetch_error", "url", urlToFetch, "error", err.Error())
 		return "", false, err
 	}
+	logger.Debug("fetch_done", "url", urlToFetch, "duration", time.Since(reqStart), "status", content.StatusCode)
 	defer func() { _ = content.Body.Close() }()
 
 	var dataBytes []byte

@@ -65,6 +65,7 @@ func TestSingleFetchUrlRelativeUrl(t *testing.T) {
 		MaxDepth:        1,
 		Timeout:         1 * time.Second,
 		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
 	}
 
 	_, _, err := singleFetchUrl("relative/path", config)

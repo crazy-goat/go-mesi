@@ -21,6 +21,7 @@ func main() {
 	maxDepth := flag.Uint("max-depth", 5, "Maximum depth of parsing")
 	timeout := flag.Float64("timeout", 10.0, "Request timeout duration in seconds")
 	parseOnHeader := flag.Bool("parse-on-header", false, "Enable parsing on header")
+	debug := flag.Bool("debug", false, "Enable debug logging")
 
 	flag.Parse()
 	args := flag.Args()
@@ -36,6 +37,7 @@ func main() {
 	config.MaxDepth = *maxDepth
 	config.Timeout = time.Duration(*timeout * float64(time.Second))
 	config.ParseOnHeader = *parseOnHeader
+	config.Debug = *debug
 
 	pathOrUrl := args[0]
 	var data string

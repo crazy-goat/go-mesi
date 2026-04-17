@@ -29,6 +29,8 @@ type EsiParserConfig struct {
 	Cache                 Cache         // nil = no caching (backward compatible)
 	CacheTTL              time.Duration // Default TTL for cached entries
 	CacheKeyFunc          CacheKeyFunc  // Custom cache key function (nil = DefaultCacheKey)
+	Debug                 bool          // Enable debug logging
+	Logger                Logger        // Custom logger (nil = DiscardLogger when Debug is false)
 	requestSemaphore      chan struct{} // semaphore for limiting HTTP requests
 }
 
@@ -39,6 +41,18 @@ func (c EsiParserConfig) getSemaphore() chan struct{} {
 func (c EsiParserConfig) setSemaphore(s chan struct{}) EsiParserConfig {
 	c.requestSemaphore = s
 	return c
+}
+
+var discardLogger = DiscardLogger{}
+
+func (c EsiParserConfig) getLogger() Logger {
+	if c.Logger != nil {
+		return c.Logger
+	}
+	if c.Debug {
+		return DefaultLoggerNew()
+	}
+	return discardLogger
 }
 
 func (c EsiParserConfig) SetContext(ctx context.Context) EsiParserConfig {
@@ -56,6 +70,7 @@ func CreateDefaultConfig() EsiParserConfig {
 		BlockPrivateIPs: true,
 		MaxResponseSize: 10 * 1024 * 1024, // 10MB default
 		CacheKeyFunc:    DefaultCacheKey,
+		Logger:          DiscardLogger{},
 	}
 }
 
@@ -140,12 +155,16 @@ func MESIParse(input string, config EsiParserConfig) string {
 	if config.Context == nil {
 		config.Context = context.Background()
 	}
+	logger := config.getLogger()
 	start := time.Now()
 	var wg sync.WaitGroup
 
 	var result strings.Builder
 	processed := unescape(input)
 	tokens := esiTokenizer(processed)
+
+	logger.Debug("parse_start", "input_size", len(input), "token_count", len(tokens))
+
 	ch := make(chan Response, len(tokens))
 	wg.Add(len(tokens))
 
@@ -164,15 +183,17 @@ func MESIParse(input string, config EsiParserConfig) string {
 	}()
 
 	for index, token := range tokens {
-		go func(id int, token esiToken, wg *sync.WaitGroup, ch chan<- Response, cfg EsiParserConfig) {
+		go func(id int, token esiToken, wg *sync.WaitGroup, ch chan<- Response, cfg EsiParserConfig, l Logger) {
 			defer wg.Done()
 			res := Response{"", id}
 			if !token.isEsi() {
 				res.content = token.staticContent
 			} else if token.esiTagType == "include" {
+				l.Debug("token_processing", "token_type", token.esiTagType, "index", id)
 
 				include, err := parseInclude(token.esiTagContent)
 				if err != nil {
+					l.Debug("parse_error", "error", err.Error())
 					ch <- res
 					return
 				}
@@ -184,10 +205,12 @@ func MESIParse(input string, config EsiParserConfig) string {
 				}
 
 				res.content = content
+			} else {
+				l.Debug("token_processing", "token_type", token.esiTagType, "index", id)
 			}
 
 			ch <- res
-		}(index, token, &wg, ch, config)
+		}(index, token, &wg, ch, config, logger)
 	}
 
 	var results []Response
