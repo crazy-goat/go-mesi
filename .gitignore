@@ -49,6 +49,12 @@ tests/tests
 /debian/libgomesi-dev/
 /servers/frankenphp/frankenphp
 
+# Sub-module build artifacts
+cli/go.sum
+servers/proxy/proxy
+servers/roadrunner/go.sum
+servers/traefik/go.sum
+
 # Agent skills and specs (local development)
 .agents/
 docs/superpowers/
