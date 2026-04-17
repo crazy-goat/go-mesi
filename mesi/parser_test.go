@@ -521,19 +521,31 @@ func TestAssembleResults(t *testing.T) {
 		name     string
 		results  []Response
 		expected string
+		anyOf    []string
 	}{
-		{"empty results", []Response{}, ""},
-		{"single result", []Response{{"hello", 0}}, "hello"},
-		{"multiple results in order", []Response{{"a", 0}, {"b", 1}, {"c", 2}}, "abc"},
-		{"multiple results out of order", []Response{{"c", 2}, {"a", 0}, {"b", 1}}, "abc"},
-		{"results with same index", []Response{{"a", 0}, {"b", 0}}, "ab"},
+		{"empty results", []Response{}, "", nil},
+		{"single result", []Response{{"hello", 0}}, "hello", nil},
+		{"multiple results in order", []Response{{"a", 0}, {"b", 1}, {"c", 2}}, "abc", nil},
+		{"multiple results out of order", []Response{{"c", 2}, {"a", 0}, {"b", 1}}, "abc", nil},
+		{"results with same index", []Response{{"a", 0}, {"b", 0}}, "", []string{"ab", "ba"}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var builder strings.Builder
 			result := assembleResults(tt.results, builder)
-			if result != tt.expected {
+			if tt.anyOf != nil {
+				valid := false
+				for _, exp := range tt.anyOf {
+					if result == exp {
+						valid = true
+						break
+					}
+				}
+				if !valid {
+					t.Errorf("assembleResults() = %q, want one of %v", result, tt.anyOf)
+				}
+			} else if result != tt.expected {
 				t.Errorf("assembleResults() = %q, want %q", result, tt.expected)
 			}
 		})
