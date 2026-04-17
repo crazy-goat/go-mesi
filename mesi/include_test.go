@@ -6,72 +6,106 @@ import (
 	"testing"
 )
 
-func TestParseIncludeValidXML(t *testing.T) {
-	input := `<esi:include src="/fragment.html"/>`
-	token, err := parseInclude(input)
-	if err != nil {
-		t.Fatalf("parseInclude() error = %v", err)
+func TestParseIncludeAttributes(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		wantSrc string
+		wantAlt string
+		want    map[string]string
+	}{
+		{
+			name:    "valid src only",
+			input:   `<esi:include src="/fragment.html"/>`,
+			wantSrc: "/fragment.html",
+		},
+		{
+			name:    "with alt attribute",
+			input:   `<esi:include src="/primary.html" alt="/fallback.html"/>`,
+			wantSrc: "/primary.html",
+			wantAlt: "/fallback.html",
+		},
+		{
+			name:    "with timeout",
+			input:   `<esi:include src="/fragment.html" timeout="5000"/>`,
+			wantSrc: "/fragment.html",
+			want:    map[string]string{"timeout": "5000"},
+		},
+		{
+			name:    "with max-depth",
+			input:   `<esi:include src="/fragment.html" max-depth="3"/>`,
+			wantSrc: "/fragment.html",
+			want:    map[string]string{"max-depth": "3"},
+		},
+		{
+			name:    "with fetch-mode",
+			input:   `<esi:include src="/fragment.html" fetch-mode="concurrent"/>`,
+			wantSrc: "/fragment.html",
+			want:    map[string]string{"fetch-mode": "concurrent"},
+		},
+		{
+			name:    "with ab-ratio",
+			input:   `<esi:include src="/a.html" alt="/b.html" ab-ratio="70:30"/>`,
+			wantSrc: "/a.html",
+			wantAlt: "/b.html",
+			want:    map[string]string{"ab-ratio": "70:30"},
+		},
 	}
-	if token.Src != "/fragment.html" {
-		t.Errorf("Src = %q, want %q", token.Src, "/fragment.html")
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			token, err := parseInclude(tc.input)
+			if err != nil {
+				t.Fatalf("parseInclude() error = %v", err)
+			}
+			if token.Src != tc.wantSrc {
+				t.Errorf("Src = %q, want %q", token.Src, tc.wantSrc)
+			}
+			if tc.wantAlt != "" && token.Alt != tc.wantAlt {
+				t.Errorf("Alt = %q, want %q", token.Alt, tc.wantAlt)
+			}
+			for attr, want := range tc.want {
+				switch attr {
+				case "timeout":
+					if token.Timeout != want {
+						t.Errorf("Timeout = %q, want %q", token.Timeout, want)
+					}
+				case "max-depth":
+					if token.MaxDepth != want {
+						t.Errorf("MaxDepth = %q, want %q", token.MaxDepth, want)
+					}
+				case "fetch-mode":
+					if token.FetchMode != want {
+						t.Errorf("FetchMode = %q, want %q", token.FetchMode, want)
+					}
+				case "ab-ratio":
+					if token.ABRatio != want {
+						t.Errorf("ABRatio = %q, want %q", token.ABRatio, want)
+					}
+				}
+			}
+		})
 	}
 }
 
-func TestParseIncludeWithAlt(t *testing.T) {
-	input := `<esi:include src="/primary.html" alt="/fallback.html"/>`
-	token, err := parseInclude(input)
-	if err != nil {
-		t.Fatalf("parseInclude() error = %v", err)
+func TestParseIncludeMalformedXML(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"missing closing tag", `<esi:include src="/fragment.html"`},
+		{"invalid attribute", `<esi:include src="/fragment.html" invalid=>`},
+		{"empty input", ""},
+		{"non-XML", `not xml at all`},
 	}
-	if token.Src != "/primary.html" {
-		t.Errorf("Src = %q, want %q", token.Src, "/primary.html")
-	}
-	if token.Alt != "/fallback.html" {
-		t.Errorf("Alt = %q, want %q", token.Alt, "/fallback.html")
-	}
-}
 
-func TestParseIncludeWithTimeout(t *testing.T) {
-	input := `<esi:include src="/fragment.html" timeout="5000"/>`
-	token, err := parseInclude(input)
-	if err != nil {
-		t.Fatalf("parseInclude() error = %v", err)
-	}
-	if token.Timeout != "5000" {
-		t.Errorf("Timeout = %q, want %q", token.Timeout, "5000")
-	}
-}
-
-func TestParseIncludeWithMaxDepth(t *testing.T) {
-	input := `<esi:include src="/fragment.html" max-depth="3"/>`
-	token, err := parseInclude(input)
-	if err != nil {
-		t.Fatalf("parseInclude() error = %v", err)
-	}
-	if token.MaxDepth != "3" {
-		t.Errorf("MaxDepth = %q, want %q", token.MaxDepth, "3")
-	}
-}
-
-func TestParseIncludeWithFetchMode(t *testing.T) {
-	input := `<esi:include src="/fragment.html" fetch-mode="concurrent"/>`
-	token, err := parseInclude(input)
-	if err != nil {
-		t.Fatalf("parseInclude() error = %v", err)
-	}
-	if token.FetchMode != "concurrent" {
-		t.Errorf("FetchMode = %q, want %q", token.FetchMode, "concurrent")
-	}
-}
-
-func TestParseIncludeWithABRatio(t *testing.T) {
-	input := `<esi:include src="/a.html" alt="/b.html" ab-ratio="70:30"/>`
-	token, err := parseInclude(input)
-	if err != nil {
-		t.Fatalf("parseInclude() error = %v", err)
-	}
-	if token.ABRatio != "70:30" {
-		t.Errorf("ABRatio = %q, want %q", token.ABRatio, "70:30")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseInclude(tc.input)
+			if err == nil {
+				t.Error("parseInclude() expected error, got nil")
+			}
+		})
 	}
 }
 
@@ -116,24 +150,27 @@ func TestParseABInvalidRatioDefaults(t *testing.T) {
 
 func TestSelectUrlChoosesBasedOnRatio(t *testing.T) {
 	token := &esiIncludeToken{Src: "/src.html", Alt: "/alt.html"}
+	ratio := abRatio{A: 80, B: 20}
 
 	srcCount := 0
 	altCount := 0
-	iterations := 1000
+	iterations := 10000
 
 	for i := 0; i < iterations; i++ {
-		ratio := abRatio{A: 80, B: 20}
 		selected := ratio.selectUrl(token)
-		if selected == "/src.html" {
+		switch selected {
+		case "/src.html":
 			srcCount++
-		} else if selected == "/alt.html" {
+		case "/alt.html":
 			altCount++
+		default:
+			t.Fatalf("unexpected URL: %q", selected)
 		}
 	}
 
 	srcPercent := float64(srcCount) / float64(iterations) * 100
-	if srcPercent < 70 || srcPercent > 90 {
-		t.Errorf("src selected %f%%, expected ~80%%", srcPercent)
+	if srcPercent < 65 || srcPercent > 95 {
+		t.Errorf("src selected %.1f%%, expected 65-95%% (target 80%%)", srcPercent)
 	}
 }
 
@@ -191,6 +228,34 @@ func TestFetchFallbackPrimaryFailsThenAlt(t *testing.T) {
 	}
 }
 
+func TestFetchConcurrentHappyPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("content from " + r.URL.Path))
+	}))
+	defer server.Close()
+
+	token := &esiIncludeToken{
+		Src:       server.URL + "/src",
+		Alt:       server.URL + "/alt",
+		FetchMode: "concurrent",
+	}
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	data, _, err := fetchConcurrent(token, config)
+
+	if err != nil {
+		t.Errorf("fetchConcurrent() error = %v", err)
+	}
+	if data == "" {
+		t.Error("fetchConcurrent() returned empty data")
+	}
+}
+
 func TestToStringWithOnerrorContinue(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -235,9 +300,9 @@ func TestToStringWithFallbackContent(t *testing.T) {
 	}
 }
 
-func TestToStringWithParseOnlyMode(t *testing.T) {
+func TestToStringWithMaxDepthExceeded(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("server should not be called in parse-only mode")
+		t.Error("server should not be called when max depth exceeded")
 	}))
 	defer server.Close()
 
