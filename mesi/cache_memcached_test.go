@@ -48,7 +48,7 @@ func TestMemcachedCache_TTL(t *testing.T) {
 	cache := NewMemcachedCache(mc, time.Hour)
 	ctx := context.Background()
 
-	err := cache.Set(ctx, "mc_ttl_key", "ttl_value", 1)
+	err := cache.Set(ctx, "mc_ttl_key", "ttl_value", 2*time.Second)
 	if err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}

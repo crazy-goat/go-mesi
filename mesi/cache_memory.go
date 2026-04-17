@@ -8,6 +8,7 @@ import (
 )
 
 type memoryCacheEntry struct {
+	key      string
 	value    string
 	expireAt time.Time
 	element  *list.Element
@@ -79,6 +80,7 @@ func (c *MemoryCache) Set(ctx context.Context, key string, value string, ttl tim
 	}
 
 	entry := &memoryCacheEntry{
+		key:      key,
 		value:    value,
 		expireAt: expireAt,
 	}
@@ -110,16 +112,7 @@ func (c *MemoryCache) evictLRU() {
 	elem := c.lru.Back()
 	if elem != nil {
 		entry := elem.Value.(*memoryCacheEntry)
-		delete(c.items, c.findKeyByEntry(entry))
+		delete(c.items, entry.key)
 		c.lru.Remove(elem)
 	}
-}
-
-func (c *MemoryCache) findKeyByEntry(entry *memoryCacheEntry) string {
-	for k, e := range c.items {
-		if e == entry {
-			return k
-		}
-	}
-	return ""
 }
