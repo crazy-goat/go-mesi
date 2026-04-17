@@ -745,3 +745,136 @@ func TestSingleFetchUrlWithContext_ExactLimit(t *testing.T) {
 		t.Errorf("Expected %d bytes, got %d", limit, len(data))
 	}
 }
+
+func TestFetchWithCache(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("cached content"))
+	}))
+	defer server.Close()
+
+	cache := NewMemoryCache(100, time.Hour)
+	config := CreateDefaultConfig()
+	config.Cache = cache
+	config.CacheKeyFunc = func(url string) string { return "test:" + url }
+	config.BlockPrivateIPs = false
+
+	url := server.URL + "/test"
+	_, _, _ = singleFetchUrlWithContext(url, config, context.Background())
+	if callCount != 1 {
+		t.Fatalf("first call: expected 1 HTTP call, got %d", callCount)
+	}
+
+	_, _, _ = singleFetchUrlWithContext(url, config, context.Background())
+	if callCount != 1 {
+		t.Fatalf("second call: expected 0 HTTP calls (cached), got %d", callCount)
+	}
+
+	ctx := context.Background()
+	val, ok, _ := cache.Get(ctx, "test:"+url)
+	if !ok || val != "cached content" {
+		t.Fatalf("cache miss or wrong value: ok=%v, val=%s", ok, val)
+	}
+}
+
+func TestFetchWithoutCache(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("direct content"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.Cache = nil
+	config.BlockPrivateIPs = false
+
+	url := server.URL + "/test"
+	content, _, err := singleFetchUrlWithContext(url, config, context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "direct content" {
+		t.Fatalf("expected 'direct content', got '%s'", content)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 HTTP call, got %d", callCount)
+	}
+}
+
+func TestFetchWithCache_NilCacheKeyFunc(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("direct content"))
+	}))
+	defer server.Close()
+
+	cache := NewMemoryCache(100, time.Hour)
+	config := CreateDefaultConfig()
+	config.Cache = cache
+	config.CacheKeyFunc = nil
+	config.BlockPrivateIPs = false
+
+	url := server.URL + "/test"
+	content, _, err := singleFetchUrlWithContext(url, config, context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "direct content" {
+		t.Fatalf("expected 'direct content', got '%s'", content)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 HTTP call (no cache key func), got %d", callCount)
+	}
+}
+
+func TestFetchWithCache_EsiResponse(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Edge-control", "dca=esi")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("esi content"))
+	}))
+	defer server.Close()
+
+	cache := NewMemoryCache(100, time.Hour)
+	config := CreateDefaultConfig()
+	config.Cache = cache
+	config.CacheKeyFunc = func(url string) string { return "test:" + url }
+	config.BlockPrivateIPs = false
+
+	url := server.URL + "/esi"
+	content, isEsi, err := singleFetchUrlWithContext(url, config, context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "esi content" {
+		t.Fatalf("expected 'esi content', got '%s'", content)
+	}
+	if !isEsi {
+		t.Fatalf("expected isEsi=true for ESI response")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 HTTP call, got %d", callCount)
+	}
+
+	content2, isEsi2, err := singleFetchUrlWithContext(url, config, context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error on cached call: %v", err)
+	}
+	if content2 != "esi content" {
+		t.Fatalf("expected cached 'esi content', got '%s'", content2)
+	}
+	if isEsi2 {
+		t.Fatalf("expected isEsi=false for cached response")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 0 HTTP calls (cached), got %d", callCount)
+	}
+}
