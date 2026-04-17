@@ -376,11 +376,11 @@ func TestOverrideConfigWithMaxDepth(t *testing.T) {
 		tokenMaxDepth string
 		expected      uint
 	}{
-		{"token depth smaller", 10, "3", 4},
-		{"token depth larger", 5, "10", 5},
+		{"token limit lower than config", 10, "3", 4},
+		{"token limit higher than config", 5, "10", 5},
 		{"invalid max depth", 10, "invalid", 10},
 		{"empty max depth", 10, "", 10},
-		{"zero max depth", 10, "0", 1},
+		{"zero max depth becomes limit 1", 10, "0", 1},
 		{"negative max depth ignored", 10, "-1", 10},
 	}
 
@@ -441,9 +441,9 @@ func TestMESIParseWithInclude(t *testing.T) {
 }
 
 func TestMESIParseRespectsMaxDepth(t *testing.T) {
-	callCount := 0
+	var callCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
+		callCount.Add(1)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("content"))
 	}))
@@ -457,14 +457,14 @@ func TestMESIParseRespectsMaxDepth(t *testing.T) {
 	input := `<!--esi <esi:include src="` + server.URL + `/test"/>-->`
 	MESIParse(input, config)
 
-	if callCount != 0 {
-		t.Errorf("Expected 0 HTTP calls with MaxDepth=0, got %d", callCount)
+	if callCount.Load() != 0 {
+		t.Errorf("Expected 0 HTTP calls with MaxDepth=0, got %d", callCount.Load())
 	}
 }
 
 func TestMESIParseRespectsTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("content"))
 	}))
@@ -473,7 +473,7 @@ func TestMESIParseRespectsTimeout(t *testing.T) {
 	config := CreateDefaultConfig()
 	config.DefaultUrl = server.URL + "/"
 	config.MaxDepth = 1
-	config.Timeout = 50 * time.Millisecond
+	config.Timeout = 100 * time.Millisecond
 	config.BlockPrivateIPs = false
 
 	input := `<!--esi <esi:include src="` + server.URL + `/test"/>-->`
@@ -494,5 +494,84 @@ func TestParseDeprecatedCreatesCorrectConfig(t *testing.T) {
 	result := Parse("static content", 0, server.URL+"/")
 	if result != "static content" {
 		t.Errorf("Parse() = %q, want %q", result, "static content")
+	}
+}
+
+func TestOverrideConfigWithBothTimeoutAndMaxDepth(t *testing.T) {
+	config := EsiParserConfig{
+		Timeout:  10 * time.Second,
+		MaxDepth: 10,
+	}
+	token := esiIncludeToken{
+		Timeout:  "3",
+		MaxDepth: "2",
+	}
+	result := config.OverrideConfig(token)
+
+	if result.Timeout != 3*time.Second {
+		t.Errorf("Timeout = %v, want 3s", result.Timeout)
+	}
+	if result.MaxDepth != 3 {
+		t.Errorf("MaxDepth = %d, want 3", result.MaxDepth)
+	}
+}
+
+func TestAssembleResults(t *testing.T) {
+	tests := []struct {
+		name     string
+		results  []Response
+		expected string
+	}{
+		{"empty results", []Response{}, ""},
+		{"single result", []Response{{"hello", 0}}, "hello"},
+		{"multiple results in order", []Response{{"a", 0}, {"b", 1}, {"c", 2}}, "abc"},
+		{"multiple results out of order", []Response{{"c", 2}, {"a", 0}, {"b", 1}}, "abc"},
+		{"results with same index", []Response{{"a", 0}, {"b", 0}}, "ab"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var builder strings.Builder
+			result := assembleResults(tt.results, builder)
+			if result != tt.expected {
+				t.Errorf("assembleResults() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestMESIParseNestedIncludes(t *testing.T) {
+	var callCount atomic.Int32
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		switch r.URL.Path {
+		case "/outer":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<!--esi <esi:include src="` + serverURL + `/inner"/>-->`))
+		case "/inner":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("inner content"))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("unknown"))
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = serverURL + "/"
+	config.MaxDepth = 2
+	config.BlockPrivateIPs = false
+
+	input := `<!--esi <esi:include src="` + serverURL + `/outer"/>-->`
+	result := MESIParse(input, config)
+
+	if callCount.Load() != 2 {
+		t.Errorf("Expected 2 HTTP calls for nested includes, got %d", callCount.Load())
+	}
+	if result != "inner content" {
+		t.Errorf("MESIParse() = %q, want %q", result, "inner content")
 	}
 }
