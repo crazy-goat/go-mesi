@@ -17,7 +17,12 @@ import (
 func IsEsiResponse(response *http.Response) bool {
 	header := strings.ToLower(response.Header.Get("Edge-control"))
 
-	return strings.Contains(header, "dca=esi")
+	for _, part := range strings.Split(header, ",") {
+		if strings.TrimSpace(part) == "dca=esi" {
+			return true
+		}
+	}
+	return false
 }
 
 type httpDoer interface {
