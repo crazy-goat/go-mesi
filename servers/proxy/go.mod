@@ -1,6 +1,6 @@
 module github.com/crazy-goat/go-mesi/servers/proxy
 
-go 1.23.5
+go 1.23
 
 require github.com/crazy-goat/go-mesi v0.0.0
 
