@@ -26,14 +26,14 @@ module AP_MODULE_DECLARE_DATA mesi_module;
 typedef struct {
     int enable_mesi;
     apr_array_header_t *allowed_hosts;
-    int block_private_ips;
+    int block_private_ips;  // -1=unset, 0=off, 1=on
 } mesi_config;
 
 static void *create_server_config(apr_pool_t *p, server_rec *s) {
     mesi_config *conf = apr_pcalloc(p, sizeof(*conf));
     conf->enable_mesi = 0;
     conf->allowed_hosts = apr_array_make(p, 4, sizeof(const char *));
-    conf->block_private_ips = 1;
+    conf->block_private_ips = -1;  // -1 = unset, default will be applied in filter
     return conf;
 }
 
@@ -43,7 +43,7 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     mesi_config *conf = apr_pcalloc(p, sizeof(*conf));
     conf->enable_mesi = (add->enable_mesi != 0) ? add->enable_mesi : base->enable_mesi;
     conf->allowed_hosts = (add->allowed_hosts->nelts > 0) ? add->allowed_hosts : base->allowed_hosts;
-    conf->block_private_ips = (add->block_private_ips != 0) ? add->block_private_ips : base->block_private_ips;
+    conf->block_private_ips = (add->block_private_ips != -1) ? add->block_private_ips : base->block_private_ips;
     return conf;
 }
 
