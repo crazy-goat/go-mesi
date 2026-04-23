@@ -78,6 +78,12 @@ static const char *set_allowed_hosts(cmd_parms *cmd, void *cfg, const char *arg)
     return NULL;
 }
 
+static const char *set_block_private_ips(cmd_parms *cmd, void *cfg, int flag) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    conf->block_private_ips = flag;
+    return NULL;
+}
+
 static int mesi_request_handler(request_rec *r) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(r->server->module_config, &mesi_module);
     if (conf->enable_mesi) {
@@ -183,6 +189,7 @@ static void register_hooks(apr_pool_t *p) {
 static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("EnableMesi", set_enable_mesi, NULL, RSRC_CONF, "Enable or disable the Mesi module"),
     AP_INIT_RAW_ARGS("MesiAllowedHosts", set_allowed_hosts, NULL, RSRC_CONF, "Space-separated list of allowed hostnames for ESI includes"),
+    AP_INIT_FLAG("MesiBlockPrivateIPs", set_block_private_ips, NULL, RSRC_CONF, "Enable or disable private IP blocking (default: On)"),
     {NULL}
 };
 
