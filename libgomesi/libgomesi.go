@@ -5,6 +5,7 @@ package main
 import "C"
 import (
 	"time"
+	"strings"
 
 	"github.com/crazy-goat/go-mesi/mesi"
 	"unsafe"
@@ -55,6 +56,44 @@ func Parse(input *C.char, maxDepth C.int, defaultUrl *C.char) *C.char {
 		DefaultUrl: goDefaultUrl,
 		MaxDepth:   uint(goMaxDepth),
 		Timeout:    30 * time.Second,
+	}
+	result := mesi.MESIParse(goInput, config)
+	return C.CString(result)
+}
+
+// ParseWithConfig parses ESI tags with full configuration.
+// Parameters:
+//   - input: ESI markup string to parse
+//   - maxDepth: maximum nesting depth for includes (recommended: 5)
+//   - defaultUrl: base URL for relative include paths
+//   - allowedHosts: space-separated list of allowed hostnames (or empty for no restriction)
+//   - blockPrivateIPs: set to 1 to block private/reserved IP addresses
+//
+// Returns parsed HTML with ESI tags replaced by their content.
+// Caller must free the returned string with FreeString.
+//
+//export ParseWithConfig
+func ParseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int) *C.char {
+	goInput := C.GoString(input)
+	goMaxDepth := int(maxDepth)
+	goDefaultUrl := C.GoString(defaultUrl)
+
+	hostsStr := C.GoString(allowedHosts)
+	var hosts []string
+	if hostsStr != "" {
+		for _, h := range strings.Fields(hostsStr) {
+			if h != "" {
+				hosts = append(hosts, h)
+			}
+		}
+	}
+
+	config := mesi.EsiParserConfig{
+		DefaultUrl:      goDefaultUrl,
+		MaxDepth:        uint(goMaxDepth),
+		Timeout:         30 * time.Second,
+		AllowedHosts:    hosts,
+		BlockPrivateIPs: blockPrivateIPs != 0,
 	}
 	result := mesi.MESIParse(goInput, config)
 	return C.CString(result)
