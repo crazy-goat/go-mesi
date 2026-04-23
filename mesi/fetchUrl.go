@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -30,40 +31,33 @@ type httpDoer interface {
 }
 
 func isURLSafe(requestedURL string, config EsiParserConfig) error {
-	if config.BlockPrivateIPs {
-		parsedURL, err := url.Parse(requestedURL)
-		if err != nil {
-			return errors.New("invalid url: " + err.Error())
-		}
+	parsedURL, err := url.Parse(requestedURL)
+	if err != nil {
+		return errors.New("invalid url: " + err.Error())
+	}
 
-		host := parsedURL.Host
-		if host == "" {
-			return errors.New("url has no host")
-		}
+	host := parsedURL.Host
 
-		if len(config.AllowedHosts) > 0 {
-			allowed := false
-			for _, allowedHost := range config.AllowedHosts {
-				if host == allowedHost || strings.HasSuffix(host, "."+allowedHost) {
-					allowed = true
-					break
-				}
+	// Relative URLs have no host and no scheme - they will be resolved against DefaultUrl
+	if parsedURL.Scheme == "" && host == "" {
+		return nil
+	}
+
+	// Absolute URLs must have a host
+	if host == "" {
+		return errors.New("url has no host")
+	}
+
+	if len(config.AllowedHosts) > 0 {
+		allowed := false
+		for _, allowedHost := range config.AllowedHosts {
+			if host == allowedHost || strings.HasSuffix(host, "."+allowedHost) {
+				allowed = true
+				break
 			}
-			if !allowed {
-				return errors.New("host not in allowed list: " + host)
-			}
-			return nil
 		}
-
-		ips, err := net.LookupIP(host)
-		if err != nil {
-			return errors.New("cannot resolve host: " + err.Error())
-		}
-
-		for _, ip := range ips {
-			if isPrivateOrReservedIP(ip) {
-				return errors.New("url resolves to private/reserved ip: " + ip.String())
-			}
+		if !allowed {
+			return errors.New("host not in allowed list: " + host)
 		}
 	}
 
@@ -90,6 +84,46 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 	}
 
 	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
+}
+
+// safeDialer returns a net.Dialer with a Control callback that blocks
+// connections to private/reserved IP addresses at dial time.
+// This prevents SSRF via DNS rebinding attacks (TOCTOU between validation and dial).
+func safeDialer(config EsiParserConfig) *net.Dialer {
+	return &net.Dialer{
+		Control: func(network, address string, c syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return err
+			}
+			ip := net.ParseIP(host)
+			if ip == nil {
+				return fmt.Errorf("dial address is not an IP: %s", host)
+			}
+			if config.BlockPrivateIPs && isPrivateOrReservedIP(ip) {
+				return fmt.Errorf("blocked dial to private/reserved ip: %s", ip)
+			}
+			return nil
+		},
+	}
+}
+
+// NewSSRFSafeTransport creates an http.Transport that blocks connections to
+// private/reserved IP addresses at dial time, preventing SSRF via DNS rebinding.
+// When config.BlockPrivateIPs is false, it returns a standard transport.
+//
+// Users supplying a custom HTTPClient should use this transport to ensure
+// SSRF protection works correctly:
+//
+//	client := &http.Client{
+//		Transport: mesi.NewSSRFSafeTransport(config),
+//		Timeout:   config.Timeout,
+//	}
+func NewSSRFSafeTransport(config EsiParserConfig) *http.Transport {
+	dialer := safeDialer(config)
+	return &http.Transport{
+		DialContext: dialer.DialContext,
+	}
 }
 
 // Deprecated: singleFetchUrl does not support context propagation.
@@ -133,11 +167,16 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	if config.HTTPClient != nil {
 		client = config.HTTPClient
 	} else {
-		client = &http.Client{Timeout: config.Timeout}
+		transport := NewSSRFSafeTransport(config)
+		client = &http.Client{
+			Timeout:   config.Timeout,
+			Transport: transport,
+		}
 	}
 	// Note: When HTTPClient is provided, callers are responsible for setting
-	// appropriate timeouts on the client. The config.Timeout field is only
-	// applied when using the default per-request client.
+	// appropriate timeouts and SSRF protection on the client.
+	// Use NewSSRFSafeTransport(config) to create a transport with dial-time
+	// private IP blocking.
 
 	var urlToFetch string
 	if parsed.Scheme == "" {

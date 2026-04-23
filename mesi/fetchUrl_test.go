@@ -522,20 +522,17 @@ func TestFetchConcurrentContextCancellation(t *testing.T) {
 }
 
 func TestIsURLSafe_BlocksPrivateIPs(t *testing.T) {
+	// Note: isURLSafe no longer checks private IPs at validation time.
+	// Private IP checking is now done at dial time via safeDialer.
+	// See TestSSRFDialBlocksPrivateIP for dial-time tests.
 	tests := []struct {
-		name      string
-		url       string
-		wantErr   bool
-		errSubstr string
+		name string
+		url  string
 	}{
-		{"localhost", "http://localhost/test", true, "private/reserved ip"},
-		{"127.0.0.1", "http://127.0.0.1/test", true, "private/reserved ip"},
-		{"10.0.0.1", "http://10.0.0.1/test", true, "private/reserved ip"},
-		{"172.16.0.1", "http://172.16.0.1/test", true, "private/reserved ip"},
-		{"192.168.1.1", "http://192.168.1.1/test", true, "private/reserved ip"},
-		{"169.254.1.1", "http://169.254.1.1/test", true, "private/reserved ip"},
-		{"0.0.0.0", "http://0.0.0.0/test", true, "private/reserved ip"},
-		{"public IP", "http://8.8.8.8/test", false, ""},
+		{"localhost", "http://localhost/test"},
+		{"127.0.0.1", "http://127.0.0.1/test"},
+		{"10.0.0.1", "http://10.0.0.1/test"},
+		{"public IP", "http://8.8.8.8/test"},
 	}
 
 	config := EsiParserConfig{
@@ -545,16 +542,10 @@ func TestIsURLSafe_BlocksPrivateIPs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := isURLSafe(tt.url, config)
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("expected error containing %q, got nil", tt.errSubstr)
-				} else if !strings.Contains(err.Error(), tt.errSubstr) {
-					t.Errorf("error %q does not contain %q", err.Error(), tt.errSubstr)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
-				}
+			// isURLSafe should NOT return error for private IPs anymore
+			// (check is now at dial time)
+			if err != nil {
+				t.Errorf("isURLSafe should not check private IPs, got error: %v", err)
 			}
 		})
 	}
@@ -701,8 +692,9 @@ func TestSingleFetchUrlSSRFValidation(t *testing.T) {
 	if err == nil {
 		t.Error("expected SSRF error for private IP")
 	}
-	if !strings.Contains(err.Error(), "ssrf validation failed") {
-		t.Errorf("expected SSRF validation error, got: %v", err)
+	// Error now comes from dialer, not from isURLSafe validation
+	if !strings.Contains(err.Error(), "blocked dial to private/reserved ip") {
+		t.Errorf("expected dial-time SSRF error, got: %v", err)
 	}
 }
 
@@ -973,5 +965,64 @@ func TestFetchWithCache_EsiResponse(t *testing.T) {
 	}
 	if callCount != 1 {
 		t.Fatalf("expected 0 HTTP calls (cached), got %d", callCount)
+	}
+}
+
+func TestSSRFDialBlocksPrivateIP(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	}))
+	defer server.Close()
+
+	// Create config with BlockPrivateIPs=true
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: true,
+		Logger:          DiscardLogger{},
+	}
+
+	// Try to fetch from the test server
+	// The test server binds to 127.0.0.1 which is a private IP
+	// With BlockPrivateIPs=true, this should fail at dial time
+	_, _, err := singleFetchUrlWithContext(server.URL, config, context.Background())
+	if err == nil {
+		t.Fatal("expected error when fetching from private IP with BlockPrivateIPs=true, got nil")
+	}
+	if !contains(err.Error(), "blocked dial to private/reserved ip") {
+		t.Errorf("expected 'blocked dial' error, got: %v", err)
+	}
+}
+
+func TestSSRFDialAllowsPublicIP(t *testing.T) {
+	// Note: This test requires network access and example.com to be reachable
+	// It may fail in isolated test environments
+	t.Skip("requires network access to public IP")
+}
+
+func TestNewSSRFSafeTransport(t *testing.T) {
+	config := EsiParserConfig{
+		BlockPrivateIPs: true,
+	}
+
+	transport := NewSSRFSafeTransport(config)
+	if transport == nil {
+		t.Fatal("NewSSRFSafeTransport returned nil")
+	}
+
+	// Verify the transport has the correct DialContext
+	if transport.DialContext == nil {
+		t.Fatal("transport.DialContext is nil")
+	}
+
+	// Test with BlockPrivateIPs=false
+	config2 := EsiParserConfig{
+		BlockPrivateIPs: false,
+	}
+	transport2 := NewSSRFSafeTransport(config2)
+	if transport2 == nil {
+		t.Fatal("NewSSRFSafeTransport returned nil for BlockPrivateIPs=false")
 	}
 }
