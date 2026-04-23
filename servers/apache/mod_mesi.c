@@ -155,18 +155,35 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         return ap_pass_brigade(f->next, bb);
     }
 
-    ParseFunc EsiParse = (ParseFunc)dlsym(go_module, "Parse");
-    FreeFunc FreeString = (FreeFunc)dlsym(go_module, "FreeString");
-    
-    if (!EsiParse) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r, "mesi: Failed to find Parse symbol: %s", dlerror());
-        dlclose(go_module);
-        return ap_pass_brigade(f->next, bb);
+    char *allowed_hosts_str = "";
+    if (conf->allowed_hosts && conf->allowed_hosts->nelts > 0) {
+        apr_array_header_t *arr = conf->allowed_hosts;
+        if (arr->nelts > 0) {
+            const char **hosts = (const char **)arr->elts;
+            allowed_hosts_str = apr_pstrdup(f->r->pool, hosts[0]);
+            for (int i = 1; i < arr->nelts; i++) {
+                allowed_hosts_str = apr_pstrcat(f->r->pool, allowed_hosts_str, " ", hosts[i], NULL);
+            }
+        }
     }
 
+    int block_private = (conf->block_private_ips != -1) ? conf->block_private_ips : 1;
+
+    typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
+    ParseWithConfigFunc EsiParseWithConfig = (ParseWithConfigFunc)dlsym(go_module, "ParseWithConfig");
+
     char *base_url = build_base_url(f->r, f->r->pool);
-    char *esi = EsiParse(html, 5, base_url);
-    
+    char *esi = NULL;
+
+    if (EsiParseWithConfig) {
+        esi = EsiParseWithConfig(html, 5, base_url, allowed_hosts_str, block_private);
+    } else {
+        ParseFunc EsiParse = (ParseFunc)dlsym(go_module, "Parse");
+        if (EsiParse) {
+            esi = EsiParse(html, 5, base_url);
+        }
+    }
+
     dlclose(go_module);
 
     if (!esi) {
