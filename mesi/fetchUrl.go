@@ -65,25 +65,37 @@ func isURLSafe(requestedURL string, config EsiParserConfig) error {
 }
 
 func isPrivateOrReservedIP(ip net.IP) bool {
-	privateBlocks := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"127.0.0.0/8",
-		"169.254.0.0/16",
-		"0.0.0.0/8",
-		"224.0.0.0/4",
-		"240.0.0.0/4",
+	if ip == nil {
+		return true
 	}
 
-	for _, block := range privateBlocks {
-		_, cidr, _ := net.ParseCIDR(block)
-		if cidr.Contains(ip) {
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() || ip.IsUnspecified() || ip.IsPrivate() {
+		return true
+	}
+
+	if v4 := ip.To4(); v4 != nil {
+		_, cgnat, _ := net.ParseCIDR("100.64.0.0/10")
+		_, benchmark, _ := net.ParseCIDR("198.18.0.0/15")
+		_, reserved240, _ := net.ParseCIDR("240.0.0.0/4")
+		if cgnat.Contains(v4) || benchmark.Contains(v4) || reserved240.Contains(v4) {
 			return true
 		}
 	}
 
-	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
+	if ip.To4() == nil {
+		_, documentation, _ := net.ParseCIDR("2001:db8::/32")
+		_, nat64, _ := net.ParseCIDR("64:ff9b::/96")
+		if documentation.Contains(ip) || nat64.Contains(ip) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // safeDialer returns a net.Dialer with a Control callback that blocks

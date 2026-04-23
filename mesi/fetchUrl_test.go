@@ -734,6 +734,20 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		{"reserved", "240.0.0.1", true},
 		{"public", "8.8.8.8", false},
 		{"public 2", "1.1.1.1", false},
+		{"ipv6 loopback", "::1", true},
+		{"ipv6 ULA fd00", "fd00::1", true},
+		{"ipv6 ULA fc00", "fc00::1", true},
+		{"ipv6 link-local", "fe80::1", true},
+		{"ipv6 unspecified", "::", true},
+		{"ipv4-mapped loopback", "::ffff:127.0.0.1", true},
+		{"ipv4-mapped private", "::ffff:10.0.0.1", true},
+		{"ipv6 documentation", "2001:db8::1", true},
+		{"ipv6 multicast", "ff02::1", true},
+		{"nat64", "64:ff9b::8.8.8.8", true},
+		{"cgnat", "100.64.0.1", true},
+		{"benchmark", "198.18.0.1", true},
+		{"public ipv6", "2606:4700:4700::1111", false},
+		{"public ipv6 google", "2001:4860:4860::8888", false},
 	}
 
 	for _, tt := range tests {
