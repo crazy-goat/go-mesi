@@ -67,12 +67,16 @@ static int mesi_request_handler(request_rec *r) {
 static char *build_base_url(request_rec *r, apr_pool_t *pool) {
     const char *scheme = ap_http_scheme(r);
     const char *host = r->server->server_hostname
-                         ? r->server->server_hostname
-                         : ap_get_server_name(r);
+                       ? r->server->server_hostname
+                       : ap_get_server_name(r);
     apr_port_t port = ap_get_server_port(r);
-    
+
+    if (!host || !*host) {
+        host = "localhost";
+    }
+
     int default_port = (strcmp(scheme, "https") == 0) ? 443 : 80;
-    
+
     if (port != default_port) {
         return apr_psprintf(pool, "%s://%s:%d/", scheme, host, port);
     }
