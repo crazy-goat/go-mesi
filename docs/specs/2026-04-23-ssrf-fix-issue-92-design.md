@@ -75,14 +75,12 @@ func ParseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char,
     goMaxDepth := int(maxDepth)
     goDefaultUrl := C.GoString(defaultUrl)
     
-    // Parse allowedHosts (comma or space separated)
+    // Parse allowedHosts (space-separated, matching Apache conventions)
     hostsStr := C.GoString(allowedHosts)
     var hosts []string
     if hostsStr != "" {
-        // Split by comma or space
-        for _, h := range strings.FieldsFunc(hostsStr, func(r rune) bool {
-            return r == ',' || r == ' '
-        }) {
+        // Split by space (Apache directives use space-separated values)
+        for _, h := range strings.Fields(hostsStr) {
             if h != "" {
                 hosts = append(hosts, h)
             }
