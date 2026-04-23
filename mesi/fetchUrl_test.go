@@ -734,6 +734,20 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		{"reserved", "240.0.0.1", true},
 		{"public", "8.8.8.8", false},
 		{"public 2", "1.1.1.1", false},
+		{"ipv6 loopback", "::1", true},
+		{"ipv6 ULA fd00", "fd00::1", true},
+		{"ipv6 ULA fc00", "fc00::1", true},
+		{"ipv6 link-local", "fe80::1", true},
+		{"ipv6 unspecified", "::", true},
+		{"ipv4-mapped loopback", "::ffff:127.0.0.1", true},
+		{"ipv4-mapped private", "::ffff:10.0.0.1", true},
+		{"ipv6 documentation", "2001:db8::1", true},
+		{"ipv6 multicast", "ff02::1", true},
+		{"nat64", "64:ff9b::8.8.8.8", true},
+		{"cgnat", "100.64.0.1", true},
+		{"benchmark", "198.18.0.1", true},
+		{"public ipv6", "2606:4700:4700::1111", false},
+		{"public ipv6 google", "2001:4860:4860::8888", false},
 	}
 
 	for _, tt := range tests {
@@ -1077,5 +1091,56 @@ func TestNewSSRFSafeTransport(t *testing.T) {
 	transport2 := NewSSRFSafeTransport(config2)
 	if transport2 == nil {
 		t.Fatal("NewSSRFSafeTransport returned nil for BlockPrivateIPs=false")
+	}
+}
+
+func TestSSRFBlocksIPv6Loopback(t *testing.T) {
+	config := EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: true,
+		Logger:          DiscardLogger{},
+	}
+
+	html := `<html><body><esi:include src="http://[::1]/test"/></body></html>`
+	result := MESIParse(html, config)
+
+	if !strings.Contains(result, "blocked dial to private/reserved ip") {
+		t.Errorf("expected SSRF block for IPv6 loopback, got: %q", result)
+	}
+}
+
+func TestSSRFBlocksIPv6ULA(t *testing.T) {
+	config := EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: true,
+		Logger:          DiscardLogger{},
+	}
+
+	html := `<html><body><esi:include src="http://[fd00::1]/test"/></body></html>`
+	result := MESIParse(html, config)
+
+	if !strings.Contains(result, "blocked dial to private/reserved ip") {
+		t.Errorf("expected SSRF block for IPv6 ULA, got: %q", result)
+	}
+}
+
+func TestSSRFBlocksIPv4MappedIPv6(t *testing.T) {
+	config := EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: true,
+		Logger:          DiscardLogger{},
+	}
+
+	html := `<html><body><esi:include src="http://[::ffff:127.0.0.1]/test"/></body></html>`
+	result := MESIParse(html, config)
+
+	if !strings.Contains(result, "blocked dial to private/reserved ip") {
+		t.Errorf("expected SSRF block for IPv4-mapped IPv6, got: %q", result)
 	}
 }

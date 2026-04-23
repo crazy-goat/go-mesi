@@ -15,6 +15,14 @@ import (
 	"time"
 )
 
+var (
+	_, cgnatCIDR, _       = net.ParseCIDR("100.64.0.0/10")
+	_, benchmarkCIDR, _   = net.ParseCIDR("198.18.0.0/15")
+	_, reserved240CIDR, _ = net.ParseCIDR("240.0.0.0/4")
+	_, documentationCIDR, _ = net.ParseCIDR("2001:db8::/32")
+	_, nat64CIDR, _        = net.ParseCIDR("64:ff9b::/96")
+)
+
 func IsEsiResponse(response *http.Response) bool {
 	header := strings.ToLower(response.Header.Get("Edge-control"))
 
@@ -65,25 +73,31 @@ func isURLSafe(requestedURL string, config EsiParserConfig) error {
 }
 
 func isPrivateOrReservedIP(ip net.IP) bool {
-	privateBlocks := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"127.0.0.0/8",
-		"169.254.0.0/16",
-		"0.0.0.0/8",
-		"224.0.0.0/4",
-		"240.0.0.0/4",
+	if ip == nil {
+		return true
 	}
 
-	for _, block := range privateBlocks {
-		_, cidr, _ := net.ParseCIDR(block)
-		if cidr.Contains(ip) {
+	v4 := ip.To4()
+	if v4 != nil {
+		ip = v4
+	}
+
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() || ip.IsUnspecified() || ip.IsPrivate() {
+		return true
+	}
+
+	if v4 != nil {
+		if cgnatCIDR.Contains(v4) || benchmarkCIDR.Contains(v4) || reserved240CIDR.Contains(v4) {
+			return true
+		}
+	} else {
+		if documentationCIDR.Contains(ip) || nat64CIDR.Contains(ip) {
 			return true
 		}
 	}
 
-	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
+	return false
 }
 
 // safeDialer returns a net.Dialer with a Control callback that blocks
