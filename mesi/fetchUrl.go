@@ -15,6 +15,14 @@ import (
 	"time"
 )
 
+var (
+	_, cgnatCIDR, _       = net.ParseCIDR("100.64.0.0/10")
+	_, benchmarkCIDR, _   = net.ParseCIDR("198.18.0.0/15")
+	_, reserved240CIDR, _ = net.ParseCIDR("240.0.0.0/4")
+	_, documentationCIDR, _ = net.ParseCIDR("2001:db8::/32")
+	_, nat64CIDR, _        = net.ParseCIDR("64:ff9b::/96")
+)
+
 func IsEsiResponse(response *http.Response) bool {
 	header := strings.ToLower(response.Header.Get("Edge-control"))
 
@@ -69,7 +77,8 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 		return true
 	}
 
-	if v4 := ip.To4(); v4 != nil {
+	v4 := ip.To4()
+	if v4 != nil {
 		ip = v4
 	}
 
@@ -78,19 +87,12 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 		return true
 	}
 
-	if v4 := ip.To4(); v4 != nil {
-		_, cgnat, _ := net.ParseCIDR("100.64.0.0/10")
-		_, benchmark, _ := net.ParseCIDR("198.18.0.0/15")
-		_, reserved240, _ := net.ParseCIDR("240.0.0.0/4")
-		if cgnat.Contains(v4) || benchmark.Contains(v4) || reserved240.Contains(v4) {
+	if v4 != nil {
+		if cgnatCIDR.Contains(v4) || benchmarkCIDR.Contains(v4) || reserved240CIDR.Contains(v4) {
 			return true
 		}
-	}
-
-	if ip.To4() == nil {
-		_, documentation, _ := net.ParseCIDR("2001:db8::/32")
-		_, nat64, _ := net.ParseCIDR("64:ff9b::/96")
-		if documentation.Contains(ip) || nat64.Contains(ip) {
+	} else {
+		if documentationCIDR.Contains(ip) || nat64CIDR.Contains(ip) {
 			return true
 		}
 	}
