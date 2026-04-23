@@ -61,6 +61,21 @@ static const char *set_enable_mesi(cmd_parms *cmd, void *cfg, int flag) {
     return NULL;
 }
 
+static const char *set_allowed_hosts(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    const char *host;
+    while (*arg) {
+        while (*arg == ' ') arg++;
+        host = arg;
+        while (*arg && *arg != ' ') arg++;
+        if (host != arg) {
+            const char **new_host = apr_array_push(conf->allowed_hosts);
+            *new_host = apr_pstrndup(cmd->pool, host, arg - host);
+        }
+    }
+    return NULL;
+}
+
 static int mesi_request_handler(request_rec *r) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(r->server->module_config, &mesi_module);
     if (conf->enable_mesi) {
@@ -165,6 +180,7 @@ static void register_hooks(apr_pool_t *p) {
 
 static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("EnableMesi", set_enable_mesi, NULL, RSRC_CONF, "Enable or disable the Mesi module"),
+    AP_INIT_RAW_ARGS("MesiAllowedHosts", set_allowed_hosts, NULL, RSRC_CONF, "Space-separated list of allowed hostnames for ESI includes"),
     {NULL}
 };
 
