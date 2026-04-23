@@ -171,10 +171,12 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
 
     typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
     ParseWithConfigFunc EsiParseWithConfig = (ParseWithConfigFunc)dlsym(go_module, "ParseWithConfig");
-
+    
+    FreeFunc EsiFreeString = (FreeFunc)dlsym(go_module, "FreeString");
+    
     char *base_url = build_base_url(f->r, f->r->pool);
     char *esi = NULL;
-
+    
     if (EsiParseWithConfig) {
         esi = EsiParseWithConfig(html, 5, base_url, allowed_hosts_str, block_private);
     } else {
@@ -183,17 +185,23 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
             esi = EsiParse(html, 5, base_url);
         }
     }
-
-    dlclose(go_module);
-
+    
     if (!esi) {
         esi = html;
     }
 
     apr_brigade_cleanup(bb);
+    if (esi != html && EsiFreeString) {
+        // Copy esi to pool, then free Go-allocated memory
+        char *esi_copy = apr_pstrdup(f->r->pool, esi);
+        EsiFreeString(esi);
+        esi = esi_copy;
+    }
     b = apr_bucket_pool_create(esi, strlen(esi), f->r->pool, bb->bucket_alloc);
     APR_BRIGADE_INSERT_TAIL(bb, b);
     APR_BRIGADE_INSERT_TAIL(bb, apr_bucket_eos_create(bb->bucket_alloc));
+
+    dlclose(go_module);
 
     return ap_pass_brigade(f->next, bb);
 }
