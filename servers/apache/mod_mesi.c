@@ -65,9 +65,11 @@ static const char *set_allowed_hosts(cmd_parms *cmd, void *cfg, const char *arg)
     mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
     const char *host;
     while (*arg) {
-        while (*arg == ' ') arg++;
+        // Skip whitespace (space, tab)
+        while (*arg && (*arg == ' ' || *arg == '\t')) arg++;
         host = arg;
-        while (*arg && *arg != ' ') arg++;
+        // Find end of token (space or tab)
+        while (*arg && *arg != ' ' && *arg != '\t') arg++;
         if (host != arg) {
             const char **new_host = apr_array_push(conf->allowed_hosts);
             *new_host = apr_pstrndup(cmd->pool, host, arg - host);
