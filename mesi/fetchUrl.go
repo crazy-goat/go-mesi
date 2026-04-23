@@ -98,7 +98,8 @@ func safeDialer(config EsiParserConfig) *net.Dialer {
 			}
 			ip := net.ParseIP(host)
 			if ip == nil {
-				return fmt.Errorf("dial address is not an IP: %s", host)
+				// This should not happen - Control receives resolved IP:port
+				return fmt.Errorf("internal error: dial address expected to be IP but got: %s", host)
 			}
 			if config.BlockPrivateIPs && isPrivateOrReservedIP(ip) {
 				return fmt.Errorf("blocked dial to private/reserved ip: %s", ip)

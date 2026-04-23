@@ -997,9 +997,62 @@ func TestSSRFDialBlocksPrivateIP(t *testing.T) {
 }
 
 func TestSSRFDialAllowsPublicIP(t *testing.T) {
-	// Note: This test requires network access and example.com to be reachable
-	// It may fail in isolated test environments
-	t.Skip("requires network access to public IP")
+	// Test that the safeDialer Control callback allows public IPs
+	config := EsiParserConfig{
+		BlockPrivateIPs: true,
+	}
+
+	dialer := safeDialer(config)
+
+	// Test with a public IP (8.8.8.8 - Google DNS)
+	// The Control callback should allow this (return nil)
+	err := dialer.Control("tcp", "8.8.8.8:80", nil)
+	if err != nil {
+		t.Errorf("expected public IP 8.8.8.8 to be allowed, got error: %v", err)
+	}
+
+	// Test with another public IP (1.1.1.1 - Cloudflare DNS)
+	err = dialer.Control("tcp", "1.1.1.1:443", nil)
+	if err != nil {
+		t.Errorf("expected public IP 1.1.1.1 to be allowed, got error: %v", err)
+	}
+
+	// Verify that private IPs are still blocked
+	err = dialer.Control("tcp", "127.0.0.1:80", nil)
+	if err == nil {
+		t.Error("expected private IP 127.0.0.1 to be blocked")
+	}
+
+	err = dialer.Control("tcp", "10.0.0.1:80", nil)
+	if err == nil {
+		t.Error("expected private IP 10.0.0.1 to be blocked")
+	}
+}
+
+func TestSSRFDialerWithBlockPrivateIPsDisabled(t *testing.T) {
+	// When BlockPrivateIPs=false, all IPs should be allowed
+	config := EsiParserConfig{
+		BlockPrivateIPs: false,
+	}
+
+	dialer := safeDialer(config)
+
+	// Private IPs should be allowed when BlockPrivateIPs=false
+	err := dialer.Control("tcp", "127.0.0.1:80", nil)
+	if err != nil {
+		t.Errorf("expected private IP to be allowed when BlockPrivateIPs=false, got: %v", err)
+	}
+
+	err = dialer.Control("tcp", "10.0.0.1:80", nil)
+	if err != nil {
+		t.Errorf("expected private IP to be allowed when BlockPrivateIPs=false, got: %v", err)
+	}
+
+	// Public IPs should also be allowed
+	err = dialer.Control("tcp", "8.8.8.8:80", nil)
+	if err != nil {
+		t.Errorf("expected public IP to be allowed when BlockPrivateIPs=false, got: %v", err)
+	}
 }
 
 func TestNewSSRFSafeTransport(t *testing.T) {
