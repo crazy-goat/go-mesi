@@ -62,3 +62,10 @@ skills-lock.json
 
 # Manual test files
 libgomesi/test-libgomesi.c.manual
+
+# Apache module build artifacts
+servers/apache/.libs/
+servers/apache/*.la
+servers/apache/*.lo
+servers/apache/*.slo
+servers/apache/tests/test.txt
