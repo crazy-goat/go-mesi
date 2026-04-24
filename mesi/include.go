@@ -104,6 +104,8 @@ func fetchAB(token *esiIncludeToken, config EsiParserConfig) (string, bool, erro
 	return singleFetchUrlWithContext(selected, config, config.Context)
 }
 
+// fetchConcurrent fetches Src and Alt in parallel and returns the first successful result.
+// If both fail, it returns the last error. The losing request is cancelled via context.
 func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
 	if token.Alt == "" {
 		return singleFetchUrlWithContext(token.Src, config, config.Context)
@@ -116,26 +118,40 @@ func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bo
 	} else {
 		ctx, cancel = context.WithCancel(context.Background())
 	}
+	defer cancel()
 
 	resultChan := make(chan esiResponse, 2)
-	doneChan := make(chan struct{})
 
 	runTask := func(url string) {
 		data, isEsiResponse, err := singleFetchUrlWithContext(url, config, ctx)
 		select {
 		case resultChan <- esiResponse{Data: data, IsEsiResponse: isEsiResponse, Error: err}:
-		case <-doneChan:
+		case <-ctx.Done():
 		}
 	}
 
 	go runTask(token.Src)
 	go runTask(token.Alt)
 
-	result := <-resultChan
-	close(doneChan)
-	cancel() // Cancel context immediately to stop the other HTTP request
-
-	return result.Data, result.IsEsiResponse, result.Error
+	var lastErr error
+	for i := 0; i < 2; i++ {
+		select {
+		case result := <-resultChan:
+			if result.Error == nil {
+				cancel() // Cancel the other request
+				return result.Data, result.IsEsiResponse, nil
+			}
+			lastErr = result.Error
+		case <-ctx.Done():
+			cancel()
+			if lastErr == nil {
+				return "", false, ctx.Err()
+			}
+			return "", false, lastErr
+		}
+	}
+	cancel()
+	return "", false, lastErr
 }
 
 func fetchFallback(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {

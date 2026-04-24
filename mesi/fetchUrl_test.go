@@ -478,7 +478,6 @@ func TestFetchConcurrentBothSucceed(t *testing.T) {
 func TestFetchConcurrentPrimaryFailsAltSucceeds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/primary" {
-			time.Sleep(100 * time.Millisecond)
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte("NOT_FOUND"))
 		} else if r.URL.Path == "/alt" {
@@ -500,6 +499,38 @@ func TestFetchConcurrentPrimaryFailsAltSucceeds(t *testing.T) {
 	result := MESIParse(html, config)
 	if !strings.Contains(result, "ALT_RESPONSE") {
 		t.Errorf("expected ALT_RESPONSE in output (alt finishes first), got %q", result)
+	}
+}
+
+func TestFetchConcurrentPrimaryFailsImmediatelyAltSucceeds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/primary" {
+			// Primary fails immediately to test that fetchConcurrent waits for alt's success
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("PRIMARY_ERROR"))
+		} else if r.URL.Path == "/alt" {
+			// Alt succeeds after a small delay
+			time.Sleep(50 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ALT_RESPONSE"))
+		}
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	html := `<html><esi:include src="` + server.URL + `/primary" alt="` + server.URL + `/alt" fetch-mode="concurrent" /></html>`
+
+	result := MESIParse(html, config)
+	// BUG: This currently fails because fetchConcurrent returns the first result (primary's error)
+	// instead of waiting for the first SUCCESSFUL result
+	if !strings.Contains(result, "ALT_RESPONSE") {
+		t.Errorf("expected ALT_RESPONSE in output (should wait for success), got %q", result)
 	}
 }
 
