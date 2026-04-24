@@ -96,16 +96,17 @@ static int mesi_request_handler(request_rec *r) {
 static char *build_base_url(request_rec *r, apr_pool_t *pool) {
     const char *scheme = ap_http_scheme(r);
     const char *host = r->server->server_hostname
-                       ? r->server->server_hostname
-                       : ap_get_server_name(r);
-    apr_port_t port = ap_get_server_port(r);
-
+                        ? r->server->server_hostname
+                        : ap_get_server_name(r);
+    // Use canonical port from server config, not client-supplied
+    apr_port_t port = r->server->port ? r->server->port : ap_get_server_port(r);
+    
     if (!host || !*host) {
         host = "localhost";
     }
-
+    
     int default_port = (strcmp(scheme, "https") == 0) ? 443 : 80;
-
+    
     if (port != default_port) {
         return apr_psprintf(pool, "%s://%s:%d/", scheme, host, port);
     }
@@ -180,6 +181,21 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     if (EsiParseWithConfig) {
         esi = EsiParseWithConfig(html, 5, base_url, allowed_hosts_str, block_private);
     } else {
+        // ParseWithConfig not available - check if security features are configured
+        int has_security_config = (conf->allowed_hosts && conf->allowed_hosts->nelts > 0) 
+                               || (conf->block_private_ips != -1 && conf->block_private_ips == 1);
+        
+        if (has_security_config) {
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r, 
+                "mesi: ParseWithConfig not found but security directives are configured. "
+                "SSRF protection disabled! Upgrade libgomesi.so or remove MesiAllowedHosts/MesiBlockPrivateIPs directives.");
+            dlclose(go_module);
+            return ap_pass_brigade(f->next, bb);
+        }
+        
+        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+            "mesi: ParseWithConfig not found, falling back to Parse (no SSRF protection)");
+        
         ParseFunc EsiParse = (ParseFunc)dlsym(go_module, "Parse");
         if (EsiParse) {
             esi = EsiParse(html, 5, base_url);

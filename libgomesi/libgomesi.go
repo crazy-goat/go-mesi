@@ -80,12 +80,8 @@ func ParseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedH
 
 	hostsStr := C.GoString(allowedHosts)
 	var hosts []string
-	if hostsStr != "" {
-		for _, h := range strings.Fields(hostsStr) {
-			if h != "" {
-				hosts = append(hosts, h)
-			}
-		}
+	for _, h := range strings.Fields(hostsStr) {
+		hosts = append(hosts, h)
 	}
 
 	config := mesi.EsiParserConfig{
