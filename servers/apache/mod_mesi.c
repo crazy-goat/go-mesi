@@ -15,7 +15,13 @@
 #endif
 
 typedef char *(*ParseFunc)(char *, int, char *);
+typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
 typedef void (*FreeFunc)(char *);
+
+static void *go_module = NULL;
+static ParseFunc EsiParse = NULL;
+static ParseWithConfigFunc EsiParseWithConfig = NULL;
+static FreeFunc EsiFreeString = NULL;
 
 typedef struct {
     apr_bucket_brigade *bb;
@@ -45,6 +51,48 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     conf->allowed_hosts = (add->allowed_hosts->nelts > 0) ? add->allowed_hosts : base->allowed_hosts;
     conf->block_private_ips = (add->block_private_ips != -1) ? add->block_private_ips : base->block_private_ips;
     return conf;
+}
+
+static apr_status_t mesi_child_cleanup(void *data) {
+    if (go_module) {
+        dlclose(go_module);
+        go_module = NULL;
+    }
+    EsiParse = NULL;
+    EsiParseWithConfig = NULL;
+    EsiFreeString = NULL;
+    return APR_SUCCESS;
+}
+
+static void mesi_child_init(apr_pool_t *p, server_rec *s) {
+    // RTLD_GLOBAL is required for Go's runtime (signal handlers, etc.)
+    // Without it, Go's runtime initialization may fail or behave incorrectly
+    go_module = dlopen(LIB_GOMESI_PATH, RTLD_NOW | RTLD_GLOBAL);
+    if (!go_module) {
+        char *err = dlerror();
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                     "mesi: dlopen(%s) failed: %s", LIB_GOMESI_PATH, err ? err : "(unknown error)");
+        return;
+    }
+
+    EsiParse = (ParseFunc)dlsym(go_module, "Parse");
+    EsiParseWithConfig = (ParseWithConfigFunc)dlsym(go_module, "ParseWithConfig");
+    EsiFreeString = (FreeFunc)dlsym(go_module, "FreeString");
+
+    // Require at least one parse function and FreeString to avoid memory leaks
+    if ((!EsiParse && !EsiParseWithConfig) || !EsiFreeString) {
+        char *err = dlerror();
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                     "mesi: dlsym failed: %s", err ? err : "(unknown error)");
+        dlclose(go_module);
+        go_module = NULL;
+        EsiParse = NULL;
+        EsiParseWithConfig = NULL;
+        EsiFreeString = NULL;
+        return;
+    }
+
+    apr_pool_cleanup_register(p, NULL, mesi_child_cleanup, apr_pool_cleanup_null);
 }
 
 static void *create_dir_config(apr_pool_t *p, char *dir) {
@@ -150,12 +198,6 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         return ap_pass_brigade(f->next, bb);
     }
 
-    void *go_module = dlopen(LIB_GOMESI_PATH, RTLD_NOW);
-    if (!go_module) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r, "mesi: Failed to load %s: %s", LIB_GOMESI_PATH, dlerror());
-        return ap_pass_brigade(f->next, bb);
-    }
-
     char *allowed_hosts_str = "";
     if (conf->allowed_hosts && conf->allowed_hosts->nelts > 0) {
         apr_array_header_t *arr = conf->allowed_hosts;
@@ -170,38 +212,36 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
 
     int block_private = (conf->block_private_ips != -1) ? conf->block_private_ips : 1;
 
-    typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
-    ParseWithConfigFunc EsiParseWithConfig = (ParseWithConfigFunc)dlsym(go_module, "ParseWithConfig");
-    
-    FreeFunc EsiFreeString = (FreeFunc)dlsym(go_module, "FreeString");
-    
+    if (!EsiParse && !EsiParseWithConfig) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r, "mesi: libgomesi not loaded");
+        return ap_pass_brigade(f->next, bb);
+    }
+
     char *base_url = build_base_url(f->r, f->r->pool);
     char *esi = NULL;
-    
+
     if (EsiParseWithConfig) {
         esi = EsiParseWithConfig(html, 5, base_url, allowed_hosts_str, block_private);
     } else {
         // ParseWithConfig not available - check if security features are configured
-        int has_security_config = (conf->allowed_hosts && conf->allowed_hosts->nelts > 0) 
+        int has_security_config = (conf->allowed_hosts && conf->allowed_hosts->nelts > 0)
                                || (conf->block_private_ips != -1 && conf->block_private_ips == 1);
-        
+
         if (has_security_config) {
-            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r, 
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r,
                 "mesi: ParseWithConfig not found but security directives are configured. "
                 "SSRF protection disabled! Upgrade libgomesi.so or remove MesiAllowedHosts/MesiBlockPrivateIPs directives.");
-            dlclose(go_module);
             return ap_pass_brigade(f->next, bb);
         }
-        
+
         ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
             "mesi: ParseWithConfig not found, falling back to Parse (no SSRF protection)");
-        
-        ParseFunc EsiParse = (ParseFunc)dlsym(go_module, "Parse");
+
         if (EsiParse) {
             esi = EsiParse(html, 5, base_url);
         }
     }
-    
+
     if (!esi) {
         esi = html;
     }
@@ -217,12 +257,11 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     APR_BRIGADE_INSERT_TAIL(bb, b);
     APR_BRIGADE_INSERT_TAIL(bb, apr_bucket_eos_create(bb->bucket_alloc));
 
-    dlclose(go_module);
-
     return ap_pass_brigade(f->next, bb);
 }
 
 static void register_hooks(apr_pool_t *p) {
+    ap_hook_child_init(mesi_child_init, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_post_read_request(mesi_request_handler, NULL, NULL, APR_HOOK_MIDDLE);
     ap_register_output_filter("MESI_RESPONSE", mesi_response_filter, NULL, AP_FTYPE_CONTENT_SET);
 }
