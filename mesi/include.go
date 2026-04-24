@@ -144,6 +144,9 @@ func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bo
 			lastErr = result.Error
 		case <-ctx.Done():
 			cancel()
+			if lastErr == nil {
+				return "", false, ctx.Err()
+			}
 			return "", false, lastErr
 		}
 	}

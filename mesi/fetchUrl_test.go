@@ -505,7 +505,7 @@ func TestFetchConcurrentPrimaryFailsAltSucceeds(t *testing.T) {
 func TestFetchConcurrentPrimaryFailsImmediatelyAltSucceeds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/primary" {
-			// Primary fails IMMEDIATELY - no sleep
+			// Primary fails immediately to test that fetchConcurrent waits for alt's success
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte("PRIMARY_ERROR"))
 		} else if r.URL.Path == "/alt" {
