@@ -49,6 +49,26 @@ else
     exit 1
 fi
 
+echo "=== Test 5: AllowedHosts - allowed host (backend) ==="
+RESPONSE=$(curl -s http://localhost:8080/ssrf-allowed.html)
+if echo "$RESPONSE" | grep -q "allowed content"; then
+    echo "PASS: Include from allowed host (backend) succeeded"
+else
+    echo "FAIL: Include from allowed host failed"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 6: AllowedHosts - blocked host (evil.com) ==="
+# The include to evil.com should be blocked
+if echo "$RESPONSE" | grep -q "blocked.txt"; then
+    echo "FAIL: Include from non-allowed host was NOT blocked"
+    echo "Response: $RESPONSE"
+    exit 1
+else
+    echo "PASS: Include from non-allowed host blocked"
+fi
+
 docker compose down
 
 echo ""

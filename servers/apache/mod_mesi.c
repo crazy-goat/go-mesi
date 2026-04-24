@@ -25,11 +25,15 @@ module AP_MODULE_DECLARE_DATA mesi_module;
 
 typedef struct {
     int enable_mesi;
+    apr_array_header_t *allowed_hosts;
+    int block_private_ips;  // -1=unset, 0=off, 1=on
 } mesi_config;
 
 static void *create_server_config(apr_pool_t *p, server_rec *s) {
     mesi_config *conf = apr_pcalloc(p, sizeof(*conf));
     conf->enable_mesi = 0;
+    conf->allowed_hosts = apr_array_make(p, 4, sizeof(const char *));
+    conf->block_private_ips = -1;  // -1 = unset, default will be applied in filter
     return conf;
 }
 
@@ -38,6 +42,8 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     mesi_config *add = (mesi_config *) addv;
     mesi_config *conf = apr_pcalloc(p, sizeof(*conf));
     conf->enable_mesi = (add->enable_mesi != 0) ? add->enable_mesi : base->enable_mesi;
+    conf->allowed_hosts = (add->allowed_hosts->nelts > 0) ? add->allowed_hosts : base->allowed_hosts;
+    conf->block_private_ips = (add->block_private_ips != -1) ? add->block_private_ips : base->block_private_ips;
     return conf;
 }
 
@@ -55,6 +61,29 @@ static const char *set_enable_mesi(cmd_parms *cmd, void *cfg, int flag) {
     return NULL;
 }
 
+static const char *set_allowed_hosts(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    const char *host;
+    while (*arg) {
+        // Skip whitespace (space, tab)
+        while (*arg && (*arg == ' ' || *arg == '\t')) arg++;
+        host = arg;
+        // Find end of token (space or tab)
+        while (*arg && *arg != ' ' && *arg != '\t') arg++;
+        if (host != arg) {
+            const char **new_host = apr_array_push(conf->allowed_hosts);
+            *new_host = apr_pstrndup(cmd->pool, host, arg - host);
+        }
+    }
+    return NULL;
+}
+
+static const char *set_block_private_ips(cmd_parms *cmd, void *cfg, int flag) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    conf->block_private_ips = flag;
+    return NULL;
+}
+
 static int mesi_request_handler(request_rec *r) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(r->server->module_config, &mesi_module);
     if (conf->enable_mesi) {
@@ -66,8 +95,15 @@ static int mesi_request_handler(request_rec *r) {
 
 static char *build_base_url(request_rec *r, apr_pool_t *pool) {
     const char *scheme = ap_http_scheme(r);
-    const char *host = ap_get_server_name(r);
-    apr_port_t port = ap_get_server_port(r);
+    const char *host = r->server->server_hostname
+                        ? r->server->server_hostname
+                        : ap_get_server_name(r);
+    // Use canonical port from server config, not client-supplied
+    apr_port_t port = r->server->port ? r->server->port : ap_get_server_port(r);
+    
+    if (!host || !*host) {
+        host = "localhost";
+    }
     
     int default_port = (strcmp(scheme, "https") == 0) ? 443 : 80;
     
@@ -120,28 +156,68 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         return ap_pass_brigade(f->next, bb);
     }
 
-    ParseFunc EsiParse = (ParseFunc)dlsym(go_module, "Parse");
-    FreeFunc FreeString = (FreeFunc)dlsym(go_module, "FreeString");
-    
-    if (!EsiParse) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r, "mesi: Failed to find Parse symbol: %s", dlerror());
-        dlclose(go_module);
-        return ap_pass_brigade(f->next, bb);
+    char *allowed_hosts_str = "";
+    if (conf->allowed_hosts && conf->allowed_hosts->nelts > 0) {
+        apr_array_header_t *arr = conf->allowed_hosts;
+        if (arr->nelts > 0) {
+            const char **hosts = (const char **)arr->elts;
+            allowed_hosts_str = apr_pstrdup(f->r->pool, hosts[0]);
+            for (int i = 1; i < arr->nelts; i++) {
+                allowed_hosts_str = apr_pstrcat(f->r->pool, allowed_hosts_str, " ", hosts[i], NULL);
+            }
+        }
     }
 
-    char *base_url = build_base_url(f->r, f->r->pool);
-    char *esi = EsiParse(html, 5, base_url);
-    
-    dlclose(go_module);
+    int block_private = (conf->block_private_ips != -1) ? conf->block_private_ips : 1;
 
+    typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
+    ParseWithConfigFunc EsiParseWithConfig = (ParseWithConfigFunc)dlsym(go_module, "ParseWithConfig");
+    
+    FreeFunc EsiFreeString = (FreeFunc)dlsym(go_module, "FreeString");
+    
+    char *base_url = build_base_url(f->r, f->r->pool);
+    char *esi = NULL;
+    
+    if (EsiParseWithConfig) {
+        esi = EsiParseWithConfig(html, 5, base_url, allowed_hosts_str, block_private);
+    } else {
+        // ParseWithConfig not available - check if security features are configured
+        int has_security_config = (conf->allowed_hosts && conf->allowed_hosts->nelts > 0) 
+                               || (conf->block_private_ips != -1 && conf->block_private_ips == 1);
+        
+        if (has_security_config) {
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r, 
+                "mesi: ParseWithConfig not found but security directives are configured. "
+                "SSRF protection disabled! Upgrade libgomesi.so or remove MesiAllowedHosts/MesiBlockPrivateIPs directives.");
+            dlclose(go_module);
+            return ap_pass_brigade(f->next, bb);
+        }
+        
+        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+            "mesi: ParseWithConfig not found, falling back to Parse (no SSRF protection)");
+        
+        ParseFunc EsiParse = (ParseFunc)dlsym(go_module, "Parse");
+        if (EsiParse) {
+            esi = EsiParse(html, 5, base_url);
+        }
+    }
+    
     if (!esi) {
         esi = html;
     }
 
     apr_brigade_cleanup(bb);
+    if (esi != html && EsiFreeString) {
+        // Copy esi to pool, then free Go-allocated memory
+        char *esi_copy = apr_pstrdup(f->r->pool, esi);
+        EsiFreeString(esi);
+        esi = esi_copy;
+    }
     b = apr_bucket_pool_create(esi, strlen(esi), f->r->pool, bb->bucket_alloc);
     APR_BRIGADE_INSERT_TAIL(bb, b);
     APR_BRIGADE_INSERT_TAIL(bb, apr_bucket_eos_create(bb->bucket_alloc));
+
+    dlclose(go_module);
 
     return ap_pass_brigade(f->next, bb);
 }
@@ -153,6 +229,8 @@ static void register_hooks(apr_pool_t *p) {
 
 static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("EnableMesi", set_enable_mesi, NULL, RSRC_CONF, "Enable or disable the Mesi module"),
+    AP_INIT_RAW_ARGS("MesiAllowedHosts", set_allowed_hosts, NULL, RSRC_CONF, "Space-separated list of allowed hostnames for ESI includes"),
+    AP_INIT_FLAG("MesiBlockPrivateIPs", set_block_private_ips, NULL, RSRC_CONF, "Enable or disable private IP blocking (default: On)"),
     {NULL}
 };
 

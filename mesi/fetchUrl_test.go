@@ -698,6 +698,27 @@ func TestSingleFetchUrlSSRFValidation(t *testing.T) {
 	}
 }
 
+func TestParseWithConfigAllowedHostsAndBlockPrivateIPs(t *testing.T) {
+	if out := MESIParse(`<esi:include src="http://evil.com/test" />`, EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        5,
+		Timeout:         30 * time.Second,
+		AllowedHosts:    []string{"allowed.com"},
+		BlockPrivateIPs: true,
+	}); !strings.Contains(out, "host not in allowed list") {
+		t.Fatalf("expected allowed-host SSRF block, got %q", out)
+	}
+
+	if out := MESIParse(`<esi:include src="http://127.0.0.1/test" />`, EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        5,
+		Timeout:         30 * time.Second,
+		BlockPrivateIPs: true,
+	}); !strings.Contains(out, "blocked") {
+		t.Fatalf("expected private IP SSRF block, got %q", out)
+	}
+}
+
 func TestSingleFetchUrlInvalidRequest(t *testing.T) {
 	config := EsiParserConfig{
 		DefaultUrl:      "http://example.com/",
