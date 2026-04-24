@@ -214,6 +214,8 @@ ResultLoop:
 	for range tokens {
 		select {
 		case <-ctx.Done():
+			// Goroutines will send to buffered channel (capacity = len(tokens))
+			// and exit. Context cancellation stops in-flight HTTP requests.
 			break ResultLoop
 		case res := <-ch:
 			results = append(results, res)

@@ -116,7 +116,6 @@ func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bo
 	} else {
 		ctx, cancel = context.WithCancel(context.Background())
 	}
-	defer cancel()
 
 	resultChan := make(chan esiResponse, 2)
 	doneChan := make(chan struct{})
@@ -134,6 +133,7 @@ func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bo
 
 	result := <-resultChan
 	close(doneChan)
+	cancel() // Cancel context immediately to stop the other HTTP request
 
 	return result.Data, result.IsEsiResponse, result.Error
 }
