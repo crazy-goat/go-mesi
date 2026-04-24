@@ -65,10 +65,13 @@ static apr_status_t mesi_child_cleanup(void *data) {
 }
 
 static void mesi_child_init(apr_pool_t *p, server_rec *s) {
+    // RTLD_GLOBAL is required for Go's runtime (signal handlers, etc.)
+    // Without it, Go's runtime initialization may fail or behave incorrectly
     go_module = dlopen(LIB_GOMESI_PATH, RTLD_NOW | RTLD_GLOBAL);
     if (!go_module) {
+        char *err = dlerror();
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                     "mesi: dlopen(%s) failed: %s", LIB_GOMESI_PATH, dlerror());
+                     "mesi: dlopen(%s) failed: %s", LIB_GOMESI_PATH, err ? err : "(unknown error)");
         return;
     }
 
@@ -76,9 +79,17 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     EsiParseWithConfig = (ParseWithConfigFunc)dlsym(go_module, "ParseWithConfig");
     EsiFreeString = (FreeFunc)dlsym(go_module, "FreeString");
 
-    if (!EsiParse && !EsiParseWithConfig) {
+    // Require at least one parse function and FreeString to avoid memory leaks
+    if ((!EsiParse && !EsiParseWithConfig) || !EsiFreeString) {
+        char *err = dlerror();
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                     "mesi: dlsym failed: %s", dlerror());
+                     "mesi: dlsym failed: %s", err ? err : "(unknown error)");
+        dlclose(go_module);
+        go_module = NULL;
+        EsiParse = NULL;
+        EsiParseWithConfig = NULL;
+        EsiFreeString = NULL;
+        return;
     }
 
     apr_pool_cleanup_register(p, NULL, mesi_child_cleanup, apr_pool_cleanup_null);
