@@ -393,6 +393,61 @@ func TestMESIParseContextCancellationStopsAllGoroutines(t *testing.T) {
 	_ = result
 }
 
+func TestMESIParseContextCancellationMidParse(t *testing.T) {
+	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(5 * time.Second):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("SLOW"))
+		}
+	}))
+	defer slowServer.Close()
+
+	fastServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("FAST"))
+	}))
+	defer fastServer.Close()
+
+	// Mix of slow and fast includes
+	html := `<html><body>` +
+		`<esi:include src="` + slowServer.URL + `/slow"/>` +
+		`<esi:include src="` + fastServer.URL + `/fast"/>` +
+		`<esi:include src="` + slowServer.URL + `/slow2"/>` +
+		`</body></html>`
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	config := EsiParserConfig{
+		Context:         ctx,
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        5,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	// Start MESIParse in a goroutine
+	done := make(chan string)
+	go func() {
+		result := MESIParse(html, config)
+		done <- result
+	}()
+
+	// Cancel context after 100ms, while MESIParse is running
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	// Wait for MESIParse to return
+	select {
+	case result := <-done:
+		_ = result
+	case <-time.After(2 * time.Second):
+		t.Fatal("MESIParse did not return within 2 seconds after context cancellation")
+	}
+}
+
 func TestFetchConcurrentBothSucceed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/primary" {

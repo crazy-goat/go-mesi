@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -155,9 +154,13 @@ func MESIParse(input string, config EsiParserConfig) string {
 	if config.Context == nil {
 		config.Context = context.Background()
 	}
+	ctx, cancel := context.WithCancel(config.Context)
+	defer cancel()
+
+	config.Context = ctx
+
 	logger := config.getLogger()
 	start := time.Now()
-	var wg sync.WaitGroup
 
 	var result strings.Builder
 	processed := unescape(input)
@@ -166,7 +169,6 @@ func MESIParse(input string, config EsiParserConfig) string {
 	logger.Debug("parse_start", "input_size", len(input), "token_count", len(tokens))
 
 	ch := make(chan Response, len(tokens))
-	wg.Add(len(tokens))
 
 	var semaphore chan struct{}
 	if config.MaxConcurrentRequests < 0 {
@@ -177,14 +179,8 @@ func MESIParse(input string, config EsiParserConfig) string {
 		config = config.setSemaphore(semaphore)
 	}
 
-	go func() {
-		wg.Wait()
-		close(ch)
-	}()
-
 	for index, token := range tokens {
-		go func(id int, token esiToken, wg *sync.WaitGroup, ch chan<- Response, cfg EsiParserConfig, l Logger) {
-			defer wg.Done()
+		go func(id int, token esiToken, ch chan<- Response, cfg EsiParserConfig, l Logger) {
 			res := Response{"", id}
 			if !token.isEsi() {
 				res.content = token.staticContent
@@ -210,19 +206,18 @@ func MESIParse(input string, config EsiParserConfig) string {
 			}
 
 			ch <- res
-		}(index, token, &wg, ch, config, logger)
+		}(index, token, ch, config, logger)
 	}
 
 	var results []Response
 ResultLoop:
-	for {
+	for range tokens {
 		select {
-		case <-config.Context.Done():
-			return assembleResults(results, result)
-		case res, ok := <-ch:
-			if !ok {
-				break ResultLoop
-			}
+		case <-ctx.Done():
+			// Goroutines will send to buffered channel (capacity = len(tokens))
+			// and exit. Context cancellation stops in-flight HTTP requests.
+			break ResultLoop
+		case res := <-ch:
 			results = append(results, res)
 		}
 	}
