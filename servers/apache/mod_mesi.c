@@ -171,42 +171,64 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         return ap_pass_brigade(f->next, bb);
     }
 
-    apr_bucket *b;
-    char *html = NULL;
-    response_filter_ctx *ctx;
-
-    ctx = f->ctx;
+    response_filter_ctx *ctx = f->ctx;
     if (!ctx) {
-        ctx = apr_pcalloc(f->r->pool, sizeof(response_filter_ctx));
+        ctx = apr_pcalloc(f->r->pool, sizeof(*ctx));
+        ctx->bb = apr_brigade_create(f->r->pool, f->c->bucket_alloc);
         f->ctx = ctx;
     }
 
-    for (b = APR_BRIGADE_FIRST(bb); b != APR_BRIGADE_SENTINEL(bb); b = APR_BUCKET_NEXT(b)) {
-        const char *data;
-        apr_size_t data_len;
+    // Move all buckets from the incoming brigade to our accumulation brigade.
+    // Track whether we've seen the end-of-stream (EOS) marker.
+    int seen_eos = 0;
+    apr_bucket *b;
+    while ((b = APR_BRIGADE_FIRST(bb)) != APR_BRIGADE_SENTINEL(bb)) {
+        if (APR_BUCKET_IS_EOS(b)) {
+            seen_eos = 1;
+            apr_bucket_delete(b);
+            continue;
+        }
+        APR_BUCKET_REMOVE(b);
+        APR_BRIGADE_INSERT_TAIL(ctx->bb, b);
+    }
 
-        if (apr_bucket_read(b, &data, &data_len, APR_BLOCK_READ) == APR_SUCCESS) {
-            if (!html) {
-                html = apr_pstrndup(f->r->pool, data, data_len);
-            } else {
-                html = apr_pstrcat(f->r->pool, html, data, NULL);
-            }
+    if (!seen_eos) {
+        return APR_SUCCESS;  // Not the last brigade — wait for more data
+    }
+
+    // Flatten the accumulated body into a single NUL-terminated string.
+    // If flattening fails, pass through raw data without ESI processing.
+    apr_size_t len;
+    char *html = NULL;
+    int flatten_ok = 0;
+
+    if (apr_brigade_length(ctx->bb, 1, &len) == APR_SUCCESS && len > 0) {
+        html = apr_palloc(f->r->pool, len + 1);
+        apr_size_t copied = len;
+        if (apr_brigade_flatten(ctx->bb, html, &copied) == APR_SUCCESS) {
+            html[copied] = '\0';
+            flatten_ok = 1;
         }
     }
 
-    if (!html) {
-        return ap_pass_brigade(f->next, bb);
+    if (!flatten_ok) {
+        // Empty body or flatten failed — pass through without parsing
+        APR_BRIGADE_INSERT_TAIL(ctx->bb, apr_bucket_eos_create(ctx->bb->bucket_alloc));
+        if (html && len > 0) {
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+                "mesi: failed to flatten response body, skipping ESI processing");
+        }
+        return ap_pass_brigade(f->next, ctx->bb);
     }
 
+    // Build allowed_hosts string from config
     char *allowed_hosts_str = "";
     if (conf->allowed_hosts && conf->allowed_hosts->nelts > 0) {
         apr_array_header_t *arr = conf->allowed_hosts;
-        if (arr->nelts > 0) {
-            const char **hosts = (const char **)arr->elts;
-            allowed_hosts_str = apr_pstrdup(f->r->pool, hosts[0]);
-            for (int i = 1; i < arr->nelts; i++) {
-                allowed_hosts_str = apr_pstrcat(f->r->pool, allowed_hosts_str, " ", hosts[i], NULL);
-            }
+        const char **hosts = (const char **)arr->elts;
+        allowed_hosts_str = apr_pstrdup(f->r->pool, hosts[0]);
+        for (int i = 1; i < arr->nelts; i++) {
+            allowed_hosts_str = apr_pstrcat(f->r->pool, allowed_hosts_str, " ", hosts[i], NULL);
         }
     }
 
@@ -214,7 +236,11 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
 
     if (!EsiParse && !EsiParseWithConfig) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r, "mesi: libgomesi not loaded");
-        return ap_pass_brigade(f->next, bb);
+        apr_brigade_cleanup(ctx->bb);
+        b = apr_bucket_pool_create(html, strlen(html), f->r->pool, ctx->bb->bucket_alloc);
+        APR_BRIGADE_INSERT_TAIL(ctx->bb, b);
+        APR_BRIGADE_INSERT_TAIL(ctx->bb, apr_bucket_eos_create(ctx->bb->bucket_alloc));
+        return ap_pass_brigade(f->next, ctx->bb);
     }
 
     char *base_url = build_base_url(f->r, f->r->pool);
@@ -231,7 +257,11 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r,
                 "mesi: ParseWithConfig not found but security directives are configured. "
                 "SSRF protection disabled! Upgrade libgomesi.so or remove MesiAllowedHosts/MesiBlockPrivateIPs directives.");
-            return ap_pass_brigade(f->next, bb);
+            apr_brigade_cleanup(ctx->bb);
+            b = apr_bucket_pool_create(html, strlen(html), f->r->pool, ctx->bb->bucket_alloc);
+            APR_BRIGADE_INSERT_TAIL(ctx->bb, b);
+            APR_BRIGADE_INSERT_TAIL(ctx->bb, apr_bucket_eos_create(ctx->bb->bucket_alloc));
+            return ap_pass_brigade(f->next, ctx->bb);
         }
 
         ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
@@ -242,22 +272,24 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         }
     }
 
-    if (!esi) {
-        esi = html;
+    apr_brigade_cleanup(ctx->bb);
+
+    char *output;
+    if (esi) {
+        output = apr_pstrdup(f->r->pool, esi);
+        if (EsiFreeString) {
+            EsiFreeString(esi);
+        }
+    } else {
+        output = html;
     }
 
-    apr_brigade_cleanup(bb);
-    if (esi != html && EsiFreeString) {
-        // Copy esi to pool, then free Go-allocated memory
-        char *esi_copy = apr_pstrdup(f->r->pool, esi);
-        EsiFreeString(esi);
-        esi = esi_copy;
-    }
-    b = apr_bucket_pool_create(esi, strlen(esi), f->r->pool, bb->bucket_alloc);
-    APR_BRIGADE_INSERT_TAIL(bb, b);
-    APR_BRIGADE_INSERT_TAIL(bb, apr_bucket_eos_create(bb->bucket_alloc));
+    b = apr_bucket_pool_create(output, strlen(output), f->r->pool, ctx->bb->bucket_alloc);
+    APR_BRIGADE_INSERT_TAIL(ctx->bb, b);
+    APR_BRIGADE_INSERT_TAIL(ctx->bb, apr_bucket_eos_create(ctx->bb->bucket_alloc));
 
-    return ap_pass_brigade(f->next, bb);
+    apr_table_unset(f->r->headers_out, "Content-Length");
+    return ap_pass_brigade(f->next, ctx->bb);
 }
 
 static void register_hooks(apr_pool_t *p) {
