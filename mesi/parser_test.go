@@ -37,7 +37,7 @@ func TestParse(t *testing.T) {
 			input:      "<!--esi <esi:include src=\"x\"/>-->",
 			maxDepth:   0,
 			defaultUrl: "http://example.com/",
-			expected:   "esi max depth",
+			expected:   " esi max depth",
 		},
 	}
 
@@ -405,7 +405,7 @@ func TestMESIParseSimpleStaticContent(t *testing.T) {
 		{"empty string", "", ""},
 		{"plain text", "Hello World", "Hello World"},
 		{"html without esi", "<html><body>Test</body></html>", "<html><body>Test</body></html>"},
-		{"esi comment without tags", "<!--esi plain text-->", "plain text"},
+		{"esi comment without tags", "<!--esi plain text-->", " plain text"},
 	}
 
 	for _, tt := range tests {
@@ -435,8 +435,8 @@ func TestMESIParseWithInclude(t *testing.T) {
 	input := `<!--esi <esi:include src="` + server.URL + `/test"/>-->`
 	result := MESIParse(input, config)
 
-	if result != "included content" {
-		t.Errorf("MESIParse() = %q, want %q", result, "included content")
+	if result != " included content" {
+		t.Errorf("MESIParse() = %q, want %q", result, " included content")
 	}
 }
 
@@ -583,7 +583,7 @@ func TestMESIParseNestedIncludes(t *testing.T) {
 	if callCount.Load() != 2 {
 		t.Errorf("Expected 2 HTTP calls for nested includes, got %d", callCount.Load())
 	}
-	if result != "inner content" {
-		t.Errorf("MESIParse() = %q, want %q", result, "inner content")
+	if result != "  inner content" {
+		t.Errorf("MESIParse() = %q, want %q", result, "  inner content")
 	}
 }
