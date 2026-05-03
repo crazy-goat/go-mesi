@@ -100,6 +100,17 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 	return false
 }
 
+// hostInAllowedHosts checks if a hostname matches any entry in AllowedHosts.
+// Matches exact hostnames and subdomains (e.g., "api.example.com" matches "example.com").
+func hostInAllowedHosts(host string, config EsiParserConfig) bool {
+	for _, allowed := range config.AllowedHosts {
+		if host == allowed || strings.HasSuffix(host, "."+allowed) {
+			return true
+		}
+	}
+	return false
+}
+
 // safeDialer returns a net.Dialer with a Control callback that blocks
 // connections to private/reserved IP addresses at dial time.
 // This prevents SSRF via DNS rebinding attacks (TOCTOU between validation and dial).
