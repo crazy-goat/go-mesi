@@ -211,7 +211,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
 
     // Flatten the accumulated body into a single NUL-terminated string.
     // If flattening fails, pass through raw data without ESI processing.
-    apr_size_t len;
+    apr_size_t len = 0;
     char *html = NULL;
     int flatten_ok = 0;
 
