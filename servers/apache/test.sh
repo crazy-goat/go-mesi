@@ -119,6 +119,42 @@ else
     exit 1
 fi
 
+echo "=== Test 11: JSON content (application/json) not processed ==="
+RESPONSE=$(curl -s http://localhost:8080/noesi.json)
+if echo "$RESPONSE" | grep -q "esi:include"; then
+    echo "PASS: JSON content not processed (raw esi:include preserved)"
+else
+    echo "FAIL: JSON content was processed"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+# Also verify Content-Type is correct
+CT=$(curl -sI http://localhost:8080/noesi.json | grep -i "Content-Type")
+if echo "$CT" | grep -qi "application/json"; then
+    echo "PASS: JSON Content-Type is application/json"
+else
+    echo "FAIL: JSON Content-Type is wrong: $CT"
+    exit 1
+fi
+
+echo "=== Test 12: CSS content (text/css) not processed ==="
+RESPONSE=$(curl -s http://localhost:8080/noesi.css)
+if echo "$RESPONSE" | grep -q "esi:include"; then
+    echo "PASS: CSS content not processed (raw esi:include preserved)"
+else
+    echo "FAIL: CSS content was processed"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+# Also verify Content-Type is correct
+CT=$(curl -sI http://localhost:8080/noesi.css | grep -i "Content-Type")
+if echo "$CT" | grep -qi "text/css"; then
+    echo "PASS: CSS Content-Type is text/css"
+else
+    echo "FAIL: CSS Content-Type is wrong: $CT"
+    exit 1
+fi
+
 docker compose down
 
 echo ""

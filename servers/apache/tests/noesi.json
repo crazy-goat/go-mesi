@@ -1,0 +1,1 @@
+{"message": "hello", "include": "<esi:include src=\"http://backend:8000/ssrf-allowed.html\"/>"}

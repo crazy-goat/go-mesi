@@ -161,13 +161,26 @@ static char *build_base_url(request_rec *r, apr_pool_t *pool) {
     return apr_psprintf(pool, "%s://%s/", scheme, host);
 }
 
+static int is_html_content(const char *ct) {
+    if (!ct) return 0;
+    // Skip leading whitespace (OWS per RFC 7230 §3.2.6)
+    while (*ct == ' ' || *ct == '\t') ct++;
+    // Case-insensitive media-type comparison (RFC 9110 §8.3.1)
+    if (strncasecmp(ct, "text/html", 9) != 0) return 0;
+    char delim = ct[9];
+    // Must be followed by delimiter, parameter separator, or end-of-string
+    return delim == '\0' || delim == ';' || delim == ' ' || delim == '\t'
+           || delim == '\r' || delim == '\n';
+}
+
 static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(f->r->server->module_config, &mesi_module);
     if (!conf->enable_mesi) {
         return ap_pass_brigade(f->next, bb);
     }
 
-    if (!f->r->content_type || strncmp(f->r->content_type, "text/html", 9) != 0 || f->r->status > 400) {
+    if (!is_html_content(f->r->content_type) || f->r->status >= 400) {
+        ap_remove_output_filter(f);
         return ap_pass_brigade(f->next, bb);
     }
 
