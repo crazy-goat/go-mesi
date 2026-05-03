@@ -3,9 +3,11 @@ package mesi
 import (
 	"context"
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -48,6 +50,10 @@ type EsiParserConfig struct {
 	// Default: "" (silent). Set to something like "<!-- esi error -->" for
 	// debugging, but NEVER include the raw error — see security advisory.
 	IncludeErrorMarker             string
+	// MaxWorkers caps the number of goroutines used to process ESI tokens
+	// within a single MESIParse call. Zero means runtime.NumCPU()*4.
+	// Static tokens do not count against this limit.
+	MaxWorkers                     int
 	requestSemaphore               chan struct{} // semaphore for limiting HTTP requests
 }
 
@@ -195,8 +201,6 @@ func MESIParse(input string, config EsiParserConfig) string {
 
 	logger.Debug("parse_start", "input_size", len(input), "token_count", len(tokens))
 
-	ch := make(chan Response, len(tokens))
-
 	var semaphore chan struct{}
 	if config.MaxConcurrentRequests < 0 {
 		config.MaxConcurrentRequests = 0
@@ -206,46 +210,87 @@ func MESIParse(input string, config EsiParserConfig) string {
 		config = config.setSemaphore(semaphore)
 	}
 
+	type esiJob struct {
+		id    int
+		token esiToken
+	}
+	var esiJobs []esiJob
+	var results []Response
+
 	for index, token := range tokens {
-		go func(id int, token esiToken, ch chan<- Response, cfg EsiParserConfig, l Logger) {
-			res := Response{"", id}
-			if !token.isEsi() {
-				res.content = token.staticContent
-			} else if token.esiTagType == "include" {
-				l.Debug("token_processing", "token_type", token.esiTagType, "index", id)
-
-				include, err := parseInclude(token.esiTagContent)
-				if err != nil {
-					l.Debug("parse_error", "error", err.Error())
-					ch <- res
-					return
-				}
-				newConfig := cfg.OverrideConfig(include).WithElapsedTime(time.Since(start))
-				content, isEsiResponse := include.toString(newConfig)
-
-				if cfg.CanGoDeeper(time.Since(start)) && (isEsiResponse || !newConfig.ParseOnHeader) {
-					content = MESIParse(content, newConfig.DecreaseMaxDepth().WithElapsedTime(time.Since(start)))
-				}
-
-				res.content = content
-			} else {
-				l.Debug("token_processing", "token_type", token.esiTagType, "index", id)
-			}
-
-			ch <- res
-		}(index, token, ch, config, logger)
+		if !token.isEsi() {
+			results = append(results, Response{token.staticContent, index})
+		} else {
+			esiJobs = append(esiJobs, esiJob{index, token})
+		}
 	}
 
-	var results []Response
-ResultLoop:
-	for range tokens {
-		select {
-		case <-ctx.Done():
-			// Goroutines will send to buffered channel (capacity = len(tokens))
-			// and exit. Context cancellation stops in-flight HTTP requests.
-			break ResultLoop
-		case res := <-ch:
-			results = append(results, res)
+	if len(esiJobs) > 0 {
+		maxWorkers := config.MaxWorkers
+		if maxWorkers <= 0 {
+			maxWorkers = runtime.NumCPU() * 4
+		}
+
+		ch := make(chan Response, len(esiJobs))
+
+		workerCount := maxWorkers
+		if workerCount > len(esiJobs) {
+			workerCount = len(esiJobs)
+		}
+
+		var wg sync.WaitGroup
+		jobs := make(chan esiJob)
+
+		for range workerCount {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for job := range jobs {
+					id := job.id
+					token := job.token
+					res := Response{"", id}
+
+					if token.esiTagType == "include" {
+						logger.Debug("token_processing", "token_type", token.esiTagType, "index", id)
+
+						include, err := parseInclude(token.esiTagContent)
+						if err != nil {
+							logger.Debug("parse_error", "error", err.Error())
+							ch <- res
+							continue
+						}
+						newConfig := config.OverrideConfig(include).WithElapsedTime(time.Since(start))
+						content, isEsiResponse := include.toString(newConfig)
+
+						if config.CanGoDeeper(time.Since(start)) && (isEsiResponse || !newConfig.ParseOnHeader) {
+							content = MESIParse(content, newConfig.DecreaseMaxDepth().WithElapsedTime(time.Since(start)))
+						}
+
+						res.content = content
+					} else {
+						logger.Debug("token_processing", "token_type", token.esiTagType, "index", id)
+					}
+
+					ch <- res
+				}
+			}()
+		}
+
+		for _, job := range esiJobs {
+			jobs <- job
+		}
+		close(jobs)
+
+	ResultLoop:
+		for i := 0; i < len(esiJobs); i++ {
+			select {
+			case <-ctx.Done():
+				// Workers will send to buffered channel (capacity = len(esiJobs))
+				// and exit when jobs channel is fully consumed.
+				break ResultLoop
+			case res := <-ch:
+				results = append(results, res)
+			}
 		}
 	}
 

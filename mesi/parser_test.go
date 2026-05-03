@@ -400,6 +400,47 @@ func TestOverrideConfigWithMaxDepth(t *testing.T) {
 	}
 }
 
+func TestMESIParseWorkerPoolRespectsMaxWorkers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping concurrency test in short mode")
+	}
+
+	var maxConcurrent atomic.Int64
+	var current atomic.Int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v := current.Add(1)
+		if p := maxConcurrent.Load(); v > p {
+			maxConcurrent.CompareAndSwap(p, v)
+		}
+		time.Sleep(50 * time.Millisecond)
+		current.Add(-1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("content"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxWorkers = 2
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+	// Disable HTTP-level semaphore to test worker pool independently
+	config.MaxConcurrentRequests = 0
+
+	var input string
+	for i := 0; i < 10; i++ {
+		input += `<!--esi <esi:include src="` + server.URL + `/` + strconv.Itoa(i) + `"/>-->`
+	}
+
+	MESIParse(input, config)
+
+	mc := maxConcurrent.Load()
+	if mc > 2 {
+		t.Errorf("max concurrent includes = %d, want <= 2 (MaxWorkers=2)", mc)
+	}
+}
+
 func TestMESIParseSimpleStaticContent(t *testing.T) {
 	tests := []struct {
 		name     string
