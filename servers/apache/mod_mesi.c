@@ -8,6 +8,7 @@
 #include "apr_strings.h"
 
 #include <dlfcn.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef LIB_GOMESI_PATH
@@ -173,6 +174,35 @@ static int is_html_content(const char *ct) {
            || delim == '\r' || delim == '\n';
 }
 
+// Flatten brigade into a single NUL-terminated string.
+// Returns 1 on success, 0 on failure.
+// On partial failure (length OK but flatten failed), *html and *len
+// may be set to the allocated buffer and brigade length respectively.
+//
+// Contract for the fallback path (caller when returns 0):
+//   - brigade is NOT modified (caller appends EOS and passes through)
+//   - no ESI processing is performed
+//   - if *html is non-NULL, a warning SHOULD be logged (partial flatten failure)
+//   - if *html is NULL, brigade was empty or apr_brigade_length failed
+//
+// Synthetic failure injection: set MESI_FORCE_FLATTEN_ERROR=1 env var.
+static int flatten_brigade(apr_bucket_brigade *bb, char **html, apr_size_t *len, apr_pool_t *pool) {
+    char *env_force = getenv("MESI_FORCE_FLATTEN_ERROR");
+    if (env_force && env_force[0] == '1' && env_force[1] == '\0') {
+        return 0;
+    }
+
+    if (apr_brigade_length(bb, 1, len) == APR_SUCCESS && *len > 0) {
+        *html = apr_palloc(pool, *len + 1);
+        apr_size_t copied = *len;
+        if (apr_brigade_flatten(bb, *html, &copied) == APR_SUCCESS) {
+            (*html)[copied] = '\0';
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(f->r->server->module_config, &mesi_module);
     if (!conf->enable_mesi) {
@@ -213,19 +243,9 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     // If flattening fails, pass through raw data without ESI processing.
     apr_size_t len = 0;
     char *html = NULL;
-    int flatten_ok = 0;
-
-    if (apr_brigade_length(ctx->bb, 1, &len) == APR_SUCCESS && len > 0) {
-        html = apr_palloc(f->r->pool, len + 1);
-        apr_size_t copied = len;
-        if (apr_brigade_flatten(ctx->bb, html, &copied) == APR_SUCCESS) {
-            html[copied] = '\0';
-            flatten_ok = 1;
-        }
-    }
+    int flatten_ok = flatten_brigade(ctx->bb, &html, &len, f->r->pool);
 
     if (!flatten_ok) {
-        // Empty body or flatten failed — pass through without parsing
         APR_BRIGADE_INSERT_TAIL(ctx->bb, apr_bucket_eos_create(ctx->bb->bucket_alloc));
         if (html && len > 0) {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
