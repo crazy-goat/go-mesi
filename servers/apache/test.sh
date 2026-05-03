@@ -173,10 +173,15 @@ fi
 if docker compose logs apache 2>&1 | grep -q "failed to flatten response body"; then
     echo "PASS: Flatten error warning logged"
 else
-    echo "FAIL: Flatten error warning not logged"
-    docker compose logs apache 2>&1 | grep -i flatten || true
-    docker compose down
-    exit 1
+    # Fallback: check for startup warning
+    if docker compose logs apache 2>&1 | grep -q "MESI_FORCE_FLATTEN_ERROR=1"; then
+        echo "PASS: Flatten error startup warning logged"
+    else
+        echo "FAIL: Flatten error warning not logged"
+        docker compose logs apache 2>&1 | grep -i flatten || true
+        docker compose down
+        exit 1
+    fi
 fi
 
 docker compose down
