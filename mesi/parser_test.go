@@ -400,6 +400,76 @@ func TestOverrideConfigWithMaxDepth(t *testing.T) {
 	}
 }
 
+func TestMESIParseWorkerPoolRespectsMaxWorkers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping concurrency test in short mode")
+	}
+
+		var maxConcurrent atomic.Int64
+		var current atomic.Int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v := current.Add(1)
+		for {
+			old := maxConcurrent.Load()
+			if v <= old || maxConcurrent.CompareAndSwap(old, v) {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+		current.Add(-1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("content"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxWorkers = 2
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+	// Disable HTTP-level semaphore to test worker pool independently
+	config.MaxConcurrentRequests = 0
+
+	var input string
+	for i := 0; i < 10; i++ {
+		input += `<!--esi <esi:include src="` + server.URL + `/` + strconv.Itoa(i) + `"/>-->`
+	}
+
+	MESIParse(input, config)
+
+	mc := maxConcurrent.Load()
+	if mc > 2 {
+		t.Errorf("max concurrent includes = %d, want <= 2 (MaxWorkers=2)", mc)
+	}
+}
+
+func TestMESIParseMixedStaticAndESI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("INCLUDE:" + r.URL.Path))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	input := "prefix" +
+		`<!--esi <esi:include src="` + server.URL + `/first"/>-->` +
+		"middle" +
+		`<!--esi <esi:include src="` + server.URL + `/second"/>-->` +
+		"suffix"
+
+	result := MESIParse(input, config)
+	// Each <!--esi block adds a leading space from unescape
+	expected := "prefix INCLUDE:/firstmiddle INCLUDE:/secondsuffix"
+	if result != expected {
+		t.Errorf("MESIParse() = %q, want %q", result, expected)
+	}
+}
+
 func TestMESIParseSimpleStaticContent(t *testing.T) {
 	tests := []struct {
 		name     string
