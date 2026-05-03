@@ -192,6 +192,9 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	var client httpDoer
 	if config.HTTPClient != nil {
 		client = config.HTTPClient
+	} else if config.AllowPrivateIPsForAllowedHosts && hostInAllowedHosts(parsed.Hostname(), config) {
+		// Allowed host with private-IP bypass opt-in - use standard client without SSRF protection.
+		client = &http.Client{Timeout: config.Timeout}
 	} else {
 		transport := NewSSRFSafeTransport(config)
 		client = &http.Client{
