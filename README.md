@@ -81,6 +81,23 @@ When set, specifies a whitelist of allowed hostnames for ESI includes. If define
 
 This is useful when you want to restrict ESI includes to a specific set of trusted domains while still blocking private IP ranges.
 
+**AllowPrivateIPsForAllowedHosts**
+
+When set to `true`, hosts in `AllowedHosts` are allowed to resolve to private/reserved IP addresses, bypassing the `BlockPrivateIPs` check.
+
+⚠️ **Security Warning:** This creates a potential SSRF vector if an attacker can control DNS for a host in `AllowedHosts`. Only use in trusted environments where you control DNS resolution (e.g., internal reverse proxy setups).
+
+Default: `false` (private IPs always blocked regardless of `AllowedHosts`)
+
+Example:
+```go
+config := mesi.EsiParserConfig{
+    BlockPrivateIPs:                true,
+    AllowedHosts:                   []string{"internal.local"},
+    AllowPrivateIPsForAllowedHosts: true,
+}
+```
+
 **MaxResponseSize**
 
 Sets the maximum allowed size for HTTP response bodies (in bytes) when fetching ESI includes. Helps prevent OOM attacks from malicious or compromised upstream servers returning arbitrarily large responses.

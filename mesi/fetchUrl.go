@@ -16,11 +16,11 @@ import (
 )
 
 var (
-	_, cgnatCIDR, _       = net.ParseCIDR("100.64.0.0/10")
-	_, benchmarkCIDR, _   = net.ParseCIDR("198.18.0.0/15")
-	_, reserved240CIDR, _ = net.ParseCIDR("240.0.0.0/4")
+	_, cgnatCIDR, _         = net.ParseCIDR("100.64.0.0/10")
+	_, benchmarkCIDR, _     = net.ParseCIDR("198.18.0.0/15")
+	_, reserved240CIDR, _   = net.ParseCIDR("240.0.0.0/4")
 	_, documentationCIDR, _ = net.ParseCIDR("2001:db8::/32")
-	_, nat64CIDR, _        = net.ParseCIDR("64:ff9b::/96")
+	_, nat64CIDR, _         = net.ParseCIDR("64:ff9b::/96")
 )
 
 func IsEsiResponse(response *http.Response) bool {
@@ -44,7 +44,7 @@ func isURLSafe(requestedURL string, config EsiParserConfig) error {
 		return errors.New("invalid url: " + err.Error())
 	}
 
-	host := parsedURL.Host
+	host := parsedURL.Hostname()
 
 	// Relative URLs have no host and no scheme - they will be resolved against DefaultUrl
 	if parsedURL.Scheme == "" && host == "" {
@@ -97,6 +97,17 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 		}
 	}
 
+	return false
+}
+
+// hostInAllowedHosts checks if a hostname matches any entry in AllowedHosts.
+// Matches exact hostnames and subdomains (e.g., "api.example.com" matches "example.com").
+func hostInAllowedHosts(host string, config EsiParserConfig) bool {
+	for _, allowed := range config.AllowedHosts {
+		if host == allowed || strings.HasSuffix(host, "."+allowed) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -181,6 +192,9 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	var client httpDoer
 	if config.HTTPClient != nil {
 		client = config.HTTPClient
+	} else if config.AllowPrivateIPsForAllowedHosts && hostInAllowedHosts(parsed.Hostname(), config) {
+		// Allowed host with private-IP bypass opt-in - use standard client without SSRF protection.
+		client = &http.Client{Timeout: config.Timeout}
 	} else {
 		transport := NewSSRFSafeTransport(config)
 		client = &http.Client{

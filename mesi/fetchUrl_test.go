@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -649,6 +650,10 @@ func TestIsURLSafe_AllowedHosts(t *testing.T) {
 		{"not allowed", "http://other.com/test", []string{"example.com"}, true},
 		{"multiple allowed", "http://foo.com/test", []string{"example.com", "foo.com"}, false},
 		{"empty allowed list", "http://example.com/test", []string{}, false},
+		// Port handling tests
+		{"allowed host with port", "http://example.com:8080/test", []string{"example.com"}, false},
+		{"allowed subdomain with port", "http://api.example.com:443/test", []string{"example.com"}, false},
+		{"not allowed with port", "http://other.com:8080/test", []string{"example.com"}, true},
 	}
 
 	for _, tt := range tests {
@@ -669,6 +674,62 @@ func TestIsURLSafe_AllowedHosts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAllowPrivateIPsForAllowedHosts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("test response"))
+	}))
+	defer server.Close()
+
+	serverURL, _ := url.Parse(server.URL)
+	serverHost := serverURL.Hostname()
+
+	t.Run("blocked when flag is false", func(t *testing.T) {
+		config := EsiParserConfig{
+			BlockPrivateIPs:                true,
+			AllowPrivateIPsForAllowedHosts: false,
+			AllowedHosts:                   []string{serverHost},
+			Timeout:                        5 * time.Second,
+		}
+
+		_, _, err := singleFetchUrlWithContext(server.URL, config, context.Background())
+		if err == nil {
+			t.Error("expected error for private IP when flag is false")
+		}
+	})
+
+	t.Run("allowed when flag is true", func(t *testing.T) {
+		config := EsiParserConfig{
+			BlockPrivateIPs:                true,
+			AllowPrivateIPsForAllowedHosts: true,
+			AllowedHosts:                   []string{serverHost},
+			Timeout:                        5 * time.Second,
+		}
+
+		result, _, err := singleFetchUrlWithContext(server.URL, config, context.Background())
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if result != "test response" {
+			t.Errorf("expected 'test response', got: %q", result)
+		}
+	})
+
+	t.Run("blocked when host not in AllowedHosts", func(t *testing.T) {
+		config := EsiParserConfig{
+			BlockPrivateIPs:                true,
+			AllowPrivateIPsForAllowedHosts: true,
+			AllowedHosts:                   []string{"other.example.com"},
+			Timeout:                        5 * time.Second,
+		}
+
+		_, _, err := singleFetchUrlWithContext(server.URL, config, context.Background())
+		if err == nil {
+			t.Error("expected error for host not in AllowedHosts")
+		}
+	})
 }
 
 func TestIsURLSafe_Disabled(t *testing.T) {
