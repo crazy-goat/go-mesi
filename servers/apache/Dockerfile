@@ -1,4 +1,4 @@
-FROM ubuntu:22.04
+FROM --platform=linux/amd64 ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -18,6 +18,7 @@ RUN wget https://go.dev/dl/go1.23.0.linux-amd64.tar.gz && \
 ENV PATH="/usr/local/go/bin:${PATH}"
 ENV GOPATH="/root/go"
 ENV GODEBUG=netdns=cgo
+ENV GOARCH=amd64
 
 WORKDIR /build
 
