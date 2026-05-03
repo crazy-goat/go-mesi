@@ -33,11 +33,15 @@ func TestParse(t *testing.T) {
 			expected:   "<html><body>Hello World</body></html>",
 		},
 		{
-			name:       "max depth 0 with include triggers max depth error",
+			// The leading space comes from unescape stripping the "<!--esi" and "-->" markers,
+			// leaving " <esi:include src=\"x\"/>". The space before the tag is preserved as a
+			// static token. The include produces empty output (IncludeErrorMarker default),
+			// so only the space remains.
+			name:       "max depth 0 with include produces empty (error not leaked)",
 			input:      "<!--esi <esi:include src=\"x\"/>-->",
 			maxDepth:   0,
 			defaultUrl: "http://example.com/",
-			expected:   " esi max depth",
+			expected:   " ",
 		},
 	}
 

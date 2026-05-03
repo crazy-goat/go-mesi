@@ -9,13 +9,17 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
 
 var (
+	ErrInvalidURL         = errors.New("invalid url")
+	ErrSSRFBlocked        = errors.New("ssrf blocked")
+	ErrUpstreamStatus     = errors.New("upstream bad status")
+	ErrTimeBudgetExceeded = errors.New("exceeded time budget")
+
 	_, cgnatCIDR, _         = net.ParseCIDR("100.64.0.0/10")
 	_, benchmarkCIDR, _     = net.ParseCIDR("198.18.0.0/15")
 	_, reserved240CIDR, _   = net.ParseCIDR("240.0.0.0/4")
@@ -41,7 +45,7 @@ type httpDoer interface {
 func isURLSafe(requestedURL string, config EsiParserConfig) error {
 	parsedURL, err := url.Parse(requestedURL)
 	if err != nil {
-		return errors.New("invalid url: " + err.Error())
+		return fmt.Errorf("%w: %s", ErrInvalidURL, err.Error())
 	}
 
 	host := parsedURL.Hostname()
@@ -53,7 +57,7 @@ func isURLSafe(requestedURL string, config EsiParserConfig) error {
 
 	// Absolute URLs must have a host
 	if host == "" {
-		return errors.New("url has no host")
+		return fmt.Errorf("%w: url has no host", ErrInvalidURL)
 	}
 
 	if len(config.AllowedHosts) > 0 {
@@ -65,7 +69,7 @@ func isURLSafe(requestedURL string, config EsiParserConfig) error {
 			}
 		}
 		if !allowed {
-			return errors.New("host not in allowed list: " + host)
+			return fmt.Errorf("%w: host not in allowed list: %s", ErrSSRFBlocked, host)
 		}
 	}
 
@@ -127,7 +131,7 @@ func safeDialer(config EsiParserConfig) *net.Dialer {
 				return fmt.Errorf("internal error: dial address expected to be IP but got: %s", host)
 			}
 			if config.BlockPrivateIPs && isPrivateOrReservedIP(ip) {
-				return fmt.Errorf("blocked dial to private/reserved ip: %s", ip)
+				return fmt.Errorf("%w: blocked dial to private/reserved ip", ErrSSRFBlocked)
 			}
 			return nil
 		},
@@ -172,21 +176,21 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 
 	if config.Timeout <= 0 {
 		logger.Debug("fetch_timeout", "url", requestedURL, "error", "exceeded time budget")
-		return "", false, errors.New("exceeded time budget")
+		return "", false, fmt.Errorf("%w", ErrTimeBudgetExceeded)
 	}
 
 	parsed, err := url.Parse(requestedURL)
 	if err != nil {
-		return "", false, errors.New("invalid url: " + err.Error())
+		return "", false, fmt.Errorf("%w: %s", ErrInvalidURL, err.Error())
 	}
 
 	if parsed.Scheme != "" && parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", false, errors.New("invalid url scheme: " + parsed.Scheme)
+		return "", false, fmt.Errorf("%w: invalid url scheme: %s", ErrInvalidURL, parsed.Scheme)
 	}
 
 	if err := isURLSafe(requestedURL, config); err != nil {
 		logger.Debug("fetch_ssrf_error", "url", requestedURL, "error", err.Error())
-		return "", false, errors.New("ssrf validation failed: " + err.Error())
+		return "", false, fmt.Errorf("%w: %s", ErrSSRFBlocked, err.Error())
 	}
 
 	var client httpDoer
@@ -210,7 +214,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	var urlToFetch string
 	if parsed.Scheme == "" {
 		if config.DefaultUrl == "" {
-			return "", false, errors.New("default url can't be empty, on relative urls: " + requestedURL)
+			return "", false, fmt.Errorf("%w: default url can't be empty, on relative urls: %s", ErrInvalidURL, requestedURL)
 		}
 		urlToFetch = strings.TrimRight(config.DefaultUrl, "/") + "/" + strings.TrimLeft(requestedURL, "/")
 	} else {
@@ -233,7 +237,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 
 	req, err := http.NewRequestWithContext(ctx, "GET", urlToFetch, nil)
 	if err != nil {
-		return "", false, errors.New("failed to create request: " + err.Error())
+		return "", false, fmt.Errorf("%w: %s", ErrInvalidURL, err.Error())
 	}
 	req.Header.Set("Surrogate-Capability", "ESI/1.0")
 
@@ -242,7 +246,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	content, err := client.Do(req)
 	if err != nil {
 		logger.Debug("fetch_error", "url", urlToFetch, "error", err.Error())
-		return "", false, err
+		return "", false, errors.Join(ErrUpstreamStatus, err)
 	}
 	logger.Debug("fetch_done", "url", urlToFetch, "duration", time.Since(reqStart), "status", content.StatusCode)
 	defer func() { _ = content.Body.Close() }()
@@ -253,7 +257,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		limitedReader := io.LimitReader(content.Body, config.MaxResponseSize+1)
 		dataBytes, err = io.ReadAll(limitedReader)
 		if err != nil {
-			return "", false, err
+			return "", false, errors.Join(ErrUpstreamStatus, err)
 		}
 		if int64(len(dataBytes)) > config.MaxResponseSize {
 			return "", false, fmt.Errorf("response body exceeds maximum allowed size of %d bytes", config.MaxResponseSize)
@@ -262,12 +266,12 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		// No limit - backward compatibility
 		dataBytes, err = io.ReadAll(content.Body)
 		if err != nil {
-			return "", false, err
+			return "", false, errors.Join(ErrUpstreamStatus, err)
 		}
 	}
 
 	if content.StatusCode >= 400 {
-		return "", false, errors.New("upstream returned status " + strconv.Itoa(content.StatusCode))
+		return "", false, fmt.Errorf("%w: upstream returned status %d", ErrUpstreamStatus, content.StatusCode)
 	}
 	contentStr := string(dataBytes)
 	if config.Cache != nil && cacheKey != "" {

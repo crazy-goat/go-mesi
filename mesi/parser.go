@@ -43,6 +43,11 @@ type EsiParserConfig struct {
 	CacheKeyFunc                   CacheKeyFunc  // Custom cache key function (nil = DefaultCacheKey)
 	Debug                          bool          // Enable debug logging
 	Logger                         Logger        // Custom logger (nil = DiscardLogger when Debug is false)
+	// IncludeErrorMarker is rendered in place of a failed include when no
+	// onerror="continue" and no fallback <esi:include> body is present.
+	// Default: "" (silent). Set to something like "<!-- esi error -->" for
+	// debugging, but NEVER include the raw error — see security advisory.
+	IncludeErrorMarker             string
 	requestSemaphore               chan struct{} // semaphore for limiting HTTP requests
 }
 
