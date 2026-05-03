@@ -44,7 +44,7 @@ func isURLSafe(requestedURL string, config EsiParserConfig) error {
 		return errors.New("invalid url: " + err.Error())
 	}
 
-	host := parsedURL.Host
+	host := parsedURL.Hostname()
 
 	// Relative URLs have no host and no scheme - they will be resolved against DefaultUrl
 	if parsedURL.Scheme == "" && host == "" {
