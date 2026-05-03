@@ -9,6 +9,10 @@ import (
 
 type Logger interface {
 	Debug(msg string, keyvals ...interface{})
+}
+
+type LoggerWarn interface {
+	Logger
 	Warn(msg string, keyvals ...interface{})
 }
 

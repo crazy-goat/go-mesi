@@ -12,6 +12,8 @@ type logEntry struct {
 	keyvals []interface{}
 }
 
+var _ Logger = &recordingLogger{}
+
 type recordingLogger struct {
 	entries []logEntry
 }

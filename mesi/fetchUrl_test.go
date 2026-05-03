@@ -1398,6 +1398,8 @@ func TestSentinelErrorsIs(t *testing.T) {
 	}
 }
 
+var _ Cache = errorCache{}
+
 type errorCache struct{}
 
 func (errorCache) Get(_ context.Context, key string) (string, bool, error) {
@@ -1427,6 +1429,7 @@ func TestCacheGetErrorGoesToLogger(t *testing.T) {
 		BlockPrivateIPs: false,
 		Logger:          logger,
 		Cache:           errorCache{},
+		CacheKeyFunc:    DefaultCacheKey,
 	}
 
 	content, _, err := singleFetchUrlWithContext(server.URL+"/test", config, context.Background())
