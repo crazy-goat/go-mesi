@@ -649,6 +649,10 @@ func TestIsURLSafe_AllowedHosts(t *testing.T) {
 		{"not allowed", "http://other.com/test", []string{"example.com"}, true},
 		{"multiple allowed", "http://foo.com/test", []string{"example.com", "foo.com"}, false},
 		{"empty allowed list", "http://example.com/test", []string{}, false},
+		// Port handling tests
+		{"allowed host with port", "http://example.com:8080/test", []string{"example.com"}, false},
+		{"allowed subdomain with port", "http://api.example.com:443/test", []string{"example.com"}, false},
+		{"not allowed with port", "http://other.com:8080/test", []string{"example.com"}, true},
 	}
 
 	for _, tt := range tests {
