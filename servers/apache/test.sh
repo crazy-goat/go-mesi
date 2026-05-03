@@ -58,6 +58,7 @@ else
 fi
 
 echo "=== Test 6: AllowedHosts - blocked host (evil.com) ==="
+RESPONSE=$(curl -s http://localhost:8080/ssrf-blocked.html)
 if echo "$RESPONSE" | grep -q "blocked.txt"; then
     echo "FAIL: Include from non-allowed host was NOT blocked"
     echo "Response: $RESPONSE"
@@ -159,7 +160,7 @@ else
     docker compose down
     exit 1
 fi
-LOG=$(docker compose exec -T apache cat /var/log/apache2/error.log 2>/dev/null || true)
+LOG=$(docker compose exec -T apache sh -c 'cat /var/log/apache2/error.log 2>/dev/null' || true)
 if echo "$LOG" | grep -q "failed to flatten response body"; then
     echo "PASS: Flatten error warning logged"
 else
@@ -167,6 +168,9 @@ else
     docker compose down
     exit 1
 fi
+
+docker compose down
+docker compose up -d --wait
 
 echo "=== Test 14: Nested ESI includes ==="
 RESPONSE=$(curl -s http://localhost:8080/nested.html)
@@ -257,7 +261,7 @@ fi
 rm -f /tmp/mesi-response-body.txt
 
 echo "=== Test 21: Concurrent requests (thread safety) ==="
-for i in $(seq 1 5); do
+for i in $(seq 1 20); do
     curl -s http://localhost:8080/index.html -o /tmp/mesi-concurrent-$i.html &
 done
 wait
@@ -278,8 +282,8 @@ fi
 
 echo "=== Test 22: HTTP error passthrough - ESI not applied to error page ==="
 RESPONSE=$(curl -s http://localhost:8080/nonexistent.html)
-if echo "$RESPONSE" | grep -qi "not found\|404"; then
-    echo "PASS: ESI not applied to 404 error page"
+if [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/nonexistent.html)" = "404" ] && [ -n "$RESPONSE" ]; then
+    echo "PASS: ESI not applied to 404 error page (status=404, body non-empty)"
 else
     echo "FAIL: Unexpected response for 404 page"
     echo "Response: $RESPONSE"
