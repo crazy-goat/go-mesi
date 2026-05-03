@@ -679,7 +679,7 @@ func TestIsURLSafe_AllowedHosts(t *testing.T) {
 func TestAllowPrivateIPsForAllowedHosts(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("test response"))
+		_, _ = w.Write([]byte("test response"))
 	}))
 	defer server.Close()
 
