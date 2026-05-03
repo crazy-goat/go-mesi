@@ -72,6 +72,15 @@ func (c EsiParserConfig) getLogger() Logger {
 	return discardLogger
 }
 
+func (c EsiParserConfig) warn(msg string, keyvals ...interface{}) {
+	logger := c.getLogger()
+	if w, ok := logger.(LoggerWarn); ok {
+		w.Warn(msg, keyvals...)
+	} else {
+		logger.Debug(msg, keyvals...)
+	}
+}
+
 func (c EsiParserConfig) SetContext(ctx context.Context) EsiParserConfig {
 	c.Context = ctx
 	return c

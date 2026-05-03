@@ -12,11 +12,17 @@ type logEntry struct {
 	keyvals []interface{}
 }
 
+var _ Logger = &recordingLogger{}
+
 type recordingLogger struct {
 	entries []logEntry
 }
 
 func (l *recordingLogger) Debug(msg string, keyvals ...interface{}) {
+	l.entries = append(l.entries, logEntry{msg: msg, keyvals: keyvals})
+}
+
+func (l *recordingLogger) Warn(msg string, keyvals ...interface{}) {
 	l.entries = append(l.entries, logEntry{msg: msg, keyvals: keyvals})
 }
 
