@@ -2,6 +2,7 @@ package mesi
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -551,8 +552,8 @@ func TestFetchConcurrentBothFail(t *testing.T) {
 	html := `<html><esi:include src="` + server.URL + `/fail1" alt="` + server.URL + `/fail2" fetch-mode="concurrent" /></html>`
 
 	result := MESIParse(html, config)
-	if !strings.Contains(result, "500") && !strings.Contains(result, "error") {
-		t.Errorf("expected error in output when both URLs fail, got %q", result)
+	if strings.Contains(result, "500") || strings.Contains(result, "error") {
+		t.Errorf("error details leaked into output: %q", result)
 	}
 }
 
@@ -846,23 +847,37 @@ func TestSingleFetchUrlSSRFValidation(t *testing.T) {
 }
 
 func TestParseWithConfigAllowedHostsAndBlockPrivateIPs(t *testing.T) {
-	if out := MESIParse(`<esi:include src="http://evil.com/test" />`, EsiParserConfig{
+	log := &recordingLogger{}
+
+	out := MESIParse(`<esi:include src="http://evil.com/test" />`, EsiParserConfig{
 		DefaultUrl:      "http://example.com/",
 		MaxDepth:        5,
 		Timeout:         30 * time.Second,
 		AllowedHosts:    []string{"allowed.com"},
 		BlockPrivateIPs: true,
-	}); !strings.Contains(out, "host not in allowed list") {
-		t.Fatalf("expected allowed-host SSRF block, got %q", out)
+		Logger:          log,
+	})
+	if out != "" {
+		t.Fatalf("expected empty output for blocked include, got %q", out)
+	}
+	if !log.containsMsg("include_failed") {
+		t.Fatal("expected include_failed log for allowed-host block")
 	}
 
-	if out := MESIParse(`<esi:include src="http://127.0.0.1/test" />`, EsiParserConfig{
+	log.entries = nil
+
+	out = MESIParse(`<esi:include src="http://127.0.0.1/test" />`, EsiParserConfig{
 		DefaultUrl:      "http://example.com/",
 		MaxDepth:        5,
 		Timeout:         30 * time.Second,
 		BlockPrivateIPs: true,
-	}); !strings.Contains(out, "blocked") {
-		t.Fatalf("expected private IP SSRF block, got %q", out)
+		Logger:          log,
+	})
+	if out != "" {
+		t.Fatalf("expected empty output for blocked include, got %q", out)
+	}
+	if !log.containsMsg("include_failed") {
+		t.Fatal("expected include_failed log for private IP block")
 	}
 }
 
@@ -1263,52 +1278,120 @@ func TestNewSSRFSafeTransport(t *testing.T) {
 }
 
 func TestSSRFBlocksIPv6Loopback(t *testing.T) {
+	log := &recordingLogger{}
 	config := EsiParserConfig{
 		DefaultUrl:      "http://example.com/",
 		MaxDepth:        1,
 		Timeout:         1 * time.Second,
 		BlockPrivateIPs: true,
-		Logger:          DiscardLogger{},
+		Logger:          log,
 	}
 
 	html := `<html><body><esi:include src="http://[::1]/test"/></body></html>`
 	result := MESIParse(html, config)
 
-	if !strings.Contains(result, "blocked dial to private/reserved ip") {
-		t.Errorf("expected SSRF block for IPv6 loopback, got: %q", result)
+	if strings.Contains(result, "::1") {
+		t.Errorf("output leaked internal IP: %q", result)
+	}
+	if !log.containsMsg("include_failed") {
+		t.Errorf("expected include_failed log for IPv6 loopback block, got: %q", result)
 	}
 }
 
 func TestSSRFBlocksIPv6ULA(t *testing.T) {
+	log := &recordingLogger{}
 	config := EsiParserConfig{
 		DefaultUrl:      "http://example.com/",
 		MaxDepth:        1,
 		Timeout:         1 * time.Second,
 		BlockPrivateIPs: true,
-		Logger:          DiscardLogger{},
+		Logger:          log,
 	}
 
 	html := `<html><body><esi:include src="http://[fd00::1]/test"/></body></html>`
 	result := MESIParse(html, config)
 
-	if !strings.Contains(result, "blocked dial to private/reserved ip") {
-		t.Errorf("expected SSRF block for IPv6 ULA, got: %q", result)
+	if strings.Contains(result, "fd00") {
+		t.Errorf("output leaked internal IP: %q", result)
+	}
+	if !log.containsMsg("include_failed") {
+		t.Errorf("expected include_failed log for IPv6 ULA block, got: %q", result)
 	}
 }
 
 func TestSSRFBlocksIPv4MappedIPv6(t *testing.T) {
+	log := &recordingLogger{}
 	config := EsiParserConfig{
 		DefaultUrl:      "http://example.com/",
 		MaxDepth:        1,
 		Timeout:         1 * time.Second,
 		BlockPrivateIPs: true,
-		Logger:          DiscardLogger{},
+		Logger:          log,
 	}
 
 	html := `<html><body><esi:include src="http://[::ffff:127.0.0.1]/test"/></body></html>`
 	result := MESIParse(html, config)
 
-	if !strings.Contains(result, "blocked dial to private/reserved ip") {
-		t.Errorf("expected SSRF block for IPv4-mapped IPv6, got: %q", result)
+	if strings.Contains(result, "127.0.0.1") {
+		t.Errorf("output leaked internal IP: %q", result)
+	}
+	if !log.containsMsg("include_failed") {
+		t.Errorf("expected include_failed log for IPv4-mapped IPv6 block, got: %q", result)
+	}
+}
+
+func TestSentinelErrorsIs(t *testing.T) {
+	_, _, schemeErr := singleFetchUrlWithContext("httpx://example.com/test", EsiParserConfig{Timeout: time.Second, BlockPrivateIPs: false, Logger: DiscardLogger{}}, context.Background())
+	_, _, timeoutErr := singleFetchUrlWithContext("http://example.com/test", EsiParserConfig{Timeout: 0, BlockPrivateIPs: false, Logger: DiscardLogger{}}, context.Background())
+	_, _, dialErr := singleFetchUrlWithContext("http://127.0.0.1/test", EsiParserConfig{Timeout: time.Second, BlockPrivateIPs: true, Logger: DiscardLogger{}}, context.Background())
+	hostErr := isURLSafe("http://evil.com/test", EsiParserConfig{AllowedHosts: []string{"allowed.com"}})
+
+	tests := []struct {
+		name   string
+		err    error
+		target error
+		want   bool
+	}{
+		{
+			name:   "invalid scheme wraps ErrInvalidURL",
+			err:    schemeErr,
+			target: ErrInvalidURL,
+			want:   true,
+		},
+		{
+			name:   "timeout wraps ErrTimeBudgetExceeded",
+			err:    timeoutErr,
+			target: ErrTimeBudgetExceeded,
+			want:   true,
+		},
+		{
+			name:   "dial SSRF block wraps ErrSSRFBlocked",
+			err:    dialErr,
+			target: ErrSSRFBlocked,
+			want:   true,
+		},
+		{
+			name:   "allowed-host SSRF block wraps ErrSSRFBlocked",
+			err:    hostErr,
+			target: ErrSSRFBlocked,
+			want:   true,
+		},
+		{
+			name:   "host-not-allowed not ErrInvalidURL",
+			err:    hostErr,
+			target: ErrInvalidURL,
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.err == nil {
+				t.Fatal("expected non-nil error")
+			}
+			if got := errors.Is(tt.err, tt.target); got != tt.want {
+				t.Errorf("errors.Is(%v, %v) = %v, want %v\nerr.Error() = %q", tt.err, tt.target, got, tt.want, tt.err)
+			}
+		})
 	}
 }

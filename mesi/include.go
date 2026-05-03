@@ -193,6 +193,8 @@ func (token *esiIncludeToken) toString(config EsiParserConfig) (string, bool) {
 	}
 
 	if err != nil {
+		logger.Debug("include_failed", "src", token.Src, "error", err.Error())
+
 		if token.OnError == "continue" {
 			return "", false
 		}
@@ -201,7 +203,7 @@ func (token *esiIncludeToken) toString(config EsiParserConfig) (string, bool) {
 			return token.Content, false
 		}
 
-		return err.Error(), false
+		return config.IncludeErrorMarker, false
 	}
 
 	return data, isEsiResponse

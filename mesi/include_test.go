@@ -3,8 +3,31 @@ package mesi
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+type logEntry struct {
+	msg     string
+	keyvals []interface{}
+}
+
+type recordingLogger struct {
+	entries []logEntry
+}
+
+func (l *recordingLogger) Debug(msg string, keyvals ...interface{}) {
+	l.entries = append(l.entries, logEntry{msg: msg, keyvals: keyvals})
+}
+
+func (l *recordingLogger) containsMsg(substr string) bool {
+	for _, e := range l.entries {
+		if strings.Contains(e.msg, substr) {
+			return true
+		}
+	}
+	return false
+}
 
 func TestParseIncludeAttributes(t *testing.T) {
 	cases := []struct {
@@ -251,6 +274,61 @@ func TestFetchConcurrentHappyPath(t *testing.T) {
 	}
 }
 
+func TestToStringErrorDoesNotLeakInternalDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("SECRET_INTERNAL_DATA"))
+	}))
+	defer server.Close()
+
+	token := &esiIncludeToken{
+		Src: server.URL + "/fail",
+	}
+
+	log := &recordingLogger{}
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+	config.Logger = log
+
+	data, _ := token.toString(config)
+	if data != "" {
+		t.Errorf("toString() = %q, want empty string (no error leak)", data)
+	}
+	if strings.Contains(data, "SECRET_INTERNAL_DATA") {
+		t.Error("toString() leaked response body")
+	}
+	if strings.Contains(data, "500") {
+		t.Error("toString() leaked status code")
+	}
+	if !log.containsMsg("include_failed") {
+		t.Error("expected include_failed log entry")
+	}
+}
+
+func TestIncludeErrorMarkerCustom(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	token := &esiIncludeToken{
+		Src: server.URL + "/fail",
+	}
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+	config.IncludeErrorMarker = "<!-- esi error -->"
+
+	data, _ := token.toString(config)
+	if data != "<!-- esi error -->" {
+		t.Errorf("toString() = %q, want %q", data, "<!-- esi error -->")
+	}
+}
+
 func TestToStringWithOnerrorContinue(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -305,13 +383,18 @@ func TestToStringWithMaxDepthExceeded(t *testing.T) {
 		Src: server.URL + "/fragment",
 	}
 
+	log := &recordingLogger{}
 	config := CreateDefaultConfig()
 	config.DefaultUrl = server.URL + "/"
 	config.MaxDepth = 0
 	config.BlockPrivateIPs = false
+	config.Logger = log
 
 	data, _ := token.toString(config)
-	if data != "esi max depth" {
-		t.Errorf("toString() = %q, want %q", data, "esi max depth")
+	if data != "" {
+		t.Errorf("toString() = %q, want empty string (no error leak)", data)
+	}
+	if !log.containsMsg("include_failed") {
+		t.Error("expected include_failed log entry")
 	}
 }
