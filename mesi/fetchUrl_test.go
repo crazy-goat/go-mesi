@@ -1,8 +1,10 @@
 package mesi
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1393,5 +1395,110 @@ func TestSentinelErrorsIs(t *testing.T) {
 				t.Errorf("errors.Is(%v, %v) = %v, want %v\nerr.Error() = %q", tt.err, tt.target, got, tt.want, tt.err)
 			}
 		})
+	}
+}
+
+type errorCache struct{}
+
+func (errorCache) Get(_ context.Context, key string) (string, bool, error) {
+	return "", false, errors.New("cache get failed: " + key)
+}
+
+func (errorCache) Set(_ context.Context, key, value string, _ time.Duration) error {
+	return errors.New("cache set failed: " + key)
+}
+
+func (errorCache) Delete(_ context.Context, key string) error {
+	return nil
+}
+
+func TestCacheGetErrorGoesToLogger(t *testing.T) {
+	logger := &recordingLogger{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("origin content"))
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          logger,
+		Cache:           errorCache{},
+	}
+
+	content, _, err := singleFetchUrlWithContext(server.URL+"/test", config, context.Background())
+	if err != nil {
+		t.Fatalf("expected fallback to origin on cache get error, got: %v", err)
+	}
+	if content != "origin content" {
+		t.Fatalf("expected 'origin content', got %q", content)
+	}
+	if !logger.containsMsg("cache_get_error") {
+		t.Fatal("expected cache_get_error log entry")
+	}
+}
+
+func TestCacheSetErrorGoesToLogger(t *testing.T) {
+	logger := &recordingLogger{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("origin content"))
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          logger,
+		Cache:           errorCache{},
+		CacheKeyFunc:    DefaultCacheKey,
+	}
+
+	content, _, err := singleFetchUrlWithContext(server.URL+"/test", config, context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "origin content" {
+		t.Fatalf("expected 'origin content', got %q", content)
+	}
+	if !logger.containsMsg("cache_set_error") {
+		t.Fatal("expected cache_set_error log entry")
+	}
+}
+
+func TestCacheErrorDoesNotReachStderr(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(nil)
+
+	logger := &recordingLogger{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("origin content"))
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          logger,
+		Cache:           errorCache{},
+		CacheKeyFunc:    DefaultCacheKey,
+	}
+
+	_, _, err := singleFetchUrlWithContext(server.URL+"/test", config, context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if buf.Len() > 0 {
+		t.Fatalf("stdlib log received unexpected output: %s", buf.String())
 	}
 }

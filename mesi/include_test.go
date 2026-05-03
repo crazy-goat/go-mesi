@@ -20,6 +20,10 @@ func (l *recordingLogger) Debug(msg string, keyvals ...interface{}) {
 	l.entries = append(l.entries, logEntry{msg: msg, keyvals: keyvals})
 }
 
+func (l *recordingLogger) Warn(msg string, keyvals ...interface{}) {
+	l.entries = append(l.entries, logEntry{msg: msg, keyvals: keyvals})
+}
+
 func (l *recordingLogger) containsMsg(substr string) bool {
 	for _, e := range l.entries {
 		if strings.Contains(e.msg, substr) {
