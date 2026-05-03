@@ -239,7 +239,7 @@ func MESIParse(input string, config EsiParserConfig) string {
 		}
 
 		var wg sync.WaitGroup
-		jobs := make(chan esiJob)
+		jobs := make(chan esiJob, len(esiJobs))
 
 		for range workerCount {
 			wg.Add(1)
@@ -285,13 +285,13 @@ func MESIParse(input string, config EsiParserConfig) string {
 		for i := 0; i < len(esiJobs); i++ {
 			select {
 			case <-ctx.Done():
-				// Workers will send to buffered channel (capacity = len(esiJobs))
-				// and exit when jobs channel is fully consumed.
 				break ResultLoop
 			case res := <-ch:
 				results = append(results, res)
 			}
 		}
+
+		wg.Wait()
 	}
 
 	return assembleResults(results, result)

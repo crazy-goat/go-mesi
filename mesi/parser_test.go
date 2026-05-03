@@ -405,13 +405,16 @@ func TestMESIParseWorkerPoolRespectsMaxWorkers(t *testing.T) {
 		t.Skip("skipping concurrency test in short mode")
 	}
 
-	var maxConcurrent atomic.Int64
-	var current atomic.Int64
+		var maxConcurrent atomic.Int64
+		var current atomic.Int64
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		v := current.Add(1)
-		if p := maxConcurrent.Load(); v > p {
-			maxConcurrent.CompareAndSwap(p, v)
+		for {
+			old := maxConcurrent.Load()
+			if v <= old || maxConcurrent.CompareAndSwap(old, v) {
+				break
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
 		current.Add(-1)
@@ -438,6 +441,32 @@ func TestMESIParseWorkerPoolRespectsMaxWorkers(t *testing.T) {
 	mc := maxConcurrent.Load()
 	if mc > 2 {
 		t.Errorf("max concurrent includes = %d, want <= 2 (MaxWorkers=2)", mc)
+	}
+}
+
+func TestMESIParseMixedStaticAndESI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("INCLUDE:" + r.URL.Path))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	input := "prefix" +
+		`<!--esi <esi:include src="` + server.URL + `/first"/>-->` +
+		"middle" +
+		`<!--esi <esi:include src="` + server.URL + `/second"/>-->` +
+		"suffix"
+
+	result := MESIParse(input, config)
+	// Each <!--esi block adds a leading space from unescape
+	expected := "prefix INCLUDE:/firstmiddle INCLUDE:/secondsuffix"
+	if result != expected {
+		t.Errorf("MESIParse() = %q, want %q", result, expected)
 	}
 }
 
