@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   apache:
     image: go-mesi-apache-test
@@ -13,7 +11,13 @@ services:
     volumes:
       - ./tests:/var/www/html:ro
     depends_on:
-      - backend
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost/"]
+      interval: 2s
+      retries: 10
+      start_period: 5s
 
   backend:
     image: python:3.11-slim

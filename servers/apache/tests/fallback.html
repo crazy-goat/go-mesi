@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>ESI Fallback Test</title>
+</head>
+<body>
+    <h1>ESI Fallback Test</h1>
+    <esi:include src="http://backend:8000/nonexistent.txt">
+        fallback content rendered
+    </esi:include>
+    <p>After fallback</p>
+</body>
+</html>
