@@ -8,6 +8,7 @@
 #include "apr_strings.h"
 
 #include <dlfcn.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef LIB_GOMESI_PATH
@@ -22,6 +23,10 @@ static void *go_module = NULL;
 static ParseFunc EsiParse = NULL;
 static ParseWithConfigFunc EsiParseWithConfig = NULL;
 static FreeFunc EsiFreeString = NULL;
+
+// Test-only: set MESI_FORCE_FLATTEN_ERROR=1 in the environment to force
+// flatten_brigade() to return 0, simulating a brigade flatten failure.
+static int force_flatten_error = 0;
 
 typedef struct {
     apr_bucket_brigade *bb;
@@ -65,6 +70,13 @@ static apr_status_t mesi_child_cleanup(void *data) {
 }
 
 static void mesi_child_init(apr_pool_t *p, server_rec *s) {
+    char *env_force = getenv("MESI_FORCE_FLATTEN_ERROR");
+    if (env_force && env_force[0] == '1' && env_force[1] == '\0') {
+        force_flatten_error = 1;
+        ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
+            "mesi: MESI_FORCE_FLATTEN_ERROR=1 - flatten errors will be forced (test mode)");
+    }
+
     // RTLD_GLOBAL is required for Go's runtime (signal handlers, etc.)
     // Without it, Go's runtime initialization may fail or behave incorrectly
     go_module = dlopen(LIB_GOMESI_PATH, RTLD_NOW | RTLD_GLOBAL);
@@ -173,6 +185,38 @@ static int is_html_content(const char *ct) {
            || delim == '\r' || delim == '\n';
 }
 
+// Flatten brigade into a single NUL-terminated string.
+// Returns 1 on success, 0 on failure.
+// On failure, *html is set to NULL (no dangling pointer to uninitialized memory)
+// and *len is set to the brigade size (0 if empty or length call failed).
+//
+// Contract for the fallback path (caller when returns 0):
+//   - brigade is NOT modified (caller appends EOS and passes through)
+//   - no ESI processing is performed
+//   - caller can use len > 0 to decide whether to log a warning
+//     (non-zero len means flatten failed despite having data)
+//
+// Synthetic failure injection: checked once at child_init via
+// MESI_FORCE_FLATTEN_ERROR=1 env var (stored in static force_flatten_error).
+static int flatten_brigade(apr_bucket_brigade *bb, char **html, apr_size_t *len, apr_pool_t *pool) {
+    if (force_flatten_error) {
+        *html = NULL;
+        apr_brigade_length(bb, 1, len);
+        return 0;
+    }
+
+    if (apr_brigade_length(bb, 1, len) == APR_SUCCESS && *len > 0) {
+        *html = apr_palloc(pool, *len + 1);
+        apr_size_t copied = *len;
+        if (apr_brigade_flatten(bb, *html, &copied) == APR_SUCCESS) {
+            (*html)[copied] = '\0';
+            return 1;
+        }
+        *html = NULL;
+    }
+    return 0;
+}
+
 static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(f->r->server->module_config, &mesi_module);
     if (!conf->enable_mesi) {
@@ -213,23 +257,14 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     // If flattening fails, pass through raw data without ESI processing.
     apr_size_t len = 0;
     char *html = NULL;
-    int flatten_ok = 0;
-
-    if (apr_brigade_length(ctx->bb, 1, &len) == APR_SUCCESS && len > 0) {
-        html = apr_palloc(f->r->pool, len + 1);
-        apr_size_t copied = len;
-        if (apr_brigade_flatten(ctx->bb, html, &copied) == APR_SUCCESS) {
-            html[copied] = '\0';
-            flatten_ok = 1;
-        }
-    }
+    int flatten_ok = flatten_brigade(ctx->bb, &html, &len, f->r->pool);
 
     if (!flatten_ok) {
-        // Empty body or flatten failed — pass through without parsing
         APR_BRIGADE_INSERT_TAIL(ctx->bb, apr_bucket_eos_create(ctx->bb->bucket_alloc));
-        if (html && len > 0) {
+        if (len > 0) {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-                "mesi: failed to flatten response body, skipping ESI processing");
+                "mesi: failed to flatten response body (%lu bytes), skipping ESI processing",
+                (unsigned long)len);
         }
         return ap_pass_brigade(f->next, ctx->bb);
     }

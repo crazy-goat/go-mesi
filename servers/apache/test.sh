@@ -155,6 +155,31 @@ else
     exit 1
 fi
 
+echo "=== Test 13: Flatten error fallback (synthetic MESI_FORCE_FLATTEN_ERROR) ==="
+docker compose down
+MESI_FORCE_FLATTEN_ERROR=1 docker compose up -d
+sleep 5
+
+RESPONSE=$(curl -s http://localhost:8080/index.html)
+if echo "$RESPONSE" | grep -q "esi:include"; then
+    echo "PASS: Flatten error fallback - ESI tags preserved verbatim (no processing)"
+else
+    echo "FAIL: Flatten error fallback - ESI tags were processed"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+LOG=$(docker compose exec -T apache cat /var/log/apache2/error.log 2>/dev/null)
+if echo "$LOG" | grep -q "failed to flatten response body"; then
+    echo "PASS: Flatten error warning logged"
+else
+    echo "FAIL: Flatten error warning not logged"
+    echo "$LOG" | grep -i flatten || true
+    docker compose down
+    exit 1
+fi
+
 docker compose down
 
 echo ""

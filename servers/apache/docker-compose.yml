@@ -8,6 +8,8 @@ services:
       dockerfile: servers/apache/Dockerfile
     ports:
       - "8080:80"
+    environment:
+      - MESI_FORCE_FLATTEN_ERROR=${MESI_FORCE_FLATTEN_ERROR:-}
     volumes:
       - ./tests:/var/www/html:ro
     depends_on:
