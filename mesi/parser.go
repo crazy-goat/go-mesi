@@ -20,8 +20,9 @@ type EsiParserConfig struct {
 	MaxDepth              uint
 	Timeout               time.Duration
 	ParseOnHeader         bool
-	AllowedHosts          []string
-	BlockPrivateIPs       bool
+	AllowedHosts                    []string
+	BlockPrivateIPs                 bool
+	AllowPrivateIPsForAllowedHosts bool // allows AllowedHosts to bypass private-IP check
 	MaxResponseSize       int64         // 0 = unlimited, default 10MB
 	MaxConcurrentRequests int           // 0 = unlimited (backward compatible)
 	HTTPClient            *http.Client  // shared client for connection pooling, nil = create per request
