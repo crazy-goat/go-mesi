@@ -15,18 +15,18 @@ type Response struct {
 }
 
 type EsiParserConfig struct {
-	Context               context.Context
-	DefaultUrl            string
-	MaxDepth              uint
-	Timeout               time.Duration
-	ParseOnHeader         bool
+	Context       context.Context
+	DefaultUrl    string
+	MaxDepth      uint
+	Timeout       time.Duration
+	ParseOnHeader bool
 	// AllowedHosts restricts ESI includes to specified domains.
 	// Empty list allows all hosts (subject to BlockPrivateIPs).
 	//
 	// Note: AllowedHosts does NOT bypass BlockPrivateIPs by default.
 	// Use AllowPrivateIPsForAllowedHosts to enable private-IP bypass.
-	AllowedHosts                    []string
-	BlockPrivateIPs                 bool
+	AllowedHosts    []string
+	BlockPrivateIPs bool
 	// AllowPrivateIPsForAllowedHosts allows hosts in AllowedHosts to bypass
 	// the BlockPrivateIPs check.
 	//
@@ -35,15 +35,15 @@ type EsiParserConfig struct {
 	//
 	// Default: false (private IPs always blocked regardless of AllowedHosts).
 	AllowPrivateIPsForAllowedHosts bool
-	MaxResponseSize       int64         // 0 = unlimited, default 10MB
-	MaxConcurrentRequests int           // 0 = unlimited (backward compatible)
-	HTTPClient            *http.Client  // shared client for connection pooling, nil = create per request
-	Cache                 Cache         // nil = no caching (backward compatible)
-	CacheTTL              time.Duration // Default TTL for cached entries
-	CacheKeyFunc          CacheKeyFunc  // Custom cache key function (nil = DefaultCacheKey)
-	Debug                 bool          // Enable debug logging
-	Logger                Logger        // Custom logger (nil = DiscardLogger when Debug is false)
-	requestSemaphore      chan struct{} // semaphore for limiting HTTP requests
+	MaxResponseSize                int64         // 0 = unlimited, default 10MB
+	MaxConcurrentRequests          int           // 0 = unlimited (backward compatible)
+	HTTPClient                     *http.Client  // shared client for connection pooling, nil = create per request
+	Cache                          Cache         // nil = no caching (backward compatible)
+	CacheTTL                       time.Duration // Default TTL for cached entries
+	CacheKeyFunc                   CacheKeyFunc  // Custom cache key function (nil = DefaultCacheKey)
+	Debug                          bool          // Enable debug logging
+	Logger                         Logger        // Custom logger (nil = DiscardLogger when Debug is false)
+	requestSemaphore               chan struct{} // semaphore for limiting HTTP requests
 }
 
 func (c EsiParserConfig) getSemaphore() chan struct{} {

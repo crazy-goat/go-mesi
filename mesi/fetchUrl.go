@@ -16,11 +16,11 @@ import (
 )
 
 var (
-	_, cgnatCIDR, _       = net.ParseCIDR("100.64.0.0/10")
-	_, benchmarkCIDR, _   = net.ParseCIDR("198.18.0.0/15")
-	_, reserved240CIDR, _ = net.ParseCIDR("240.0.0.0/4")
+	_, cgnatCIDR, _         = net.ParseCIDR("100.64.0.0/10")
+	_, benchmarkCIDR, _     = net.ParseCIDR("198.18.0.0/15")
+	_, reserved240CIDR, _   = net.ParseCIDR("240.0.0.0/4")
 	_, documentationCIDR, _ = net.ParseCIDR("2001:db8::/32")
-	_, nat64CIDR, _        = net.ParseCIDR("64:ff9b::/96")
+	_, nat64CIDR, _         = net.ParseCIDR("64:ff9b::/96")
 )
 
 func IsEsiResponse(response *http.Response) bool {
