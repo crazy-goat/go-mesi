@@ -11,6 +11,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check for committed generated artifacts
+        run: ./scripts/check-no-generated-artifacts.sh
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
