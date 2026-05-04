@@ -107,14 +107,6 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     apr_pool_cleanup_register(p, NULL, mesi_child_cleanup, apr_pool_cleanup_null);
 }
 
-static void *create_dir_config(apr_pool_t *p, char *dir) {
-    return NULL;
-}
-
-static void *merge_dir_config(apr_pool_t *p, void *basev, void *addv) {
-    return NULL;
-}
-
 static const char *set_enable_mesi(cmd_parms *cmd, void *cfg, int flag) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
     conf->enable_mesi = flag;
@@ -366,8 +358,8 @@ static const command_rec mesi_directives[] = {
 
 module AP_MODULE_DECLARE_DATA mesi_module = {
     STANDARD20_MODULE_STUFF,
-    create_dir_config,
-    merge_dir_config,
+    NULL,                 // no per-dir config (server-level only)
+    NULL,                 // no per-dir merge
     create_server_config,
     merge_server_config,
     mesi_directives,
