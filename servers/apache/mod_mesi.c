@@ -283,9 +283,9 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         char *p = buf;
         for (int i = 0; i < arr->nelts; i++) {
             if (i > 0) *p++ = ' ';
-            apr_size_t len = strlen(hosts[i]);
-            memcpy(p, hosts[i], len);
-            p += len;
+            apr_size_t host_len = strlen(hosts[i]);
+            memcpy(p, hosts[i], host_len);
+            p += host_len;
         }
         *p = '\0';
         allowed_hosts_str = buf;
