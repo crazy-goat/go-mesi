@@ -1,0 +1,17 @@
+*
+!.gitignore
+!allowed.txt
+!comment.html
+!fallback.html
+!include.txt
+!index.html
+!large.html
+!nested.html
+!nested.txt
+!noesi.css
+!noesi.json
+!noesi.txt
+!remove.html
+!ssrf-allowed.html
+!ssrf-blocked.html
+!ssrf-localhost.html
