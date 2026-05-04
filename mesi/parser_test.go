@@ -1,12 +1,14 @@
 package mesi
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/quick"
 	"time"
 )
 
@@ -595,34 +597,42 @@ func TestAssembleResults(t *testing.T) {
 		name     string
 		results  []Response
 		expected string
-		anyOf    []string
 	}{
-		{"empty results", []Response{}, "", nil},
-		{"single result", []Response{{"hello", 0}}, "hello", nil},
-		{"multiple results in order", []Response{{"a", 0}, {"b", 1}, {"c", 2}}, "abc", nil},
-		{"multiple results out of order", []Response{{"c", 2}, {"a", 0}, {"b", 1}}, "abc", nil},
-		{"results with same index", []Response{{"a", 0}, {"b", 0}}, "", []string{"ab", "ba"}},
+		{"empty results", []Response{}, ""},
+		{"single result", []Response{{"hello", 0}}, "hello"},
+		{"multiple results in order", []Response{{"a", 0}, {"b", 1}, {"c", 2}}, "abc"},
+		{"multiple results out of order", []Response{{"c", 2}, {"a", 0}, {"b", 1}}, "abc"},
+		{"results with same index, stable", []Response{{"a", 0}, {"b", 0}}, "ab"},
+		{"many duplicates stable", []Response{{"x", 0}, {"y", 0}, {"z", 0}, {"q", 1}}, "xyzq"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var builder strings.Builder
 			result := assembleResults(tt.results, builder)
-			if tt.anyOf != nil {
-				valid := false
-				for _, exp := range tt.anyOf {
-					if result == exp {
-						valid = true
-						break
-					}
-				}
-				if !valid {
-					t.Errorf("assembleResults() = %q, want one of %v", result, tt.anyOf)
-				}
-			} else if result != tt.expected {
+			if result != tt.expected {
 				t.Errorf("assembleResults() = %q, want %q", result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestAssembleResultsStableOrder(t *testing.T) {
+	f := func(n uint8) bool {
+		n = n%32 + 1
+		inputs := make([]Response, n)
+		for i := range inputs {
+			inputs[i] = Response{content: fmt.Sprintf("%c", 'a'+i%26), index: 0}
+		}
+		out := assembleResults(append([]Response(nil), inputs...), strings.Builder{})
+		var expected strings.Builder
+		for _, r := range inputs {
+			expected.WriteString(r.content)
+		}
+		return out == expected.String()
+	}
+	if err := quick.Check(f, nil); err != nil {
+		t.Error(err)
 	}
 }
 
