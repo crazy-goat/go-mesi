@@ -269,15 +269,26 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         return ap_pass_brigade(f->next, ctx->bb);
     }
 
-    // Build allowed_hosts string from config
+    // Build allowed_hosts string from config (O(n) time, single allocation)
     char *allowed_hosts_str = "";
     if (conf->allowed_hosts && conf->allowed_hosts->nelts > 0) {
         apr_array_header_t *arr = conf->allowed_hosts;
         const char **hosts = (const char **)arr->elts;
-        allowed_hosts_str = apr_pstrdup(f->r->pool, hosts[0]);
-        for (int i = 1; i < arr->nelts; i++) {
-            allowed_hosts_str = apr_pstrcat(f->r->pool, allowed_hosts_str, " ", hosts[i], NULL);
+        apr_size_t total = 0;
+        for (int i = 0; i < arr->nelts; i++) {
+            total += strlen(hosts[i]);
+            if (i > 0) total++;
         }
+        char *buf = apr_palloc(f->r->pool, total + 1);
+        char *p = buf;
+        for (int i = 0; i < arr->nelts; i++) {
+            if (i > 0) *p++ = ' ';
+            apr_size_t len = strlen(hosts[i]);
+            memcpy(p, hosts[i], len);
+            p += len;
+        }
+        *p = '\0';
+        allowed_hosts_str = buf;
     }
 
     int block_private = (conf->block_private_ips != -1) ? conf->block_private_ips : 1;
