@@ -604,7 +604,7 @@ fi
 echo "=== Test 3: Non-HTML content ==="
 RESPONSE=$(curl -s http://localhost:8080/noesi.txt)
 if echo "$RESPONSE" | grep -q "esi:include"; then
-    echo "PASS: Non-HTML content not processed"
+    echo "PASS: Non-HTML content bypassed ESI filter (tags preserved verbatim)"
 else
     echo "FAIL: Non-HTML content was processed"
     echo "Response: $RESPONSE"
