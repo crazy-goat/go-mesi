@@ -78,7 +78,7 @@ func (token *esiIncludeToken) parseAB() abRatio {
 	}
 }
 
-func (ratio abRatio) selectUrl(token *esiIncludeToken) string {
+func (ratio abRatio) selectUrl(token *esiIncludeToken, rng func(int) int) string {
 	if token.Alt == "" {
 		return token.Src
 	}
@@ -89,7 +89,11 @@ func (ratio abRatio) selectUrl(token *esiIncludeToken) string {
 		return token.Src
 	}
 
-	randomValue := rand.IntN(int(sum))
+	if rng == nil {
+		rng = rand.IntN
+	}
+
+	randomValue := rng(int(sum))
 
 	if randomValue < int(ratio.A) {
 		return token.Src
@@ -99,7 +103,7 @@ func (ratio abRatio) selectUrl(token *esiIncludeToken) string {
 
 func fetchAB(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
 	logger := config.getLogger()
-	selected := token.parseAB().selectUrl(token)
+	selected := token.parseAB().selectUrl(token, nil)
 	logger.Debug("ab_ratio_select", "src", token.Src, "alt", token.Alt, "selected", selected)
 	return singleFetchUrlWithContext(selected, config, config.Context)
 }
