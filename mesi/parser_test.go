@@ -433,7 +433,8 @@ func BenchmarkAssembleResults(b *testing.B) {
 	res := makeResponses(1000)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = assembleResults(res)
+		copied := append([]Response(nil), res...)
+		_ = assembleResults(copied)
 	}
 }
 
