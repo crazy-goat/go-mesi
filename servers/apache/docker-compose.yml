@@ -21,9 +21,10 @@ services:
 
   backend:
     image: python:3.11-slim
+    user: "${UID:-1000}:${GID:-1000}"
     working_dir: /data
     volumes:
-      - ./tests:/data
+      - ./tests:/data:ro
     command: python -m http.server 8000
     expose:
       - "8000"
