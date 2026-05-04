@@ -363,10 +363,16 @@ func TestMESIParseRespectsMaxDepth(t *testing.T) {
 }
 
 func TestMESIParseRespectsTimeout(t *testing.T) {
+	handlerBlock := make(chan struct{})
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(500 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("content"))
+		select {
+		case <-r.Context().Done():
+			return
+		case <-handlerBlock:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("content"))
+		}
 	}))
 	defer server.Close()
 

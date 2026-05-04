@@ -174,34 +174,57 @@ func TestParseABInvalidRatioDefaults(t *testing.T) {
 
 func TestSelectUrlChoosesBasedOnRatio(t *testing.T) {
 	token := &esiIncludeToken{Src: "/src.html", Alt: "/alt.html"}
-	ratio := abRatio{A: 80, B: 20}
 
-	srcCount := 0
-	altCount := 0
-	iterations := 10000
-
-	for i := 0; i < iterations; i++ {
-		selected := ratio.selectUrl(token)
-		switch selected {
-		case "/src.html":
-			srcCount++
-		case "/alt.html":
-			altCount++
-		default:
-			t.Fatalf("unexpected URL: %q", selected)
+	t.Run("rng_in_a_range_selects_src", func(t *testing.T) {
+		ratio := abRatio{A: 80, B: 20}
+		for i := 0; i < 80; i++ {
+			rng := func(int) int { return i }
+			selected := ratio.selectUrl(token, rng)
+			if selected != "/src.html" {
+				t.Errorf("rng=%d: expected src, got %q", i, selected)
+			}
 		}
-	}
+	})
 
-	srcPercent := float64(srcCount) / float64(iterations) * 100
-	if srcPercent < 65 || srcPercent > 95 {
-		t.Errorf("src selected %.1f%%, expected 65-95%% (target 80%%)", srcPercent)
-	}
+	t.Run("rng_in_b_range_selects_alt", func(t *testing.T) {
+		ratio := abRatio{A: 80, B: 20}
+		for i := 80; i < 100; i++ {
+			rng := func(int) int { return i }
+			selected := ratio.selectUrl(token, rng)
+			if selected != "/alt.html" {
+				t.Errorf("rng=%d: expected alt, got %q", i, selected)
+			}
+		}
+	})
+
+	t.Run("no_alt_returns_src_regardless_of_rng", func(t *testing.T) {
+		noAltToken := &esiIncludeToken{Src: "/src.html", Alt: ""}
+		ratio := abRatio{A: 50, B: 50}
+		for _, v := range []int{0, 49, 50, 99} {
+			rng := func(int) int { return v }
+			selected := ratio.selectUrl(noAltToken, rng)
+			if selected != "/src.html" {
+				t.Errorf("rng=%d: expected src when no alt, got %q", v, selected)
+			}
+		}
+	})
+
+	t.Run("zero_sum_returns_src", func(t *testing.T) {
+		ratio := abRatio{A: 0, B: 0}
+		for _, v := range []int{0, 50} {
+			rng := func(int) int { return v }
+			selected := ratio.selectUrl(token, rng)
+			if selected != "/src.html" {
+				t.Errorf("rng=%d: expected src when sum=0, got %q", v, selected)
+			}
+		}
+	})
 }
 
 func TestSelectUrlNoAltReturnsSrc(t *testing.T) {
 	token := &esiIncludeToken{Src: "/src.html", Alt: ""}
 	ratio := abRatio{A: 50, B: 50}
-	selected := ratio.selectUrl(token)
+	selected := ratio.selectUrl(token, nil)
 	if selected != "/src.html" {
 		t.Errorf("selectUrl() = %q, want %q", selected, "/src.html")
 	}

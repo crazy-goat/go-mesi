@@ -322,14 +322,11 @@ func TestSingleFetchUrlWithNilContext(t *testing.T) {
 }
 
 func TestMESIParseContextPropagation(t *testing.T) {
+	handlerReached := make(chan struct{})
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-time.After(5 * time.Second):
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("SLOW_RESPONSE"))
-		}
+		close(handlerReached)
+		<-r.Context().Done()
 	}))
 	defer server.Close()
 
@@ -347,12 +344,12 @@ func TestMESIParseContextPropagation(t *testing.T) {
 
 	cancel()
 
-	start := time.Now()
 	result := MESIParse(html, config)
-	elapsed := time.Since(start)
 
-	if elapsed > 2*time.Second {
-		t.Errorf("MESIParse took too long (%v) - context not propagated properly", elapsed)
+	select {
+	case <-handlerReached:
+		t.Error("handler was reached despite cancelled context")
+	default:
 	}
 
 	if result == "" {
@@ -361,14 +358,11 @@ func TestMESIParseContextPropagation(t *testing.T) {
 }
 
 func TestMESIParseContextCancellationStopsAllGoroutines(t *testing.T) {
+	handlerReached := make(chan struct{})
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-time.After(5 * time.Second):
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("SLOW"))
-		}
+		close(handlerReached)
+		<-r.Context().Done()
 	}))
 	defer server.Close()
 
@@ -386,26 +380,26 @@ func TestMESIParseContextCancellationStopsAllGoroutines(t *testing.T) {
 
 	cancel()
 
-	start := time.Now()
 	result := MESIParse(html, config)
-	elapsed := time.Since(start)
 
-	if elapsed > 2*time.Second {
-		t.Errorf("MESIParse took too long (%v) with cancelled context", elapsed)
+	select {
+	case <-handlerReached:
+		t.Error("handler was reached despite cancelled context")
+	default:
 	}
 
 	_ = result
 }
 
 func TestMESIParseContextCancellationMidParse(t *testing.T) {
+	handlerReached := make(chan struct{})
+
 	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
-		case <-r.Context().Done():
-			return
-		case <-time.After(5 * time.Second):
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("SLOW"))
+		case handlerReached <- struct{}{}:
+		default:
 		}
+		<-r.Context().Done()
 	}))
 	defer slowServer.Close()
 
@@ -439,17 +433,13 @@ func TestMESIParseContextCancellationMidParse(t *testing.T) {
 		done <- result
 	}()
 
-	// Cancel context after 100ms, while MESIParse is running
-	time.Sleep(100 * time.Millisecond)
+	// Wait for at least one slow handler to be reached, then cancel
+	<-handlerReached
 	cancel()
 
 	// Wait for MESIParse to return
-	select {
-	case result := <-done:
-		_ = result
-	case <-time.After(2 * time.Second):
-		t.Fatal("MESIParse did not return within 2 seconds after context cancellation")
-	}
+	result := <-done
+	_ = result
 }
 
 func TestFetchConcurrentBothSucceed(t *testing.T) {
@@ -584,9 +574,16 @@ func TestFetchConcurrentNoAltShortCircuit(t *testing.T) {
 }
 
 func TestFetchConcurrentContextCancellation(t *testing.T) {
+	handlerBlock := make(chan struct{})
+
 	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(5 * time.Second)
-		w.WriteHeader(http.StatusOK)
+		select {
+		case <-r.Context().Done():
+			return
+		case <-handlerBlock:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("OK"))
+		}
 	}))
 	defer slowServer.Close()
 
@@ -601,13 +598,11 @@ func TestFetchConcurrentContextCancellation(t *testing.T) {
 		BlockPrivateIPs: false,
 	}
 
-	start := time.Now()
 	html := `<html><esi:include src="` + slowServer.URL + `/slow1" alt="` + slowServer.URL + `/slow2" fetch-mode="concurrent" /></html>`
-	_ = MESIParse(html, config)
-	elapsed := time.Since(start)
+	result := MESIParse(html, config)
 
-	if elapsed > 1*time.Second {
-		t.Errorf("fetchConcurrent took too long (%v) with cancelled context", elapsed)
+	if strings.Contains(result, "OK") {
+		t.Errorf("expected empty result due to context cancellation, got %q", result)
 	}
 }
 
