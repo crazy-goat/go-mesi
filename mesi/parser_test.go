@@ -413,12 +413,27 @@ func TestAssembleResults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var builder strings.Builder
-			result := assembleResults(tt.results, builder)
+			result := assembleResults(tt.results)
 			if result != tt.expected {
 				t.Errorf("assembleResults() = %q, want %q", result, tt.expected)
 			}
 		})
+	}
+}
+
+func makeResponses(n int) []Response {
+	res := make([]Response, n)
+	for i := range res {
+		res[i] = Response{content: string(rune('a' + i%26)), index: n - i}
+	}
+	return res
+}
+
+func BenchmarkAssembleResults(b *testing.B) {
+	res := makeResponses(1000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = assembleResults(res)
 	}
 }
 
@@ -429,7 +444,7 @@ func TestAssembleResultsStableOrder(t *testing.T) {
 		for i := range inputs {
 			inputs[i] = Response{content: string(rune('a' + i%26)), index: 0}
 		}
-		out := assembleResults(append([]Response(nil), inputs...), strings.Builder{})
+		out := assembleResults(append([]Response(nil), inputs...))
 		var expected strings.Builder
 		for _, r := range inputs {
 			expected.WriteString(r.content)

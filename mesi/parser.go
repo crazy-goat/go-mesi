@@ -14,10 +14,17 @@ type Response struct {
 	index   int
 }
 
-func assembleResults(results []Response, result strings.Builder) string {
+func assembleResults(results []Response) string {
 	sort.SliceStable(results, func(i, j int) bool {
 		return results[i].index < results[j].index
 	})
+
+	var result strings.Builder
+	total := 0
+	for _, r := range results {
+		total += len(r.content)
+	}
+	result.Grow(total)
 
 	for _, res := range results {
 		result.WriteString(res.content)
@@ -51,7 +58,6 @@ func MESIParse(input string, config EsiParserConfig) string {
 	logger := config.getLogger()
 	start := time.Now()
 
-	var result strings.Builder
 	processed := unescape(input)
 	tokens := esiTokenizer(processed)
 
@@ -150,5 +156,5 @@ func MESIParse(input string, config EsiParserConfig) string {
 		wg.Wait()
 	}
 
-	return assembleResults(results, result)
+	return assembleResults(results)
 }
