@@ -1,7 +1,6 @@
 package mesi
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -622,7 +621,7 @@ func TestAssembleResultsStableOrder(t *testing.T) {
 		n = n%32 + 1
 		inputs := make([]Response, n)
 		for i := range inputs {
-			inputs[i] = Response{content: fmt.Sprintf("%c", 'a'+i%26), index: 0}
+			inputs[i] = Response{content: string(rune('a' + i%26)), index: 0}
 		}
 		out := assembleResults(append([]Response(nil), inputs...), strings.Builder{})
 		var expected strings.Builder
