@@ -159,7 +159,7 @@ func (c EsiParserConfig) OverrideConfig(token esiIncludeToken) EsiParserConfig {
 }
 
 func assembleResults(results []Response, result strings.Builder) string {
-	sort.Slice(results, func(i, j int) bool {
+	sort.SliceStable(results, func(i, j int) bool {
 		return results[i].index < results[j].index
 	})
 
