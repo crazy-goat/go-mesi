@@ -39,7 +39,7 @@ func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bo
 		select {
 		case result := <-resultChan:
 			if result.Error == nil {
-				cancel()
+				cancel() // Cancel the other request
 				return result.Data, result.IsEsiResponse, nil
 			}
 			lastErr = result.Error
