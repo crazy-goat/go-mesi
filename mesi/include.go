@@ -1,24 +1,14 @@
 package mesi
 
 import (
-	"context"
 	"encoding/xml"
 	"errors"
-	"math/rand/v2"
-	"strconv"
-	"strings"
-	"time"
 )
 
 type esiResponse struct {
 	Data          string
 	IsEsiResponse bool
 	Error         error
-}
-
-type abRatio struct {
-	A uint
-	B uint
 }
 
 type esiIncludeToken struct {
@@ -41,137 +31,6 @@ func parseInclude(input string) (token esiIncludeToken, err error) {
 	}
 
 	return esi, nil
-}
-
-func (token *esiIncludeToken) parseAB() abRatio {
-	defaultValue := abRatio{
-		A: 50,
-		B: 50,
-	}
-
-	if !strings.Contains(token.ABRatio, ":") {
-		return defaultValue
-	}
-
-	parts := strings.Split(token.ABRatio, ":")
-	if len(parts) != 2 {
-		return defaultValue
-	}
-
-	a, err := strconv.ParseUint(parts[0], 10, 64)
-	if err != nil {
-		return defaultValue
-	}
-
-	b, err := strconv.ParseUint(parts[1], 10, 64)
-	if err != nil {
-		return defaultValue
-	}
-
-	if a == 0 && b == 0 {
-		return defaultValue
-	}
-
-	return abRatio{
-		A: uint(a),
-		B: uint(b),
-	}
-}
-
-func (ratio abRatio) selectUrl(token *esiIncludeToken, rng func(int) int) string {
-	if token.Alt == "" {
-		return token.Src
-	}
-
-	sum := ratio.A + ratio.B
-
-	if sum == 0 {
-		return token.Src
-	}
-
-	if rng == nil {
-		rng = rand.IntN
-	}
-
-	randomValue := rng(int(sum))
-
-	if randomValue < int(ratio.A) {
-		return token.Src
-	}
-	return token.Alt
-}
-
-func fetchAB(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
-	logger := config.getLogger()
-	selected := token.parseAB().selectUrl(token, nil)
-	logger.Debug("ab_ratio_select", "src", token.Src, "alt", token.Alt, "selected", selected)
-	return singleFetchUrlWithContext(selected, config, config.Context)
-}
-
-// fetchConcurrent fetches Src and Alt in parallel and returns the first successful result.
-// If both fail, it returns the last error. The losing request is cancelled via context.
-func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
-	if token.Alt == "" {
-		return singleFetchUrlWithContext(token.Src, config, config.Context)
-	}
-
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if config.Context != nil {
-		ctx, cancel = context.WithCancel(config.Context)
-	} else {
-		ctx, cancel = context.WithCancel(context.Background())
-	}
-	defer cancel()
-
-	resultChan := make(chan esiResponse, 2)
-
-	runTask := func(url string) {
-		data, isEsiResponse, err := singleFetchUrlWithContext(url, config, ctx)
-		select {
-		case resultChan <- esiResponse{Data: data, IsEsiResponse: isEsiResponse, Error: err}:
-		case <-ctx.Done():
-		}
-	}
-
-	go runTask(token.Src)
-	go runTask(token.Alt)
-
-	var lastErr error
-	for i := 0; i < 2; i++ {
-		select {
-		case result := <-resultChan:
-			if result.Error == nil {
-				cancel() // Cancel the other request
-				return result.Data, result.IsEsiResponse, nil
-			}
-			lastErr = result.Error
-		case <-ctx.Done():
-			cancel()
-			if lastErr == nil {
-				return "", false, ctx.Err()
-			}
-			return "", false, lastErr
-		}
-	}
-	cancel()
-	return "", false, lastErr
-}
-
-func fetchFallback(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
-	logger := config.getLogger()
-	start := time.Now()
-	var data string
-	var err error
-	var isEsiResponse bool
-
-	data, isEsiResponse, err = singleFetchUrlWithContext(token.Src, config, config.Context)
-	if err != nil && token.Alt != "" {
-		logger.Debug("fallback_triggered", "primary", token.Src, "alt", token.Alt, "error", err.Error())
-		return singleFetchUrlWithContext(token.Alt, config.WithElapsedTime(time.Since(start)), config.Context)
-	}
-
-	return data, isEsiResponse, err
 }
 
 func (token *esiIncludeToken) toString(config EsiParserConfig) (string, bool) {
