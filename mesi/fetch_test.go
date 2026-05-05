@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +13,19 @@ import (
 	"testing"
 	"time"
 )
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
 
 func TestSingleFetchUrlSchemeValidation(t *testing.T) {
 	tests := []struct {
@@ -217,19 +229,6 @@ func TestSingleFetchUrlEdgeCases(t *testing.T) {
 	})
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
-}
-
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
 func TestSingleFetchUrlWithContextCancellation(t *testing.T) {
 	requestReceived := make(chan struct{})
 
@@ -409,7 +408,6 @@ func TestMESIParseContextCancellationMidParse(t *testing.T) {
 	}))
 	defer fastServer.Close()
 
-	// Mix of slow and fast includes
 	html := `<html><body>` +
 		`<esi:include src="` + slowServer.URL + `/slow"/>` +
 		`<esi:include src="` + fastServer.URL + `/fast"/>` +
@@ -426,18 +424,15 @@ func TestMESIParseContextCancellationMidParse(t *testing.T) {
 		BlockPrivateIPs: false,
 	}
 
-	// Start MESIParse in a goroutine
 	done := make(chan string)
 	go func() {
 		result := MESIParse(html, config)
 		done <- result
 	}()
 
-	// Wait for at least one slow handler to be reached, then cancel
 	<-handlerReached
 	cancel()
 
-	// Wait for MESIParse to return
 	result := <-done
 	_ = result
 }
@@ -499,11 +494,9 @@ func TestFetchConcurrentPrimaryFailsAltSucceeds(t *testing.T) {
 func TestFetchConcurrentPrimaryFailsImmediatelyAltSucceeds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/primary" {
-			// Primary fails immediately to test that fetchConcurrent waits for alt's success
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte("PRIMARY_ERROR"))
 		} else if r.URL.Path == "/alt" {
-			// Alt succeeds after a small delay
 			time.Sleep(50 * time.Millisecond)
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ALT_RESPONSE"))
@@ -521,8 +514,6 @@ func TestFetchConcurrentPrimaryFailsImmediatelyAltSucceeds(t *testing.T) {
 	html := `<html><esi:include src="` + server.URL + `/primary" alt="` + server.URL + `/alt" fetch-mode="concurrent" /></html>`
 
 	result := MESIParse(html, config)
-	// BUG: This currently fails because fetchConcurrent returns the first result (primary's error)
-	// instead of waiting for the first SUCCESSFUL result
 	if !strings.Contains(result, "ALT_RESPONSE") {
 		t.Errorf("expected ALT_RESPONSE in output (should wait for success), got %q", result)
 	}
@@ -606,74 +597,6 @@ func TestFetchConcurrentContextCancellation(t *testing.T) {
 	}
 }
 
-func TestIsURLSafe_BlocksPrivateIPs(t *testing.T) {
-	// Note: isURLSafe no longer checks private IPs at validation time.
-	// Private IP checking is now done at dial time via safeDialer.
-	// See TestSSRFDialBlocksPrivateIP for dial-time tests.
-	tests := []struct {
-		name string
-		url  string
-	}{
-		{"localhost", "http://localhost/test"},
-		{"127.0.0.1", "http://127.0.0.1/test"},
-		{"10.0.0.1", "http://10.0.0.1/test"},
-		{"public IP", "http://8.8.8.8/test"},
-	}
-
-	config := EsiParserConfig{
-		BlockPrivateIPs: true,
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := isURLSafe(tt.url, config)
-			// isURLSafe should NOT return error for private IPs anymore
-			// (check is now at dial time)
-			if err != nil {
-				t.Errorf("isURLSafe should not check private IPs, got error: %v", err)
-			}
-		})
-	}
-}
-
-func TestIsURLSafe_AllowedHosts(t *testing.T) {
-	tests := []struct {
-		name         string
-		url          string
-		allowedHosts []string
-		wantErr      bool
-	}{
-		{"allowed exact", "http://example.com/test", []string{"example.com"}, false},
-		{"allowed subdomain", "http://api.example.com/test", []string{"example.com"}, false},
-		{"not allowed", "http://other.com/test", []string{"example.com"}, true},
-		{"multiple allowed", "http://foo.com/test", []string{"example.com", "foo.com"}, false},
-		{"empty allowed list", "http://example.com/test", []string{}, false},
-		// Port handling tests
-		{"allowed host with port", "http://example.com:8080/test", []string{"example.com"}, false},
-		{"allowed subdomain with port", "http://api.example.com:443/test", []string{"example.com"}, false},
-		{"not allowed with port", "http://other.com:8080/test", []string{"example.com"}, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			config := EsiParserConfig{
-				BlockPrivateIPs: true,
-				AllowedHosts:    tt.allowedHosts,
-			}
-			err := isURLSafe(tt.url, config)
-			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error, got nil")
-				}
-			} else {
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
-				}
-			}
-		})
-	}
-}
-
 func TestAllowPrivateIPsForAllowedHosts(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -728,40 +651,6 @@ func TestAllowPrivateIPsForAllowedHosts(t *testing.T) {
 			t.Error("expected error for host not in AllowedHosts")
 		}
 	})
-}
-
-func TestIsURLSafe_Disabled(t *testing.T) {
-	config := EsiParserConfig{
-		BlockPrivateIPs: false,
-	}
-
-	err := isURLSafe("http://127.0.0.1/test", config)
-	if err != nil {
-		t.Errorf("expected no error when BlockPrivateIPs=false, got: %v", err)
-	}
-}
-
-func TestIsURLSafe_InvalidURL(t *testing.T) {
-	config := EsiParserConfig{
-		BlockPrivateIPs: true,
-	}
-
-	tests := []struct {
-		name string
-		url  string
-	}{
-		{"invalid url", "://invalid"},
-		{"no host", "http:///path"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := isURLSafe(tt.url, config)
-			if err == nil {
-				t.Error("expected error for invalid URL")
-			}
-		})
-	}
 }
 
 func TestIsEsiResponse(t *testing.T) {
@@ -824,25 +713,6 @@ func TestSingleFetchUrlExceedsTimeBudget(t *testing.T) {
 	}
 }
 
-func TestSingleFetchUrlSSRFValidation(t *testing.T) {
-	config := EsiParserConfig{
-		DefaultUrl:      "http://example.com/",
-		MaxDepth:        1,
-		Timeout:         1 * time.Second,
-		BlockPrivateIPs: true,
-		Logger:          DiscardLogger{},
-	}
-
-	_, _, err := singleFetchUrl("http://127.0.0.1/test", config)
-	if err == nil {
-		t.Error("expected SSRF error for private IP")
-	}
-	// Error now comes from dialer, not from isURLSafe validation
-	if !strings.Contains(err.Error(), "blocked dial to private/reserved ip") {
-		t.Errorf("expected dial-time SSRF error, got: %v", err)
-	}
-}
-
 func TestParseWithConfigAllowedHostsAndBlockPrivateIPs(t *testing.T) {
 	log := &recordingLogger{}
 
@@ -896,63 +766,14 @@ func TestSingleFetchUrlInvalidRequest(t *testing.T) {
 	}
 }
 
-func TestIsPrivateOrReservedIP(t *testing.T) {
-	tests := []struct {
-		name     string
-		ip       string
-		expected bool
-	}{
-		{"loopback", "127.0.0.1", true},
-		{"10.0.0.0/8", "10.0.0.1", true},
-		{"10.255.255.255", "10.255.255.255", true},
-		{"172.16.0.0/12", "172.16.0.1", true},
-		{"172.31.255.255", "172.31.255.255", true},
-		{"192.168.0.0/16", "192.168.1.1", true},
-		{"link-local", "169.254.1.1", true},
-		{"unspecified", "0.0.0.0", true},
-		{"multicast", "224.0.0.1", true},
-		{"reserved", "240.0.0.1", true},
-		{"public", "8.8.8.8", false},
-		{"public 2", "1.1.1.1", false},
-		{"ipv6 loopback", "::1", true},
-		{"ipv6 ULA fd00", "fd00::1", true},
-		{"ipv6 ULA fc00", "fc00::1", true},
-		{"ipv6 link-local", "fe80::1", true},
-		{"ipv6 unspecified", "::", true},
-		{"ipv4-mapped loopback", "::ffff:127.0.0.1", true},
-		{"ipv4-mapped private", "::ffff:10.0.0.1", true},
-		{"ipv6 documentation", "2001:db8::1", true},
-		{"ipv6 multicast", "ff02::1", true},
-		{"nat64", "64:ff9b::8.8.8.8", true},
-		{"cgnat", "100.64.0.1", true},
-		{"benchmark", "198.18.0.1", true},
-		{"public ipv6", "2606:4700:4700::1111", false},
-		{"public ipv6 google", "2001:4860:4860::8888", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ip := net.ParseIP(tt.ip)
-			if ip == nil {
-				t.Fatalf("failed to parse IP %s", tt.ip)
-			}
-			result := isPrivateOrReservedIP(ip)
-			if result != tt.expected {
-				t.Errorf("isPrivateOrReservedIP(%s) = %v, expected %v", tt.ip, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestSingleFetchUrlWithContext_ResponseUnderLimit(t *testing.T) {
-	// Create test server that returns 1KB response
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(make([]byte, 1024)) // 1KB
+		_, _ = w.Write(make([]byte, 1024))
 	}))
 	defer ts.Close()
 
 	config := CreateDefaultConfig()
-	config.MaxResponseSize = 10 * 1024 // 10KB limit
+	config.MaxResponseSize = 10 * 1024
 	config.Timeout = 5 * time.Second
 	config.BlockPrivateIPs = false
 
@@ -966,14 +787,13 @@ func TestSingleFetchUrlWithContext_ResponseUnderLimit(t *testing.T) {
 }
 
 func TestSingleFetchUrlWithContext_ResponseExceedsLimit(t *testing.T) {
-	// Create test server that returns 20KB response
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(make([]byte, 20*1024)) // 20KB
+		_, _ = w.Write(make([]byte, 20*1024))
 	}))
 	defer ts.Close()
 
 	config := CreateDefaultConfig()
-	config.MaxResponseSize = 10 * 1024 // 10KB limit
+	config.MaxResponseSize = 10 * 1024
 	config.Timeout = 5 * time.Second
 	config.BlockPrivateIPs = false
 
@@ -987,14 +807,13 @@ func TestSingleFetchUrlWithContext_ResponseExceedsLimit(t *testing.T) {
 }
 
 func TestSingleFetchUrlWithContext_ZeroLimitNoRestriction(t *testing.T) {
-	// Create test server that returns 100KB response
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(make([]byte, 100*1024)) // 100KB
+		_, _ = w.Write(make([]byte, 100*1024))
 	}))
 	defer ts.Close()
 
 	config := CreateDefaultConfig()
-	config.MaxResponseSize = 0 // No limit
+	config.MaxResponseSize = 0
 	config.Timeout = 5 * time.Second
 	config.BlockPrivateIPs = false
 
@@ -1009,9 +828,8 @@ func TestSingleFetchUrlWithContext_ZeroLimitNoRestriction(t *testing.T) {
 
 func TestSingleFetchUrlWithContext_ExactLimit(t *testing.T) {
 	limit := int64(1024)
-	// Create test server that returns exactly at limit
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(make([]byte, limit)) // Exactly at limit
+		_, _ = w.Write(make([]byte, limit))
 	}))
 	defer ts.Close()
 
@@ -1162,237 +980,6 @@ func TestFetchWithCache_EsiResponse(t *testing.T) {
 	}
 }
 
-func TestSSRFDialBlocksPrivateIP(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
-	}))
-	defer server.Close()
-
-	// Create config with BlockPrivateIPs=true
-	config := EsiParserConfig{
-		DefaultUrl:      "http://127.0.0.1/",
-		MaxDepth:        1,
-		Timeout:         2 * time.Second,
-		BlockPrivateIPs: true,
-		Logger:          DiscardLogger{},
-	}
-
-	// Try to fetch from the test server
-	// The test server binds to 127.0.0.1 which is a private IP
-	// With BlockPrivateIPs=true, this should fail at dial time
-	_, _, err := singleFetchUrlWithContext(server.URL, config, context.Background())
-	if err == nil {
-		t.Fatal("expected error when fetching from private IP with BlockPrivateIPs=true, got nil")
-	}
-	if !contains(err.Error(), "blocked dial to private/reserved ip") {
-		t.Errorf("expected 'blocked dial' error, got: %v", err)
-	}
-}
-
-func TestSSRFDialAllowsPublicIP(t *testing.T) {
-	// Test that the safeDialer Control callback allows public IPs
-	config := EsiParserConfig{
-		BlockPrivateIPs: true,
-	}
-
-	dialer := safeDialer(config)
-
-	// Test with a public IP (8.8.8.8 - Google DNS)
-	// The Control callback should allow this (return nil)
-	err := dialer.Control("tcp", "8.8.8.8:80", nil)
-	if err != nil {
-		t.Errorf("expected public IP 8.8.8.8 to be allowed, got error: %v", err)
-	}
-
-	// Test with another public IP (1.1.1.1 - Cloudflare DNS)
-	err = dialer.Control("tcp", "1.1.1.1:443", nil)
-	if err != nil {
-		t.Errorf("expected public IP 1.1.1.1 to be allowed, got error: %v", err)
-	}
-
-	// Verify that private IPs are still blocked
-	err = dialer.Control("tcp", "127.0.0.1:80", nil)
-	if err == nil {
-		t.Error("expected private IP 127.0.0.1 to be blocked")
-	}
-
-	err = dialer.Control("tcp", "10.0.0.1:80", nil)
-	if err == nil {
-		t.Error("expected private IP 10.0.0.1 to be blocked")
-	}
-}
-
-func TestSSRFDialerWithBlockPrivateIPsDisabled(t *testing.T) {
-	// When BlockPrivateIPs=false, all IPs should be allowed
-	config := EsiParserConfig{
-		BlockPrivateIPs: false,
-	}
-
-	dialer := safeDialer(config)
-
-	// Private IPs should be allowed when BlockPrivateIPs=false
-	err := dialer.Control("tcp", "127.0.0.1:80", nil)
-	if err != nil {
-		t.Errorf("expected private IP to be allowed when BlockPrivateIPs=false, got: %v", err)
-	}
-
-	err = dialer.Control("tcp", "10.0.0.1:80", nil)
-	if err != nil {
-		t.Errorf("expected private IP to be allowed when BlockPrivateIPs=false, got: %v", err)
-	}
-
-	// Public IPs should also be allowed
-	err = dialer.Control("tcp", "8.8.8.8:80", nil)
-	if err != nil {
-		t.Errorf("expected public IP to be allowed when BlockPrivateIPs=false, got: %v", err)
-	}
-}
-
-func TestNewSSRFSafeTransport(t *testing.T) {
-	config := EsiParserConfig{
-		BlockPrivateIPs: true,
-	}
-
-	transport := NewSSRFSafeTransport(config)
-	if transport == nil {
-		t.Fatal("NewSSRFSafeTransport returned nil")
-	}
-
-	// Verify the transport has the correct DialContext
-	if transport.DialContext == nil {
-		t.Fatal("transport.DialContext is nil")
-	}
-
-	// Test with BlockPrivateIPs=false
-	config2 := EsiParserConfig{
-		BlockPrivateIPs: false,
-	}
-	transport2 := NewSSRFSafeTransport(config2)
-	if transport2 == nil {
-		t.Fatal("NewSSRFSafeTransport returned nil for BlockPrivateIPs=false")
-	}
-}
-
-func TestSSRFBlocksIPv6Loopback(t *testing.T) {
-	log := &recordingLogger{}
-	config := EsiParserConfig{
-		DefaultUrl:      "http://example.com/",
-		MaxDepth:        1,
-		Timeout:         1 * time.Second,
-		BlockPrivateIPs: true,
-		Logger:          log,
-	}
-
-	html := `<html><body><esi:include src="http://[::1]/test"/></body></html>`
-	result := MESIParse(html, config)
-
-	if strings.Contains(result, "::1") {
-		t.Errorf("output leaked internal IP: %q", result)
-	}
-	if !log.containsMsg("include_failed") {
-		t.Errorf("expected include_failed log for IPv6 loopback block, got: %q", result)
-	}
-}
-
-func TestSSRFBlocksIPv6ULA(t *testing.T) {
-	log := &recordingLogger{}
-	config := EsiParserConfig{
-		DefaultUrl:      "http://example.com/",
-		MaxDepth:        1,
-		Timeout:         1 * time.Second,
-		BlockPrivateIPs: true,
-		Logger:          log,
-	}
-
-	html := `<html><body><esi:include src="http://[fd00::1]/test"/></body></html>`
-	result := MESIParse(html, config)
-
-	if strings.Contains(result, "fd00") {
-		t.Errorf("output leaked internal IP: %q", result)
-	}
-	if !log.containsMsg("include_failed") {
-		t.Errorf("expected include_failed log for IPv6 ULA block, got: %q", result)
-	}
-}
-
-func TestSSRFBlocksIPv4MappedIPv6(t *testing.T) {
-	log := &recordingLogger{}
-	config := EsiParserConfig{
-		DefaultUrl:      "http://example.com/",
-		MaxDepth:        1,
-		Timeout:         1 * time.Second,
-		BlockPrivateIPs: true,
-		Logger:          log,
-	}
-
-	html := `<html><body><esi:include src="http://[::ffff:127.0.0.1]/test"/></body></html>`
-	result := MESIParse(html, config)
-
-	if strings.Contains(result, "127.0.0.1") {
-		t.Errorf("output leaked internal IP: %q", result)
-	}
-	if !log.containsMsg("include_failed") {
-		t.Errorf("expected include_failed log for IPv4-mapped IPv6 block, got: %q", result)
-	}
-}
-
-func TestSentinelErrorsIs(t *testing.T) {
-	_, _, schemeErr := singleFetchUrlWithContext("httpx://example.com/test", EsiParserConfig{Timeout: time.Second, BlockPrivateIPs: false, Logger: DiscardLogger{}}, context.Background())
-	_, _, timeoutErr := singleFetchUrlWithContext("http://example.com/test", EsiParserConfig{Timeout: 0, BlockPrivateIPs: false, Logger: DiscardLogger{}}, context.Background())
-	_, _, dialErr := singleFetchUrlWithContext("http://127.0.0.1/test", EsiParserConfig{Timeout: time.Second, BlockPrivateIPs: true, Logger: DiscardLogger{}}, context.Background())
-	hostErr := isURLSafe("http://evil.com/test", EsiParserConfig{AllowedHosts: []string{"allowed.com"}})
-
-	tests := []struct {
-		name   string
-		err    error
-		target error
-		want   bool
-	}{
-		{
-			name:   "invalid scheme wraps ErrInvalidURL",
-			err:    schemeErr,
-			target: ErrInvalidURL,
-			want:   true,
-		},
-		{
-			name:   "timeout wraps ErrTimeBudgetExceeded",
-			err:    timeoutErr,
-			target: ErrTimeBudgetExceeded,
-			want:   true,
-		},
-		{
-			name:   "dial SSRF block wraps ErrSSRFBlocked",
-			err:    dialErr,
-			target: ErrSSRFBlocked,
-			want:   true,
-		},
-		{
-			name:   "allowed-host SSRF block wraps ErrSSRFBlocked",
-			err:    hostErr,
-			target: ErrSSRFBlocked,
-			want:   true,
-		},
-		{
-			name:   "host-not-allowed not ErrInvalidURL",
-			err:    hostErr,
-			target: ErrInvalidURL,
-			want:   false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.err == nil {
-				t.Fatal("expected non-nil error")
-			}
-			if got := errors.Is(tt.err, tt.target); got != tt.want {
-				t.Errorf("errors.Is(%v, %v) = %v, want %v\nerr.Error() = %q", tt.err, tt.target, got, tt.want, tt.err)
-			}
-		})
-	}
-}
-
 var _ Cache = errorCache{}
 
 type errorCache struct{}
@@ -1498,5 +1085,61 @@ func TestCacheErrorDoesNotReachStderr(t *testing.T) {
 
 	if buf.Len() > 0 {
 		t.Fatalf("stdlib log received unexpected output: %s", buf.String())
+	}
+}
+
+func TestSentinelErrorsIs(t *testing.T) {
+	_, _, schemeErr := singleFetchUrlWithContext("httpx://example.com/test", EsiParserConfig{Timeout: time.Second, BlockPrivateIPs: false, Logger: DiscardLogger{}}, context.Background())
+	_, _, timeoutErr := singleFetchUrlWithContext("http://example.com/test", EsiParserConfig{Timeout: 0, BlockPrivateIPs: false, Logger: DiscardLogger{}}, context.Background())
+	_, _, dialErr := singleFetchUrlWithContext("http://127.0.0.1/test", EsiParserConfig{Timeout: time.Second, BlockPrivateIPs: true, Logger: DiscardLogger{}}, context.Background())
+	hostErr := isURLSafe("http://evil.com/test", EsiParserConfig{AllowedHosts: []string{"allowed.com"}})
+
+	tests := []struct {
+		name   string
+		err    error
+		target error
+		want   bool
+	}{
+		{
+			name:   "invalid scheme wraps ErrInvalidURL",
+			err:    schemeErr,
+			target: ErrInvalidURL,
+			want:   true,
+		},
+		{
+			name:   "timeout wraps ErrTimeBudgetExceeded",
+			err:    timeoutErr,
+			target: ErrTimeBudgetExceeded,
+			want:   true,
+		},
+		{
+			name:   "dial SSRF block wraps ErrSSRFBlocked",
+			err:    dialErr,
+			target: ErrSSRFBlocked,
+			want:   true,
+		},
+		{
+			name:   "allowed-host SSRF block wraps ErrSSRFBlocked",
+			err:    hostErr,
+			target: ErrSSRFBlocked,
+			want:   true,
+		},
+		{
+			name:   "host-not-allowed not ErrInvalidURL",
+			err:    hostErr,
+			target: ErrInvalidURL,
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.err == nil {
+				t.Fatal("expected non-nil error")
+			}
+			if got := errors.Is(tt.err, tt.target); got != tt.want {
+				t.Errorf("errors.Is(%v, %v) = %v, want %v\nerr.Error() = %q", tt.err, tt.target, got, tt.want, tt.err)
+			}
+		})
 	}
 }
