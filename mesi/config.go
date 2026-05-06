@@ -107,9 +107,7 @@ func (c EsiParserConfig) ParseOnly() bool {
 
 func (c EsiParserConfig) DecreaseMaxDepth() EsiParserConfig {
 	if c.MaxDepth > 0 {
-		c.MaxDepth = c.MaxDepth - 1
-	} else {
-		c.MaxDepth = 0
+		c.MaxDepth--
 	}
 
 	return c
