@@ -17,6 +17,9 @@
 - **esi:include timeout** - Timeout can be set both globally and specifically for a selected `esi:include` tag. In combination with fallback content, you can easily manage the page generation time.
 - **Fallback content** - Set the content to be displayed if remote content download fails.
 - **SSRF Protection** – Built-in protection against Server-Side Request Forgery attacks with private IP blocking and optional host whitelisting.
+
+See the full [Feature Matrix](docs/features.md) for a detailed breakdown of which features are supported in each server integration.
+
 ## ESI Parser Configuration
 This document describes the configuration structure for the mESI parser.
 
