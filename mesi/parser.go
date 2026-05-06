@@ -33,7 +33,14 @@ func assembleResults(results []Response) string {
 	return result.String()
 }
 
-// Deprecated: FunctionName is deprecated, please use mEsiParse
+// Deprecated: Parse is deprecated; use MESIParse with EsiParserConfig instead.
+//
+// Migration:
+//
+//	cfg := mesi.CreateDefaultConfig()
+//	cfg.DefaultUrl = defaultUrl
+//	cfg.MaxDepth = uint(maxDepth)
+//	result := mesi.MESIParse(input, cfg)
 func Parse(input string, maxDepth int, defaultUrl string) string {
 	config := EsiParserConfig{
 		Context:         context.Background(),
