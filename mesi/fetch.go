@@ -65,13 +65,19 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 
 	if err := isURLSafe(requestedURL, config); err != nil {
 		logger.Debug("fetch_ssrf_error", "url", requestedURL, "error", err.Error())
-		return "", false, fmt.Errorf("%w: %s", ErrSSRFBlocked, err.Error())
+		return "", false, err
 	}
 
 	var client httpDoer
 	if config.HTTPClient != nil {
+		// When HTTPClient is provided, callers are responsible for setting
+		// appropriate timeouts and SSRF protection on the client.
+		// Use NewSSRFSafeTransport(config) to create a transport with
+		// dial-time private IP blocking.
 		client = config.HTTPClient
 	} else if config.AllowPrivateIPsForAllowedHosts && hostInAllowedHosts(parsed.Hostname(), config) {
+		// Allowed host with private-IP bypass opt-in - use standard client
+		// without SSRF protection.
 		client = &http.Client{Timeout: config.Timeout}
 	} else {
 		transport := NewSSRFSafeTransport(config)
@@ -123,6 +129,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 
 	var dataBytes []byte
 	if config.MaxResponseSize > 0 {
+		// Use LimitReader to cap response size.
 		limitedReader := io.LimitReader(content.Body, config.MaxResponseSize+1)
 		dataBytes, err = io.ReadAll(limitedReader)
 		if err != nil {
@@ -132,6 +139,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 			return "", false, fmt.Errorf("response body exceeds maximum allowed size of %d bytes", config.MaxResponseSize)
 		}
 	} else {
+		// No limit - backward compatibility.
 		dataBytes, err = io.ReadAll(content.Body)
 		if err != nil {
 			return "", false, errors.Join(ErrUpstreamStatus, err)

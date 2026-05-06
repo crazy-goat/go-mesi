@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestIsURLSafe_BlocksPrivateIPs(t *testing.T) {
+func TestIsURLSafe_DoesNotBlockPrivateIPs(t *testing.T) {
 	tests := []struct {
 		name string
 		url  string
@@ -72,14 +72,14 @@ func TestIsURLSafe_AllowedHosts(t *testing.T) {
 	}
 }
 
-func TestIsURLSafe_Disabled(t *testing.T) {
+func TestIsURLSafe_IgnoresBlockPrivateIPsFlag(t *testing.T) {
 	config := EsiParserConfig{
 		BlockPrivateIPs: false,
 	}
 
 	err := isURLSafe("http://127.0.0.1/test", config)
 	if err != nil {
-		t.Errorf("expected no error when BlockPrivateIPs=false, got: %v", err)
+		t.Errorf("expected no error since isURLSafe does not check BlockPrivateIPs, got: %v", err)
 	}
 }
 

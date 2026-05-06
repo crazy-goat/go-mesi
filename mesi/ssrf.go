@@ -109,6 +109,17 @@ func safeDialer(config EsiParserConfig) *net.Dialer {
 	}
 }
 
+// NewSSRFSafeTransport creates an http.Transport that blocks connections to
+// private/reserved IP addresses at dial time, preventing SSRF via DNS rebinding.
+// When config.BlockPrivateIPs is false, it returns a standard transport.
+//
+// Users supplying a custom HTTPClient should use this transport to ensure
+// SSRF protection works correctly:
+//
+//	client := &http.Client{
+//		Transport: mesi.NewSSRFSafeTransport(config),
+//		Timeout:   config.Timeout,
+//	}
 func NewSSRFSafeTransport(config EsiParserConfig) *http.Transport {
 	dialer := safeDialer(config)
 	return &http.Transport{
