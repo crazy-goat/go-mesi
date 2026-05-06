@@ -1,6 +1,7 @@
 package mesi
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -89,6 +90,7 @@ func TestDecreaseMaxDepth(t *testing.T) {
 		{"decrease from five", 5, 4},
 		{"decrease from one", 1, 0},
 		{"stay at zero", 0, 0},
+		{"decrease from max uint", math.MaxUint, math.MaxUint - 1},
 	}
 
 	for _, tt := range tests {
