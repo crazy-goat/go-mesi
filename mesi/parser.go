@@ -9,12 +9,6 @@ import (
 	"time"
 )
 
-// esiTryResult holds the result of processing a try block.
-type esiTryResult struct {
-	content string
-	hasError bool
-}
-
 type Response struct {
 	content string
 	index   int
