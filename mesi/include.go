@@ -3,6 +3,7 @@ package mesi
 import (
 	"encoding/xml"
 	"errors"
+	"fmt"
 )
 
 type esiResponse struct {
@@ -33,11 +34,12 @@ func parseInclude(input string) (token esiIncludeToken, err error) {
 	return esi, nil
 }
 
-func (token *esiIncludeToken) toString(config EsiParserConfig) (string, bool) {
+func (token *esiIncludeToken) toString(config EsiParserConfig) (string, bool, error) {
 	logger := config.getLogger()
 	var data string
 	var err error
 	var isEsiResponse bool
+	var unhandledErr error
 
 	logger.Debug("include_start", "src", token.Src, "fetch_mode", token.FetchMode, "max_depth", config.MaxDepth, "timeout", config.Timeout)
 
@@ -59,15 +61,16 @@ func (token *esiIncludeToken) toString(config EsiParserConfig) (string, bool) {
 		logger.Debug("include_failed", "src", token.Src, "error", err.Error())
 
 		if token.OnError == "continue" {
-			return "", false
+			return "", false, nil
 		}
 
 		if token.Content != "" {
-			return token.Content, false
+			return token.Content, false, nil
 		}
 
-		return config.IncludeErrorMarker, false
+		unhandledErr = fmt.Errorf("include failed: %w", err)
+		return config.IncludeErrorMarker, false, unhandledErr
 	}
 
-	return data, isEsiResponse
+	return data, isEsiResponse, nil
 }

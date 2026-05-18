@@ -32,6 +32,36 @@ func (token *esiToken) isSupported() bool {
 	return token.isEsi() && token.esiTagType == ESI_INCLUDE
 }
 
+// findMatchingEndTag finds the position (relative to s) of closeTag that
+// matches the first openTag in s. Tracks nesting depth of <esi:*> tags so
+// that nested blocks with the same tag type don't confuse matching.
+func findMatchingEndTag(s string, openTag string, closeTag string) int {
+	depth := 0
+	pos := 0
+	for {
+		nextOpen := strings.Index(s[pos:], openTag)
+		nextClose := strings.Index(s[pos:], closeTag)
+		if nextClose == -1 {
+			return -1
+		}
+		if nextOpen != -1 && nextOpen < nextClose {
+			depth++
+			// Advance past the opening tag's '>' to avoid re-matching
+			tagEnd := strings.Index(s[pos+nextOpen:], ">")
+			if tagEnd == -1 {
+				return -1
+			}
+			pos += nextOpen + tagEnd + 1
+			continue
+		}
+		depth--
+		if depth == 0 {
+			return pos + nextClose
+		}
+		pos += nextClose + len(closeTag)
+	}
+}
+
 func esiTokenizer(input string) []esiToken {
 	var esiTokens []esiToken
 	unsupportedTags := []string{ESI_INLINE, ESI_CHOOSE, ESI_TRY, ESI_REMOVE, ESI_VARS, ESI_COMMENT, ESI_INCLUDE}
@@ -63,10 +93,17 @@ func esiTokenizer(input string) []esiToken {
 			endTag = "</esi:" + tag + ">"
 		}
 
-		end := strings.Index(input[start:], endTag)
-		if tag == "include" && end >= 0 && input[end+start-1] != '/' {
-			endTag = "</esi:" + tag + ">"
+		var end int
+		if tag == "try" || tag == "choose" || tag == "inline" || tag == "remove" || tag == "vars" {
+			// For block tags that can contain nested ESI blocks,
+			// find the matching closing tag using depth tracking.
+			end = findMatchingEndTag(input[start:], "<esi:"+tag, endTag)
+		} else {
 			end = strings.Index(input[start:], endTag)
+			if tag == "include" && end >= 0 && input[end+start-1] != '/' {
+				endTag = "</esi:" + tag + ">"
+				end = strings.Index(input[start:], endTag)
+			}
 		}
 
 		if end == -1 {
