@@ -8,7 +8,8 @@ Support status of mESI features across all server integrations.
 | `<esi:remove>` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `<esi:comment>` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `<!--esi ... -->` (inline) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `<esi:inline>`, `<esi:choose>`, `<esi:try>`, `<esi:vars>` | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| `<esi:inline>`, `<esi:choose>`, `<esi:try>` | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| `<esi:vars>` / `$(...)` variable substitution | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `src` / `alt` attributes | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `fetch-mode="fallback"` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `fetch-mode="ab"` (A/B testing) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -47,7 +48,8 @@ Support status of mESI features across all server integrations.
 
 ## Notes
 
-- **`<esi:inline>`, `<esi:choose>`, `<esi:try>`, `<esi:vars>`** – Recognized by the tokenizer (no parse errors), but their content is silently dropped from output. Full support planned.
+- **`<esi:inline>`, `<esi:choose>`, `<esi:try>`** – Recognized by the tokenizer (no parse errors), but their content is silently dropped from output. Full support planned.
+- **`<esi:vars>` / `$(...)` variable substitution** – Fully supported. Variables are defined via `<esi:variable>` in `<esi:vars>` blocks and resolved via `$(NAME)` syntax in include URLs, text content, and test expressions. Supports `$(HTTP_HEADER{Name})`, `$(HTTP_COOKIE{name})`, and `$(QUERY_STRING{param})` via config fields.
 - **Nginx** – Uses the `Parse` function from `libgomesi` which does not enable `BlockPrivateIPs` (defaults to `false`). No SSRF protection.
 - **PHP Extension** – Exposes only `\mesi\parse(input, max_depth, default_url)`. No security configuration.
 - **Caddy / FrankenPHP** – FrankenPHP uses the Caddy plugin, identical functionality.

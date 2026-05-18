@@ -46,6 +46,17 @@ type EsiParserConfig struct {
 	// Static tokens do not count against this limit.
 	MaxWorkers         int
 	requestSemaphore   chan struct{} // semaphore for limiting HTTP requests
+
+	// Variables holds ESI variable definitions from <esi:vars> blocks and
+	// can be pre-populated by callers. Variables are resolved via $(NAME)
+	// syntax in include URLs, text content, and test expressions.
+	Variables map[string]string
+	// RequestHeaders are available for $(HTTP_HEADER{Name}) resolution.
+	RequestHeaders http.Header
+	// RequestCookies are available for $(HTTP_COOKIE{name}) resolution.
+	RequestCookies map[string]string
+	// RequestQuery is available for $(QUERY_STRING{param}) resolution.
+	RequestQuery map[string]string
 }
 
 func (c EsiParserConfig) getSemaphore() chan struct{} {

@@ -87,8 +87,19 @@ func MESIParse(input string, config EsiParserConfig) string {
 	var results []Response
 
 	for index, token := range tokens {
-		if !token.isEsi() {
-			results = append(results, Response{token.staticContent, index})
+		if token.esiTagType == ESI_VARS {
+			vars := parseVarsBlock(token.esiTagContent)
+			if config.Variables == nil {
+				config.Variables = vars
+			} else {
+				for k, v := range vars {
+					config.Variables[k] = v
+				}
+			}
+			results = append(results, Response{"", index})
+		} else if !token.isEsi() {
+			content := evaluateExpression(token.staticContent, config)
+			results = append(results, Response{content, index})
 		} else {
 			esiJobs = append(esiJobs, esiJob{index, token})
 		}
@@ -128,6 +139,8 @@ func MESIParse(input string, config EsiParserConfig) string {
 							ch <- res
 							continue
 						}
+						include.Src = evaluateExpression(include.Src, config)
+						include.Alt = evaluateExpression(include.Alt, config)
 						newConfig := config.OverrideConfig(include).WithElapsedTime(time.Since(start))
 						content, isEsiResponse := include.toString(newConfig)
 
