@@ -103,6 +103,9 @@ func MESIParse(input string, config EsiParserConfig) string {
 		} else if token.esiTagType == ESI_CHOOSE {
 			content := processChooseBlock(token.esiTagContent, config)
 			results = append(results, Response{content, index})
+		} else if token.esiTagType == ESI_INLINE {
+			content := processInlineBlock(token.esiTagContent)
+			results = append(results, Response{content, index})
 		} else if !token.isEsi() {
 			content := evaluateExpression(token.staticContent, config)
 			results = append(results, Response{content, index})
@@ -763,6 +766,9 @@ func processAttemptContent(content string, config EsiParserConfig, start time.Ti
 			results = append(results, Response{data, index})
 		} else if token.esiTagType == ESI_CHOOSE {
 			data := processChooseBlock(token.esiTagContent, config)
+			results = append(results, Response{data, index})
+		} else if token.esiTagType == ESI_INLINE {
+			data := processInlineBlock(token.esiTagContent)
 			results = append(results, Response{data, index})
 		} else if !token.isEsi() {
 			content := evaluateExpression(token.staticContent, config)
