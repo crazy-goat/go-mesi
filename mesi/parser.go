@@ -481,7 +481,6 @@ func extractChooseBlocks(raw string) (whens []esiWhenBlock, otherwise string) {
 				// No matching close tag, consume rest and stop
 				whenBody := raw[bodyStart:]
 				whens = append(whens, esiWhenBlock{Test: testExpr, Body: whenBody})
-				pos = len(raw)
 				break
 			}
 			whenBody := raw[bodyStart : bodyStart+whenBodyLen]
@@ -504,7 +503,6 @@ func extractChooseBlocks(raw string) (whens []esiWhenBlock, otherwise string) {
 			if otherwiseLen == -1 {
 				// No matching close tag, consume rest and stop
 				otherwise = raw[bodyStart:]
-				pos = len(raw)
 				break
 			}
 			otherwise = raw[bodyStart : bodyStart+otherwiseLen]
