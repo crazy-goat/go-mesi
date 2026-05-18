@@ -861,6 +861,543 @@ func TestESITryEmptyAttempt(t *testing.T) {
 	}
 }
 
+func TestExtractChooseBlocks(t *testing.T) {
+	tests := []struct {
+		name            string
+		input           string
+		wantWhenCount   int
+		wantWhenTests   []string
+		wantWhenBodies  []string
+		wantOtherwise   string
+	}{
+		{
+			name:          "single when true",
+			input:         `<esi:choose><esi:when test="true">body</esi:when></esi:choose>`,
+			wantWhenCount: 1,
+			wantWhenTests: []string{"true"},
+			wantWhenBodies: []string{"body"},
+			wantOtherwise: "",
+		},
+		{
+			name:          "multiple whens with otherwise",
+			input:         `<esi:choose><esi:when test="true">a</esi:when><esi:when test="false">b</esi:when><esi:otherwise>c</esi:otherwise></esi:choose>`,
+			wantWhenCount: 2,
+			wantWhenTests: []string{"true", "false"},
+			wantWhenBodies: []string{"a", "b"},
+			wantOtherwise: "c",
+		},
+		{
+			name:          "otherwise only",
+			input:         `<esi:choose><esi:otherwise>fallback</esi:otherwise></esi:choose>`,
+			wantWhenCount: 0,
+			wantOtherwise: "fallback",
+		},
+		{
+			name:          "no whens, no otherwise",
+			input:         `<esi:choose></esi:choose>`,
+			wantWhenCount: 0,
+			wantOtherwise: "",
+		},
+		{
+			name:          "when with nested choose inside",
+			input:         `<esi:choose><esi:when test="true"><esi:choose><esi:when test="false">nested</esi:when></esi:choose></esi:when></esi:choose>`,
+			wantWhenCount: 1,
+			wantWhenTests: []string{"true"},
+			wantWhenBodies: []string{"<esi:choose><esi:when test=\"false\">nested</esi:when></esi:choose>"},
+			wantOtherwise: "",
+		},
+		{
+			name:          "when with include inside",
+			input:         `<esi:choose><esi:when test="true"><esi:include src="/fragment"/></esi:when><esi:otherwise>fallback</esi:otherwise></esi:choose>`,
+			wantWhenCount: 1,
+			wantWhenTests: []string{"true"},
+			wantWhenBodies: []string{"<esi:include src=\"/fragment\"/>"},
+			wantOtherwise: "fallback",
+		},
+		{
+			name:          "test attribute with extra whitespace",
+			input:         `<esi:choose><esi:when test=" true ">body</esi:when></esi:choose>`,
+			wantWhenCount: 1,
+			wantWhenTests: []string{" true "},
+			wantWhenBodies: []string{"body"},
+			wantOtherwise: "",
+		},
+		{
+			name:          "choose with body content before when (should be ignored)",
+			input:         `<esi:choose>ignored text<esi:when test="true">body</esi:when></esi:choose>`,
+			wantWhenCount: 1,
+			wantWhenTests: []string{"true"},
+			wantWhenBodies: []string{"body"},
+			wantOtherwise: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			whens, otherwise := extractChooseBlocks(tt.input)
+			if len(whens) != tt.wantWhenCount {
+				t.Errorf("whens = %d, want %d", len(whens), tt.wantWhenCount)
+			}
+			if otherwise != tt.wantOtherwise {
+				t.Errorf("otherwise = %q, want %q", otherwise, tt.wantOtherwise)
+			}
+			for i, w := range whens {
+				if i >= len(tt.wantWhenTests) {
+					break
+				}
+				if w.Test != tt.wantWhenTests[i] {
+					t.Errorf("whens[%d].Test = %q, want %q", i, w.Test, tt.wantWhenTests[i])
+				}
+				if w.Body != tt.wantWhenBodies[i] {
+					t.Errorf("whens[%d].Body = %q, want %q", i, w.Body, tt.wantWhenBodies[i])
+				}
+			}
+		})
+	}
+}
+
+func TestEvaluateTest(t *testing.T) {
+	config := CreateDefaultConfig()
+	tests := []struct {
+		name   string
+		expr   string
+		expect bool
+	}{
+		{"true literal", "true", true},
+		{"TRUE uppercase", "TRUE", false},
+		{"false literal", "false", false},
+		{"1 is true", "1", true},
+		{"0 is false", "0", false},
+		{"empty string is false", "", false},
+		{"whitespace is false", "  ", false},
+		{"random string is false", "some expression", false},
+		{"true with spaces", "  true  ", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := evaluateTest(tt.expr, config)
+			if result != tt.expect {
+				t.Errorf("evaluateTest(%q) = %v, want %v", tt.expr, result, tt.expect)
+			}
+		})
+	}
+}
+
+func TestEvaluateTestWithVariables(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.Variables = map[string]string{"FLAG": "true", "DISABLED": "false"}
+
+	tests := []struct {
+		name   string
+		expr   string
+		expect bool
+	}{
+		{"$(FLAG) resolves to true", "$(FLAG)", true},
+		{"$(DISABLED) resolves to false", "$(DISABLED)", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := evaluateTest(tt.expr, config)
+			if result != tt.expect {
+				t.Errorf("evaluateTest(%q) = %v, want %v", tt.expr, result, tt.expect)
+			}
+		})
+	}
+}
+
+func TestChooseTrueRendersWhenBody(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `<esi:choose>
+	<esi:when test="true">WHEN_BODY</esi:when>
+	<esi:otherwise>OTHERWISE</esi:otherwise>
+</esi:choose>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "WHEN_BODY") {
+		t.Errorf("expected WHEN_BODY in result, got %q", result)
+	}
+	if strings.Contains(result, "OTHERWISE") {
+		t.Errorf("otherwise should NOT be rendered when when matches, got %q", result)
+	}
+}
+
+func TestChooseFalseRendersOtherwise(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `<esi:choose>
+	<esi:when test="false">WHEN_BODY</esi:when>
+	<esi:otherwise>OTHERWISE_BODY</esi:otherwise>
+</esi:choose>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "OTHERWISE_BODY") {
+		t.Errorf("expected OTHERWISE_BODY in result, got %q", result)
+	}
+	if strings.Contains(result, "WHEN_BODY") {
+		t.Errorf("when body should NOT be rendered when test=false, got %q", result)
+	}
+}
+
+func TestChooseAllFalseNoOtherwiseEmpty(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `<esi:choose>
+	<esi:when test="false">FIRST</esi:when>
+	<esi:when test="0">SECOND</esi:when>
+</esi:choose>`
+
+	result := MESIParse(input, config)
+	if result != "" {
+		t.Errorf("expected empty output, got %q", result)
+	}
+}
+
+func TestChooseFirstMatchWinsShortCircuit(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `<esi:choose>
+	<esi:when test="true">FIRST_MATCH</esi:when>
+	<esi:when test="true">SECOND_MATCH</esi:when>
+	<esi:otherwise>OTHERWISE</esi:otherwise>
+</esi:choose>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "FIRST_MATCH") {
+		t.Errorf("expected FIRST_MATCH in result, got %q", result)
+	}
+	if strings.Contains(result, "SECOND_MATCH") {
+		t.Errorf("second when should NOT be rendered (short-circuit), got %q", result)
+	}
+	if strings.Contains(result, "OTHERWISE") {
+		t.Errorf("otherwise should NOT be rendered when when matches, got %q", result)
+	}
+}
+
+func TestChooseNestedIncludeInsideWhenIsProcessed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("INCLUDED_CONTENT"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	input := `<esi:choose>
+	<esi:when test="true">
+		before [<esi:include src="` + server.URL + `/fragment"/>] after
+	</esi:when>
+	<esi:otherwise>fallback</esi:otherwise>
+</esi:choose>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "INCLUDED_CONTENT") {
+		t.Errorf("include inside when should be processed, got %q", result)
+	}
+	if !strings.Contains(result, "before") || !strings.Contains(result, "after") {
+		t.Errorf("static text around include should be preserved, got %q", result)
+	}
+	if strings.Contains(result, "fallback") {
+		t.Errorf("otherwise should not be rendered, got %q", result)
+	}
+}
+
+func TestChooseEmptyTestAttributeIsFalse(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `<esi:choose>
+	<esi:when test="">WHEN_BODY</esi:when>
+	<esi:otherwise>OTHERWISE_BODY</esi:otherwise>
+</esi:choose>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "OTHERWISE_BODY") {
+		t.Errorf("expected OTHERWISE_BODY when test is empty, got %q", result)
+	}
+}
+
+func TestChooseMalformedWhenWithoutCloseTag(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	// Missing </esi:when> inside properly-closed <esi:choose>
+	// The tokenizer produces an ESI_CHOOSE token; we should not panic.
+	input := `<esi:choose><esi:when test="true">body</esi:choose>`
+
+	result := MESIParse(input, config)
+	_ = result
+}
+
+func TestChooseMalformedOtherwiseWithoutCloseTag(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	// Missing </esi:otherwise> inside properly-closed <esi:choose>
+	input := `<esi:choose><esi:when test="false">when</esi:when><esi:otherwise>body</esi:choose>`
+
+	result := MESIParse(input, config)
+	_ = result
+}
+
+func TestChooseMalformedMissingCloseTag(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	// Missing </esi:choose> should not crash
+	input := `<esi:choose>
+	<esi:when test="true">body
+	<esi:otherwise>fallback`
+
+	result := MESIParse(input, config)
+	_ = result
+}
+
+func TestChooseMultipleBlocks(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `<esi:choose>
+	<esi:when test="true">FIRST</esi:when>
+</esi:choose>
+---
+<esi:choose>
+	<esi:when test="false">NOT_RENDERED</esi:when>
+	<esi:otherwise>SECOND</esi:otherwise>
+</esi:choose>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "FIRST") {
+		t.Errorf("expected FIRST in result, got %q", result)
+	}
+	if !strings.Contains(result, "SECOND") {
+		t.Errorf("expected SECOND in result, got %q", result)
+	}
+	if strings.Contains(result, "NOT_RENDERED") {
+		t.Errorf("NOT_RENDERED should not appear, got %q", result)
+	}
+}
+
+func TestChooseRepeatedInDocument(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `<esi:choose>
+	<esi:when test="true">A</esi:when>
+	<esi:otherwise>B</esi:otherwise>
+</esi:choose>
+<esi:choose>
+	<esi:when test="true">C</esi:when>
+	<esi:otherwise>D</esi:otherwise>
+</esi:choose>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "A") {
+		t.Errorf("expected A in result, got %q", result)
+	}
+	if !strings.Contains(result, "C") {
+		t.Errorf("expected C in result, got %q", result)
+	}
+}
+
+func TestESITryAndChooseE2EFixture(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/variant-a":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("Variant A Content"))
+		case "/variant-b":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("Variant B Content"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("Not Found"))
+		}
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	// Test 1: choose + try combination
+	input := `<esi:choose>
+	<esi:when test="true">
+		<esi:try>
+			<esi:attempt>
+				<esi:include src="` + server.URL + `/variant-a"/>
+			</esi:attempt>
+			<esi:except>
+				fallback
+			</esi:except>
+		</esi:try>
+	</esi:when>
+	<esi:otherwise>
+		<esi:include src="` + server.URL + `/variant-b"/>
+	</esi:otherwise>
+</esi:choose>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "Variant A Content") {
+		t.Errorf("expected Variant A Content, got %q", result)
+	}
+	if strings.Contains(result, "Variant B Content") {
+		t.Errorf("Variant B should not appear")
+	}
+	if strings.Contains(result, "fallback") {
+		t.Errorf("fallback should not appear")
+	}
+}
+
+func TestESITryChooseNestedInAttempt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("INCLUDED"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	// choose inside try/attempt
+	input := `<esi:try>
+	<esi:attempt>
+		before
+		<esi:choose>
+			<esi:when test="true">
+				<esi:include src="` + server.URL + `/fragment"/>
+			</esi:when>
+			<esi:otherwise>otherwise body</esi:otherwise>
+		</esi:choose>
+		after
+	</esi:attempt>
+	<esi:except>
+		except body
+	</esi:except>
+</esi:try>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "INCLUDED") {
+		t.Errorf("expected INCLUDED from choose inside attempt, got %q", result)
+	}
+	if !strings.Contains(result, "before") || !strings.Contains(result, "after") {
+		t.Errorf("static text around choose should be preserved, got %q", result)
+	}
+	if strings.Contains(result, "otherwise body") {
+		t.Errorf("otherwise should not be rendered when when matches")
+	}
+	if strings.Contains(result, "except body") {
+		t.Errorf("except should not be rendered on success")
+	}
+}
+
+func TestESITryChooseNestedInExcept(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	// choose inside try/except
+	input := `<esi:try>
+	<esi:attempt>
+		<esi:include src="` + server.URL + `/missing"/>
+	</esi:attempt>
+	<esi:except>
+		<esi:choose>
+			<esi:when test="true">except when body</esi:when>
+			<esi:otherwise>except otherwise</esi:otherwise>
+		</esi:choose>
+	</esi:except>
+</esi:try>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "except when body") {
+		t.Errorf("expected except when body, got %q", result)
+	}
+}
+
+func TestESITryChooseNestedNestedChoose(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	// Nested choose blocks
+	input := `<esi:choose>
+	<esi:when test="true">
+		outer true:
+		<esi:choose>
+			<esi:when test="false">inner false</esi:when>
+			<esi:otherwise>inner otherwise</esi:otherwise>
+		</esi:choose>
+	</esi:when>
+	<esi:otherwise>
+		outer otherwise
+	</esi:otherwise>
+</esi:choose>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "outer true") {
+		t.Errorf("expected outer true text, got %q", result)
+	}
+	if !strings.Contains(result, "inner otherwise") {
+		t.Errorf("expected inner otherwise, got %q", result)
+	}
+	if strings.Contains(result, "inner false") {
+		t.Errorf("inner false should not be rendered")
+	}
+	if strings.Contains(result, "outer otherwise") {
+		t.Errorf("outer otherwise should not be rendered")
+	}
+}
+
+func TestESITryChooseWithVarsInTest(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+	config.Variables = map[string]string{"FEATURE_ENABLED": "true"}
+
+	input := `<esi:choose>
+	<esi:when test="$(FEATURE_ENABLED)">feature is on</esi:when>
+	<esi:otherwise>feature is off</esi:otherwise>
+</esi:choose>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "feature is on") {
+		t.Errorf("expected 'feature is on', got %q", result)
+	}
+}
+
+func TestESITryChooseWithVarsInTestFalse(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+	config.Variables = map[string]string{"FEATURE_ENABLED": "false"}
+
+	input := `<esi:choose>
+	<esi:when test="$(FEATURE_ENABLED)">feature is on</esi:when>
+	<esi:otherwise>feature is off</esi:otherwise>
+</esi:choose>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "feature is off") {
+		t.Errorf("expected 'feature is off', got %q", result)
+	}
+}
+
 func TestESITryE2EFixture(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -925,3 +1462,5 @@ func TestESITryE2EFixture(t *testing.T) {
 		t.Errorf("third try: onerror=continue content should appear, got %q", result)
 	}
 }
+
+
