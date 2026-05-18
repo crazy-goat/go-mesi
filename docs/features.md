@@ -9,7 +9,7 @@ Support status of mESI features across all server integrations.
 | `<esi:comment>` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `<!--esi ... -->` (inline) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `<esi:inline>` | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
-| `<esi:choose>`, `<esi:when>`, `<esi:otherwise>` | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| `<esi:choose>`, `<esi:when>`, `<esi:otherwise>` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `<esi:try>`, `<esi:attempt>`, `<esi:except>` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `<esi:vars>` / `$(...)` variable substitution | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `src` / `alt` attributes | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -51,7 +51,7 @@ Support status of mESI features across all server integrations.
 ## Notes
 
 - **`<esi:inline>`** – Recognized by the tokenizer (no parse errors), but content is silently dropped from output. Full support planned.
-- **`<esi:choose>`, `<esi:when>`, `<esi:otherwise>`** – Recognized by the tokenizer (no parse errors), but content is silently dropped from output. Full support planned.
+- **`<esi:choose>`, `<esi:when>`, `<esi:otherwise>`** – Fully supported. Boolean `test` attributes (`true`/`false`/`0`/`1`) select the first matching `<esi:when>` branch. If no branch matches, `<esi:otherwise>` is rendered (if present). `$(...)` variables in `test` are resolved before evaluation. Supports nested `<esi:choose>`, `<esi:include>`, `<esi:try>`, and `<esi:vars>` inside branch bodies.
 - **`<esi:try>`, `<esi:attempt>`, `<esi:except>`** – Fully supported. Unhandled include errors within `<esi:attempt>` trigger `<esi:except>` rendering. `onerror="continue"` and fallback body do NOT trigger `<esi:except>`. Supports nested `<esi:try>` blocks.
 - **`<esi:vars>` / `$(...)` variable substitution** – Fully supported. Variables are defined via `<esi:variable>` in `<esi:vars>` blocks and resolved via `$(NAME)` syntax in include URLs, text content, and test expressions. Supports `$(HTTP_HEADER{Name})`, `$(HTTP_COOKIE{name})`, and `$(QUERY_STRING{param})` via config fields.
 - **Nginx** – Uses the `Parse` function from `libgomesi` which does not enable `BlockPrivateIPs` (defaults to `false`). No SSRF protection.

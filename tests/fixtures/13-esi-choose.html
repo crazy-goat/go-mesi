@@ -1,0 +1,27 @@
+<esi:choose>
+	<esi:when test="true">
+		before [<esi:include src="http://127.0.0.1:8080/hello"/>] after
+	</esi:when>
+	<esi:otherwise>
+		otherwise should not appear
+	</esi:otherwise>
+</esi:choose>
+---
+<esi:choose>
+	<esi:when test="false">
+		when should not appear
+	</esi:when>
+	<esi:otherwise>
+		fallback rendered
+	</esi:otherwise>
+</esi:choose>
+---
+<esi:choose>
+	<esi:when test="true">first match</esi:when>
+	<esi:when test="true">second should not appear</esi:when>
+	<esi:otherwise>otherwise should not appear</esi:otherwise>
+</esi:choose>
+---
+<esi:choose>
+	<esi:when test="false">no match</esi:when>
+</esi:choose>
