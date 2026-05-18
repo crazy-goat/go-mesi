@@ -151,7 +151,7 @@ func TestToStringErrorDoesNotLeakInternalDetails(t *testing.T) {
 	config.BlockPrivateIPs = false
 	config.Logger = log
 
-	data, _ := token.toString(config)
+	data, _, _ := token.toString(config)
 	if data != "" {
 		t.Errorf("toString() = %q, want empty string (no error leak)", data)
 	}
@@ -182,9 +182,12 @@ func TestIncludeErrorMarkerCustom(t *testing.T) {
 	config.BlockPrivateIPs = false
 	config.IncludeErrorMarker = "<!-- esi error -->"
 
-	data, _ := token.toString(config)
+	data, _, err := token.toString(config)
 	if data != "<!-- esi error -->" {
 		t.Errorf("toString() = %q, want %q", data, "<!-- esi error -->")
+	}
+	if err == nil {
+		t.Error("toString() expected error for unhandled include failure")
 	}
 }
 
@@ -204,9 +207,12 @@ func TestToStringWithOnerrorContinue(t *testing.T) {
 	config.MaxDepth = 1
 	config.BlockPrivateIPs = false
 
-	data, _ := token.toString(config)
+	data, _, err := token.toString(config)
 	if data != "" {
 		t.Errorf("toString() = %q, want empty string (onerror=continue)", data)
+	}
+	if err != nil {
+		t.Errorf("toString() unexpected error for onerror=continue: %v", err)
 	}
 }
 
@@ -226,9 +232,12 @@ func TestToStringWithFallbackContent(t *testing.T) {
 	config.MaxDepth = 1
 	config.BlockPrivateIPs = false
 
-	data, _ := token.toString(config)
+	data, _, err := token.toString(config)
 	if data != "fallback content" {
 		t.Errorf("toString() = %q, want %q", data, "fallback content")
+	}
+	if err != nil {
+		t.Errorf("toString() unexpected error for fallback content: %v", err)
 	}
 }
 
@@ -249,9 +258,12 @@ func TestToStringWithMaxDepthExceeded(t *testing.T) {
 	config.BlockPrivateIPs = false
 	config.Logger = log
 
-	data, _ := token.toString(config)
+	data, _, err := token.toString(config)
 	if data != "" {
 		t.Errorf("toString() = %q, want empty string (no error leak)", data)
+	}
+	if err == nil {
+		t.Error("toString() expected error for max depth exceeded")
 	}
 	if !log.containsMsg("include_failed") {
 		t.Error("expected include_failed log entry")

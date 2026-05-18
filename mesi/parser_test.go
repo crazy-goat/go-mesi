@@ -498,3 +498,430 @@ func TestMESIParseNestedIncludes(t *testing.T) {
 		t.Errorf("MESIParse() = %q, want %q", result, "  inner content")
 	}
 }
+
+func TestExtractTryBlocks(t *testing.T) {
+	tests := []struct {
+		name              string
+		input             string
+		wantAttempt       string
+		wantExcept        string
+	}{
+		{
+			name:        "no attempt tag",
+			input:       "<esi:try>hello</esi:try>",
+			wantAttempt: "",
+			wantExcept:  "",
+		},
+		{
+			name:        "attempt only",
+			input:       "<esi:try><esi:attempt>hello</esi:attempt></esi:try>",
+			wantAttempt: "hello",
+			wantExcept:  "",
+		},
+		{
+			name:        "attempt and except",
+			input:       "<esi:try><esi:attempt>body</esi:attempt><esi:except>fallback</esi:except></esi:try>",
+			wantAttempt: "body",
+			wantExcept:  "fallback",
+		},
+		{
+			name:        "attempt with nested content",
+			input:       "<esi:try><esi:attempt><esi:include src=\"/x\"/></esi:attempt><esi:except>err</esi:except></esi:try>",
+			wantAttempt: "<esi:include src=\"/x\"/>",
+			wantExcept:  "err",
+		},
+		{
+			name:        "empty attempt",
+			input:       "<esi:try><esi:attempt></esi:attempt><esi:except>fallback</esi:except></esi:try>",
+			wantAttempt: "",
+			wantExcept:  "fallback",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			attempt, except := extractTryBlocks(tt.input)
+			if attempt != tt.wantAttempt {
+				t.Errorf("attempt = %q, want %q", attempt, tt.wantAttempt)
+			}
+			if except != tt.wantExcept {
+				t.Errorf("except = %q, want %q", except, tt.wantExcept)
+			}
+		})
+	}
+}
+
+func TestESITrySuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("attempt content"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	input := `<esi:try>
+	<esi:attempt>
+		<esi:include src="` + server.URL + `/ok"/>
+	</esi:attempt>
+	<esi:except>
+		except content
+	</esi:except>
+</esi:try>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "attempt content") {
+		t.Errorf("expected attempt content, got %q", result)
+	}
+	if strings.Contains(result, "except content") {
+		t.Errorf("except content should NOT be rendered on success, got %q", result)
+	}
+}
+
+func TestESITryFailure404(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("not found"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	input := `<esi:try>
+	<esi:attempt>
+		<esi:include src="` + server.URL + `/missing"/>
+	</esi:attempt>
+	<esi:except>
+		fallback content
+	</esi:except>
+</esi:try>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "fallback content") {
+		t.Errorf("expected except content, got %q", result)
+	}
+	if strings.Contains(result, "not found") {
+		t.Errorf("attempt content should NOT be rendered on failure, got %q", result)
+	}
+}
+
+func TestESITryFailureTimeout(t *testing.T) {
+	handlerBlock := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-handlerBlock:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("slow content"))
+		}
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.Timeout = 50 * time.Millisecond
+	config.BlockPrivateIPs = false
+
+	input := `<esi:try>
+	<esi:attempt>
+		<esi:include src="` + server.URL + `/slow"/>
+	</esi:attempt>
+	<esi:except>
+		timeout fallback
+	</esi:except>
+</esi:try>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "timeout fallback") {
+		t.Errorf("expected except content on timeout, got %q", result)
+	}
+	close(handlerBlock)
+}
+
+func TestESITryNoExcept(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("not found"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	input := `<esi:try>
+	<esi:attempt>
+		<esi:include src="` + server.URL + `/missing"/>
+	</esi:attempt>
+</esi:try>`
+
+	result := MESIParse(input, config)
+	if result != "" {
+		t.Errorf("expected empty output when no except, got %q", result)
+	}
+}
+
+func TestESITryWithOnerrorContinue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("error"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	// onerror="continue" should NOT trigger except
+	input := `<esi:try>
+	<esi:attempt>
+		<esi:include onerror="continue" src="` + server.URL + `/fail"/>
+		after include
+	</esi:attempt>
+	<esi:except>
+		except content
+	</esi:except>
+</esi:try>`
+
+	result := MESIParse(input, config)
+	if strings.Contains(result, "except content") {
+		t.Errorf("onerror=continue should NOT trigger except, got %q", result)
+	}
+	if !strings.Contains(result, "after include") {
+		t.Errorf("content after include with onerror=continue should appear, got %q", result)
+	}
+}
+
+func TestESITryWithFallbackBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("error"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	// fallback body should NOT trigger except
+	input := `<esi:try>
+	<esi:attempt>
+		<esi:include src="` + server.URL + `/fail">fallback body</esi:include>
+	</esi:attempt>
+	<esi:except>
+		except content
+	</esi:except>
+</esi:try>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "fallback body") {
+		t.Errorf("fallback body should be rendered, got %q", result)
+	}
+	if strings.Contains(result, "except content") {
+		t.Errorf("fallback body should NOT trigger except, got %q", result)
+	}
+}
+
+func TestESITryMultipleIncludesOneFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ok":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok content"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("not found"))
+		}
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	// One failing include should trigger except for the entire try block
+	input := `<esi:try>
+	<esi:attempt>
+		<esi:include src="` + server.URL + `/ok"/>
+		<esi:include src="` + server.URL + `/missing"/>
+	</esi:attempt>
+	<esi:except>
+		except content
+	</esi:except>
+</esi:try>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "except content") {
+		t.Errorf("any failing include should trigger except, got %q", result)
+	}
+}
+
+func TestESITryNested(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/inner-ok":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("inner ok"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("error"))
+		}
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 2
+	config.BlockPrivateIPs = false
+
+	// Outer try should succeed because inner try catches the failure
+	input := `<esi:try>
+	<esi:attempt>
+		<esi:try>
+			<esi:attempt>
+				<esi:include src="` + server.URL + `/missing"/>
+			</esi:attempt>
+			<esi:except>
+				inner caught
+			</esi:except>
+		</esi:try>
+	</esi:attempt>
+	<esi:except>
+		outer except
+	</esi:except>
+</esi:try>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "inner caught") {
+		t.Errorf("inner try should render except, got %q", result)
+	}
+	if strings.Contains(result, "outer except") {
+		t.Errorf("outer try should NOT trigger except when inner catches, got %q", result)
+	}
+}
+
+func TestESITryNestedIncludeInsideAttempt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("included data"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	input := `<esi:try>
+	<esi:attempt>
+		before [<esi:include src="` + server.URL + `/fragment"/>] after
+	</esi:attempt>
+	<esi:except>
+		except content
+	</esi:except>
+</esi:try>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, "included data") {
+		t.Errorf("include inside attempt should be processed, got %q", result)
+	}
+	if !strings.Contains(result, "before") || !strings.Contains(result, "after") {
+		t.Errorf("static text around include should be preserved, got %q", result)
+	}
+	if strings.Contains(result, "except content") {
+		t.Errorf("except should not be rendered on success, got %q", result)
+	}
+}
+
+func TestESITryEmptyAttempt(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 1
+
+	input := `<esi:try>
+	<esi:attempt></esi:attempt>
+	<esi:except>fallback</esi:except>
+</esi:try>`
+
+	result := MESIParse(input, config)
+	if result != "" {
+		t.Errorf("empty attempt should produce empty output, got %q", result)
+	}
+}
+
+func TestESITryE2EFixture(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/hello":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("Hello World"))
+		case "/status/code/500":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(http.StatusText(http.StatusInternalServerError)))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(http.StatusText(http.StatusNotFound)))
+		}
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	input := `<esi:try>
+	<esi:attempt>
+		before [<esi:include src="` + server.URL + `/hello"/>] after
+	</esi:attempt>
+	<esi:except>
+		except should not appear
+	</esi:except>
+</esi:try>
+---
+<esi:try>
+	<esi:attempt>
+		<esi:include src="` + server.URL + `/status/code/500"/>
+	</esi:attempt>
+	<esi:except>
+		fallback rendered
+	</esi:except>
+</esi:try>
+---
+<esi:try>
+	<esi:attempt>
+		<esi:include onerror="continue" src="` + server.URL + `/status/code/500"/>
+		after error
+	</esi:attempt>
+	<esi:except>
+		except should not appear
+	</esi:except>
+</esi:try>`
+
+	result := MESIParse(input, config)
+
+	if !strings.Contains(result, "before [Hello World] after") {
+		t.Errorf("first try: expected include content, got %q", result)
+	}
+	if !strings.Contains(result, "fallback rendered") {
+		t.Errorf("second try: expected except fallback, got %q", result)
+	}
+	if strings.Contains(result, "except should not appear") {
+		t.Errorf("except should not be rendered when not triggered")
+	}
+	if !strings.Contains(result, "after error") {
+		t.Errorf("third try: onerror=continue content should appear, got %q", result)
+	}
+}
