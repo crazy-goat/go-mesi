@@ -1398,6 +1398,141 @@ func TestESITryChooseWithVarsInTestFalse(t *testing.T) {
 	}
 }
 
+func TestInlineBodyRenderedVerbatim(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `<esi:inline>Hello from inline</esi:inline>`
+	result := MESIParse(input, config)
+	expected := "Hello from inline"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestInlineIncludeInsideNotProcessed(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `<esi:inline><esi:include src="/fragment"/></esi:inline>`
+	result := MESIParse(input, config)
+	expected := `<esi:include src="/fragment"/>`
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestInlineWithHTMLMarkup(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `<esi:inline><div class="foo"><p>Hello</p></div></esi:inline>`
+	result := MESIParse(input, config)
+	expected := `<div class="foo"><p>Hello</p></div>`
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestInlineEmptyBody(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `<esi:inline></esi:inline>`
+	result := MESIParse(input, config)
+	if result != "" {
+		t.Errorf("expected empty string, got %q", result)
+	}
+}
+
+func TestInlineWithSurroundingContent(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `before<esi:inline>middle</esi:inline>after`
+	result := MESIParse(input, config)
+	expected := "beforemiddleafter"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestInlineWithAttributesPassthrough(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `<esi:inline name="foo">content</esi:inline>`
+	result := MESIParse(input, config)
+	expected := "content"
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestInlineInsideAttemptRendersVerbatim(t *testing.T) {
+	config := CreateDefaultConfig()
+	config.MaxDepth = 0
+
+	input := `<esi:try><esi:attempt><esi:inline><esi:include src="/x"/></esi:inline></esi:attempt></esi:try>`
+	result := MESIParse(input, config)
+	expected := `<esi:include src="/x"/>`
+	if result != expected {
+		t.Errorf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestInlineInsideExceptRendersVerbatim(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+
+	input := `<esi:try>
+	<esi:attempt>
+		<esi:include src="` + server.URL + `/fail"/>
+	</esi:attempt>
+	<esi:except>
+		<esi:inline><esi:include src="/should-be-escaped"/></esi:inline>
+	</esi:except>
+</esi:try>`
+
+	result := MESIParse(input, config)
+	if !strings.Contains(result, `<esi:include src="/should-be-escaped"/>`) {
+		t.Errorf("expected escaped include in result, got %q", result)
+	}
+}
+
+func TestProcessInlineBlock(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"simple", "<esi:inline>hello</esi:inline>", "hello"},
+		{"with newlines", "<esi:inline>\nhello\n</esi:inline>", "\nhello\n"},
+		{"with attributes", `<esi:inline name="foo">body</esi:inline>`, "body"},
+		{"empty", "<esi:inline></esi:inline>", ""},
+		{"no closing tag", "<esi:inline>hello", "hello"},
+		{"with ESI inside", "<esi:inline><esi:include src=\"/x\"/></esi:inline>", "<esi:include src=\"/x\"/>"},
+		{"nested angle brackets", "<esi:inline>a > b</esi:inline>", "a > b"},
+		{"multi-byte UTF-8", "<esi:inline>zażółć gęślą jaźń</esi:inline>", "zażółć gęślą jaźń"},
+		{"quote in attribute", `<esi:inline data-foo="a>b">body</esi:inline>`, "body"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			result := processInlineBlock(c.input)
+			if result != c.expected {
+				t.Errorf("processInlineBlock(%q) = %q, want %q", c.input, result, c.expected)
+			}
+		})
+	}
+}
+
 func TestESITryE2EFixture(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
