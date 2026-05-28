@@ -47,3 +47,25 @@ Finally, you can start the Caddy server with the command:
 ```shell
 caddy run --config Caddyfile
 ```
+
+## Directives
+
+### `shared_http_client`
+
+Enables TCP connection reuse for ESI `<esi:include>` fetches.  
+Without this, each include creates a fresh `http.Client` + `http.Transport`, incurring
+N × TCP+TLS handshake overhead.
+
+```
+mesi {
+    shared_http_client
+}
+```
+
+The shared transport is created once at config load (in `Provision()`) and reused
+for all requests. It uses `mesi.NewSSRFSafeTransport()` for dial-level SSRF
+protection (private IPs are blocked).
+
+Note: If adding Caddyfile directives that affect transport behaviour (e.g.
+`block_private_ips`, `allowed_hosts`), `Provision()` must recreate the
+shared transport to respect the new settings.
