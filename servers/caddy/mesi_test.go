@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -259,5 +260,318 @@ func TestSharedTransportImplementsRoundTripper(t *testing.T) {
 	var rt http.RoundTripper = m.sharedTransport
 	if rt == nil {
 		t.Error("sharedTransport should implement http.RoundTripper")
+	}
+}
+
+// --- Cache Backend Tests ---
+
+// TestCacheBackendMemoryProvision verifies that cache_backend="memory" creates
+// a non-nil cache in Provision().
+func TestCacheBackendMemoryProvision(t *testing.T) {
+	m := &MesiMiddleware{CacheBackend: "memory"}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil when CacheBackend is 'memory'")
+	}
+}
+
+// TestCacheBackendMemoryProvisionWithSize verifies custom cache_size is used.
+func TestCacheBackendMemoryProvisionWithSize(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend: "memory",
+		CacheSize:    50,
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil")
+	}
+}
+
+// TestCacheBackendMemoryProvisionWithTTL verifies that a valid cache_ttl
+// is parsed and stored in cacheTTL.
+func TestCacheBackendMemoryProvisionWithTTL(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend: "memory",
+		CacheTTL:     "60s",
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil")
+	}
+	if m.cacheTTL != 60*time.Second {
+		t.Errorf("expected cacheTTL=60s, got %v", m.cacheTTL)
+	}
+}
+
+// TestCacheBackendAbsent verifies that when CacheBackend is empty, no cache
+// is created (backward compatible).
+func TestCacheBackendAbsent(t *testing.T) {
+	m := &MesiMiddleware{}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache != nil {
+		t.Error("cache should be nil when CacheBackend is empty")
+	}
+	if m.cacheTTL != 0 {
+		t.Errorf("cacheTTL should be 0, got %v", m.cacheTTL)
+	}
+}
+
+// TestCacheTTLInvalid verifies that Provision() returns an error for
+// invalid cache_ttl values.
+func TestCacheTTLInvalid(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend: "memory",
+		CacheTTL:     "not-a-duration",
+	}
+	err := m.Provision(caddy.Context{})
+	if err == nil {
+		t.Fatal("Provision() should return error for invalid cache_ttl")
+	}
+	if !strings.Contains(err.Error(), "invalid cache_ttl") {
+		t.Errorf("expected 'invalid cache_ttl' error, got: %v", err)
+	}
+}
+
+// TestCacheBackendUnknown verifies that an unknown cache backend returns an error.
+func TestCacheBackendUnknown(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend: "invalid-backend",
+	}
+	err := m.Provision(caddy.Context{})
+	if err == nil {
+		t.Fatal("Provision() should return error for unknown cache_backend")
+	}
+	if !strings.Contains(err.Error(), "unknown cache_backend") {
+		t.Errorf("expected 'unknown cache_backend' error, got: %v", err)
+	}
+}
+
+// TestCacheBackendServeHTTP verifies that when cache is configured, the
+// EsiParserConfig receives Cache and CacheTTL in ServeHTTP.
+func TestCacheBackendServeHTTP(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend: "memory",
+		CacheSize:    100,
+		CacheTTL:     "30s",
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil")
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>cached content</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	err = m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "cached content") {
+		t.Errorf("Expected body to contain 'cached content', got: %s", body)
+	}
+}
+
+// TestCacheBackendServeHTTPNoCache verifies that when no cache is configured,
+// ServeHTTP still works (backward compatible).
+func TestCacheBackendServeHTTPNoCache(t *testing.T) {
+	m := &MesiMiddleware{}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>no cache</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	err = m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "no cache") {
+		t.Errorf("Expected body to contain 'no cache', got: %s", body)
+	}
+}
+
+// TestCacheSizeZeroUsesDefault verifies that cache_size <= 0 uses the
+// default of 10000 entries.
+func TestCacheSizeZeroUsesDefault(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend: "memory",
+		CacheSize:    0,
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil")
+	}
+}
+
+// TestCacheSizeNegativeUsesDefault verifies that negative cache_size uses default.
+func TestCacheSizeNegativeUsesDefault(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend: "memory",
+		CacheSize:    -5,
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil")
+	}
+}
+
+// TestCacheTTLWithoutBackend verifies that cache_ttl without cache_backend
+// is silently ignored (no error).
+func TestCacheTTLWithoutBackend(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheTTL: "60s",
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache != nil {
+		t.Error("cache should be nil when CacheBackend is empty")
+	}
+	if m.cacheTTL != 0 {
+		t.Errorf("cacheTTL should be 0, got %v", m.cacheTTL)
+	}
+}
+
+// TestCacheTTLInvalidWithoutBackend verifies that invalid cache_ttl without
+// cache_backend is silently ignored (no error).
+func TestCacheTTLInvalidWithoutBackend(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheTTL: "bad-value",
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache != nil {
+		t.Error("cache should be nil when CacheBackend is empty")
+	}
+	if m.cacheTTL != 0 {
+		t.Errorf("cacheTTL should be 0, got %v", m.cacheTTL)
+	}
+}
+
+// --- Caddyfile Parsing Tests ---
+
+// TestUnmarshalCaddyfileCacheBackend parses cache_backend memory directive.
+func TestUnmarshalCaddyfileCacheBackend(t *testing.T) {
+	input := `mesi {
+		cache_backend memory
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.CacheBackend != "memory" {
+		t.Errorf("expected CacheBackend='memory', got '%s'", m.CacheBackend)
+	}
+}
+
+// TestUnmarshalCaddyfileCacheSize parses cache_size directive.
+func TestUnmarshalCaddyfileCacheSize(t *testing.T) {
+	input := `mesi {
+		cache_size 5000
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.CacheSize != 5000 {
+		t.Errorf("expected CacheSize=5000, got %d", m.CacheSize)
+	}
+}
+
+// TestUnmarshalCaddyfileCacheTTL parses cache_ttl directive.
+func TestUnmarshalCaddyfileCacheTTL(t *testing.T) {
+	input := `mesi {
+		cache_ttl 30s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.CacheTTL != "30s" {
+		t.Errorf("expected CacheTTL='30s', got '%s'", m.CacheTTL)
+	}
+}
+
+// TestUnmarshalCaddyfileBackendWithoutArg verifies cache_backend without arg
+// returns ArgErr.
+func TestUnmarshalCaddyfileBackendWithoutArg(t *testing.T) {
+	input := `mesi {
+		cache_backend
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for cache_backend without argument")
+	}
+}
+
+// TestUnmarshalCaddyfileCacheSizeInvalid verifies that invalid cache_size
+// returns an error.
+func TestUnmarshalCaddyfileCacheSizeInvalid(t *testing.T) {
+	input := `mesi {
+		cache_size not-a-number
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for invalid cache_size")
 	}
 }
