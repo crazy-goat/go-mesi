@@ -16,19 +16,53 @@ import (
 
 func init() {
 	httpcaddyfile.RegisterHandlerDirective("mesi", parseCaddyfile)
-	caddy.RegisterModule(MesiMiddleware{})
+	caddy.RegisterModule(new(MesiMiddleware))
 }
 
-type MesiMiddleware struct{}
+// Compile-time interface assertions
+var (
+	_ caddy.Provisioner  = (*MesiMiddleware)(nil)
+	_ caddy.CleanerUpper = (*MesiMiddleware)(nil)
+)
 
-func (MesiMiddleware) CaddyModule() caddy.ModuleInfo {
+type MesiMiddleware struct {
+	// SharedHTTPClient enables TCP connection reuse for ESI includes.
+	// When true, a shared http.Transport with SSRF protection is created
+	// in Provision() and reused for all requests. Without this, each
+	// <esi:include> creates a fresh http.Client + http.Transport,
+	// incurring N × TCP+TLS handshake overhead for multi-include pages.
+	SharedHTTPClient bool `json:"shared_http_client,omitempty"`
+
+	sharedTransport *http.Transport `json:"-"`
+}
+
+func (m *MesiMiddleware) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.mesi",
 		New: func() caddy.Module { return new(MesiMiddleware) },
 	}
 }
 
-func (MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+// Provision implements caddy.Provisioner. Called once at config load.
+func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
+	if m.SharedHTTPClient {
+		m.sharedTransport = mesi.NewSSRFSafeTransport(mesi.EsiParserConfig{
+			BlockPrivateIPs: true,
+		})
+	}
+	return nil
+}
+
+// Cleanup implements caddy.CleanerUpper. Closes idle connections on the
+// shared transport during config reloads to prevent goroutine/resource leaks.
+func (m *MesiMiddleware) Cleanup() error {
+	if m.sharedTransport != nil {
+		m.sharedTransport.CloseIdleConnections()
+	}
+	return nil
+}
+
+func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	r.Header.Set("Surrogate-Capability", "ESI/1.0")
 
 	customWriter := middleware.NewResponseWriter(w)
@@ -47,6 +81,14 @@ func (MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next cad
 			Timeout:         10 * time.Second,
 			BlockPrivateIPs: true,
 		}
+
+		if m.sharedTransport != nil {
+			config.HTTPClient = &http.Client{
+				Transport: m.sharedTransport,
+				Timeout:   config.Timeout,
+			}
+		}
+
 		processedResponse := mesi.MESIParse(
 			customWriter.Body().String(),
 			config,
@@ -78,9 +120,15 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 }
 
 func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
-	d.Next()
-	if !d.NextArg() {
-		return nil
+	for d.Next() {
+		for d.NextBlock(0) {
+			switch d.Val() {
+			case "shared_http_client":
+				m.SharedHTTPClient = true
+			default:
+				return d.Errf("unrecognized directive: %s", d.Val())
+			}
+		}
 	}
 	return nil
 }
