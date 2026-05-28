@@ -1,6 +1,7 @@
 package caddy
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -33,7 +34,19 @@ type MesiMiddleware struct {
 	// incurring N × TCP+TLS handshake overhead for multi-include pages.
 	SharedHTTPClient bool `json:"shared_http_client,omitempty"`
 
+	// CacheBackend selects the cache backend: "" (off), "memory".
+	// Memory backend uses an in-process LRU cache with TTL support.
+	CacheBackend string `json:"cache_backend,omitempty"`
+	// CacheSize is the max number of entries for the memory cache.
+	// Default: 10000 when CacheBackend is "memory".
+	CacheSize int `json:"cache_size,omitempty"`
+	// CacheTTL is the default TTL for cached entries, e.g. "60s".
+	// Parsed by time.ParseDuration at Provision time.
+	CacheTTL string `json:"cache_ttl,omitempty"`
+
 	sharedTransport *http.Transport `json:"-"`
+	cache           mesi.Cache      `json:"-"`
+	cacheTTL        time.Duration   `json:"-"`
 }
 
 func (m *MesiMiddleware) CaddyModule() caddy.ModuleInfo {
@@ -50,6 +63,27 @@ func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
 			BlockPrivateIPs: true,
 		})
 	}
+
+	switch m.CacheBackend {
+	case "":
+		// no cache
+	case "memory":
+		if m.CacheTTL != "" {
+			d, err := time.ParseDuration(m.CacheTTL)
+			if err != nil {
+				return fmt.Errorf("invalid cache_ttl %q: %w", m.CacheTTL, err)
+			}
+			m.cacheTTL = d
+		}
+		size := m.CacheSize
+		if size <= 0 {
+			size = 10000
+		}
+		m.cache = mesi.NewMemoryCache(size, m.cacheTTL)
+	default:
+		return fmt.Errorf("unknown cache_backend: %s", m.CacheBackend)
+	}
+
 	return nil
 }
 
@@ -80,6 +114,11 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 			DefaultUrl:      middleware.GetDefaultUrl(r),
 			Timeout:         10 * time.Second,
 			BlockPrivateIPs: true,
+		}
+
+		if m.cache != nil {
+			config.Cache = m.cache
+			config.CacheTTL = m.cacheTTL
 		}
 
 		if m.sharedTransport != nil {
@@ -125,6 +164,25 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			switch d.Val() {
 			case "shared_http_client":
 				m.SharedHTTPClient = true
+			case "cache_backend":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				m.CacheBackend = d.Val()
+			case "cache_size":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				var err error
+				m.CacheSize, err = strconv.Atoi(d.Val())
+				if err != nil {
+					return d.Errf("invalid cache_size %q: %v", d.Val(), err)
+				}
+			case "cache_ttl":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				m.CacheTTL = d.Val()
 			default:
 				return d.Errf("unrecognized directive: %s", d.Val())
 			}
