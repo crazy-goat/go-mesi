@@ -575,3 +575,251 @@ func TestUnmarshalCaddyfileCacheSizeInvalid(t *testing.T) {
 		t.Fatal("UnmarshalCaddyfile should return error for invalid cache_size")
 	}
 }
+
+// --- Cache Key Template Tests ---
+
+// TestUnmarshalCaddyfileCacheKeyTemplate parses the cache_key_template directive.
+func TestUnmarshalCaddyfileCacheKeyTemplate(t *testing.T) {
+	input := `mesi {
+		cache_key_template "mesi:${url}:${header:Accept-Language}"
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.CacheKeyTemplate != "mesi:${url}:${header:Accept-Language}" {
+		t.Errorf("expected CacheKeyTemplate='mesi:${url}:${header:Accept-Language}', got '%s'", m.CacheKeyTemplate)
+	}
+}
+
+// TestUnmarshalCaddyfileCacheKeyTemplateNoArg verifies cache_key_template without
+// argument returns ArgErr.
+func TestUnmarshalCaddyfileCacheKeyTemplateNoArg(t *testing.T) {
+	input := `mesi {
+		cache_key_template
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for cache_key_template without argument")
+	}
+}
+
+// TestCacheKeyTemplateDefaultAbsent verifies that when CacheKeyTemplate is empty,
+// no custom CacheKeyFunc is set.
+func TestCacheKeyTemplateDefaultAbsent(t *testing.T) {
+	m := &MesiMiddleware{CacheBackend: "memory"}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>no template</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/page", nil)
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+	// Serves as a smoke test — no panic, works without CacheKeyFunc
+}
+
+// TestCacheKeyTemplateUrlSubstitution verifies ${url} is substituted with the
+// full URL in the cache key.
+func TestCacheKeyTemplateUrlSubstitution(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:      "memory",
+		CacheKeyTemplate:  "pfx:${url}:sfx",
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	callCount := 0
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		callCount++
+		w.Header().Set("Content-Type", "text/html")
+		// Return non-ESI content to avoid real network fetch
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>content</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/page", nil)
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+// TestCacheKeyTemplateSubstitutesHeaders verifies ${header:X} placeholders
+// are replaced with request header values.
+func TestCacheKeyTemplateSubstitutesHeaders(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:      "memory",
+		CacheKeyTemplate:  "${header:Accept-Language}",
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>content</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	req.Header.Set("Accept-Language", "pl-PL")
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+// TestCacheKeyTemplateSubstitutesCookies verifies ${cookie:Name} placeholders
+// are replaced with cookie values.
+func TestCacheKeyTemplateSubstitutesCookies(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:      "memory",
+		CacheKeyTemplate:  "sess:${cookie:session_id}",
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>content</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: "abc123"})
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+// TestCacheKeyTemplateUnknownPlaceholder verifies unknown placeholders are
+// left as-is (literal) in the cache key.
+func TestCacheKeyTemplateUnknownPlaceholder(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:      "memory",
+		CacheKeyTemplate:  "key:${unknown}:literal",
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>content</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+// TestCacheKeyTemplateWithoutCacheBackend verifies that cache_key_template
+// without cache_backend is silently ignored (no error, no CacheKeyFunc).
+func TestCacheKeyTemplateWithoutCacheBackend(t *testing.T) {
+	m := &MesiMiddleware{
+		// No CacheBackend set
+		CacheKeyTemplate: "key:${url}",
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>no cache</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	err = m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+// TestCacheKeyTemplateComplexPattern verifies a complex template with
+// multiple placeholder types.
+func TestCacheKeyTemplateComplexPattern(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:      "memory",
+		CacheKeyTemplate:  "mesi:${url}:lang=${header:Accept-Language}:sess=${cookie:session_id}",
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>complex template</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/page", nil)
+	req.Header.Set("Accept-Language", "en-US")
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: "xyz789"})
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}

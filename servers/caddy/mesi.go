@@ -43,6 +43,11 @@ type MesiMiddleware struct {
 	// CacheTTL is the default TTL for cached entries, e.g. "60s".
 	// Parsed by time.ParseDuration at Provision time.
 	CacheTTL string `json:"cache_ttl,omitempty"`
+	// CacheKeyTemplate is a Go template string for custom cache keys.
+	// Placeholders: ${url}, ${header:Name}, ${cookie:Name}.
+	// Example: "mesi:${url}:${header:Accept-Language}".
+	// When empty, DefaultCacheKey (URL-only) is used.
+	CacheKeyTemplate string `json:"cache_key_template,omitempty"`
 
 	sharedTransport *http.Transport `json:"-"`
 	cache           mesi.Cache      `json:"-"`
@@ -119,6 +124,30 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 		if m.cache != nil {
 			config.Cache = m.cache
 			config.CacheTTL = m.cacheTTL
+			if m.CacheKeyTemplate != "" {
+				tmpl := m.CacheKeyTemplate
+				config.CacheKeyFunc = func(url string) string {
+					result := strings.ReplaceAll(tmpl, "${url}", url)
+
+					// ${header:Name} substitution
+					// Supports canonical, lowercase, and uppercase forms.
+					for key, vals := range r.Header {
+						val := vals[0]
+						result = strings.ReplaceAll(result, "${header:"+key+"}", val)
+						result = strings.ReplaceAll(result, "${header:"+strings.ToLower(key)+"}", val)
+						result = strings.ReplaceAll(result, "${header:"+strings.ToUpper(key)+"}", val)
+					}
+
+					// ${cookie:Name} substitution
+					for _, c := range r.Cookies() {
+						result = strings.ReplaceAll(result, "${cookie:"+c.Name+"}", c.Value)
+						result = strings.ReplaceAll(result, "${cookie:"+strings.ToLower(c.Name)+"}", c.Value)
+						result = strings.ReplaceAll(result, "${cookie:"+strings.ToUpper(c.Name)+"}", c.Value)
+					}
+
+					return result
+				}
+			}
 		}
 
 		if m.sharedTransport != nil {
@@ -183,6 +212,11 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				m.CacheTTL = d.Val()
+			case "cache_key_template":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				m.CacheKeyTemplate = d.Val()
 			default:
 				return d.Errf("unrecognized directive: %s", d.Val())
 			}
