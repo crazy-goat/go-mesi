@@ -15,14 +15,15 @@ import (
 const PluginName = "mesi"
 
 type Config struct {
-	MaxDepth           int    `json:"maxDepth" yaml:"maxDepth"`
-	SharedHTTPClient   bool   `json:"sharedHTTPClient" yaml:"sharedHTTPClient"`
-	CacheBackend       string `json:"cacheBackend" yaml:"cacheBackend"`
-	CacheTTL           string `json:"cacheTTL" yaml:"cacheTTL"`
-	CacheSize          int    `json:"cacheSize" yaml:"cacheSize"`
-	CacheRedisAddr     string `json:"cacheRedisAddr" yaml:"cacheRedisAddr"`
-	CacheRedisPassword string `json:"cacheRedisPassword" yaml:"cacheRedisPassword"`
-	CacheRedisDB       int    `json:"cacheRedisDb" yaml:"cacheRedisDb"`
+	MaxDepth               int      `json:"maxDepth" yaml:"maxDepth"`
+	SharedHTTPClient       bool     `json:"sharedHTTPClient" yaml:"sharedHTTPClient"`
+	CacheBackend           string   `json:"cacheBackend" yaml:"cacheBackend"`
+	CacheTTL               string   `json:"cacheTTL" yaml:"cacheTTL"`
+	CacheSize              int      `json:"cacheSize" yaml:"cacheSize"`
+	CacheRedisAddr         string   `json:"cacheRedisAddr" yaml:"cacheRedisAddr"`
+	CacheRedisPassword     string   `json:"cacheRedisPassword" yaml:"cacheRedisPassword"`
+	CacheRedisDB           int      `json:"cacheRedisDb" yaml:"cacheRedisDb"`
+	CacheMemcachedServers  []string `json:"cacheMemcachedServers" yaml:"cacheMemcachedServers"`
 }
 
 func CreateConfig() *Config {

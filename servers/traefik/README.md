@@ -91,17 +91,35 @@ http:
           cacheRedisDb: 0
 ```
 
+### Memcached Cache
+
+Memcached-backed cache for distributed ESI fragment caching:
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          maxDepth: 5
+          cacheBackend: memcached
+          cacheTTL: "120s"
+          cacheMemcachedServers:
+            - "10.0.0.1:11211"
+            - "10.0.0.2:11211"
+```
+
 #### Configuration Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
-| `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis` |
+| `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis`, `memcached` |
 | `cacheTTL` | string | `""` | Cache TTL as Go duration (e.g., `"60s"`, `"5m"`) |
 | `cacheSize` | int | `10000` | Max entries for memory cache |
 | `cacheRedisAddr` | string | `"localhost:6379"` | Redis server address |
 | `cacheRedisPassword` | string | `""` | Redis AUTH password |
 | `cacheRedisDb` | int | `0` | Redis database number |
+| `cacheMemcachedServers` | []string | `[]` | Memcached server addresses (host:port) |
 
 #### Redis Features
 
@@ -123,20 +141,49 @@ When Redis is unreachable, the plugin continues to work in degraded mode:
 - Origin server is hit for each request
 - When Redis becomes available, caching resumes
 
+#### Memcached Features
+
+- **Distributed cache**: Share ESI fragments across multiple Traefik instances
+- **Consistent hashing**: Cache is distributed across multiple Memcached servers
+- **Lightweight**: Simpler than Redis for simple key-value workloads
+- **TTL support**: Automatic expiration of cached entries
+
+#### Memcached Limitations
+
+- **1 MB value size limit**: ESI includes larger than 1 MB cannot be cached
+- **No TLS support**: Use a sidecar proxy (e.g., stunnel) for encrypted connections
+- **Server format**: `host:port` separated by spaces or YAML list items
+
 ## Development
 
 ### Building
 
 ```bash
+# Default (memory only)
+go build ./...
+
+# With Redis support
 go build -tags redis ./...
+
+# With Memcached support
+go build -tags memcached ./...
+
+# With both Redis and Memcached
+go build -tags "redis,memcached" ./...
 ```
 
 ### Testing
 
 ```bash
-# Run unit tests (requires Redis)
+# Run unit tests (no external dependencies)
+go test -v ./...
+
+# Run tests with Redis (requires Redis running)
 go test -tags redis -v ./...
 
-# Run integration tests (requires Redis running)
+# Run tests with Memcached (requires Memcached running)
+go test -tags memcached -v ./...
+
+# Run integration tests (requires Redis/Memcached running)
 go test -tags redis -v -run TestCacheIntegration ./...
 ```
