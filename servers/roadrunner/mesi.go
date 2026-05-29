@@ -91,16 +91,16 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 				IncludeErrorMarker: p.config.IncludeErrorMarker,
 			}
 
-		if p.cache != nil {
-			config.Cache = p.cache
-			config.CacheTTL = p.cacheTTL
-			if p.config.CacheKeyTemplate != "" {
-				tmpl := p.config.CacheKeyTemplate
-				config.CacheKeyFunc = func(url string) string {
-					return mesi.BuildCacheKey(url, tmpl, r)
+			if p.cache != nil {
+				config.Cache = p.cache
+				config.CacheTTL = p.cacheTTL
+				if p.config.CacheKeyTemplate != "" {
+					tmpl := p.config.CacheKeyTemplate
+					config.CacheKeyFunc = func(url string) string {
+						return mesi.BuildCacheKey(url, tmpl, r)
+					}
 				}
 			}
-		}
 
 			if p.sharedTransport != nil {
 				config.HTTPClient = &http.Client{
