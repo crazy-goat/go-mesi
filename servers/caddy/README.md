@@ -202,3 +202,30 @@ mesi {
 | `${cookie:Name}` | Request cookie value (case-insensitive) |
 
 When unset, the URL-only default key is used.
+
+### `allowed_hosts`
+
+Restricts ESI `<esi:include>` fetches to specified domains. When set, only
+hosts in the list are allowed — all other hosts are blocked. This is a critical
+security directive for preventing SSRF attacks via ESI includes.
+
+```
+mesi {
+    allowed_hosts backend.internal cdn.example.com api.trusted.org
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| space-separated hosts | Only listed hosts are allowed for ESI includes. |
+| absent | All hosts allowed (subject to `block_private_ips`). |
+
+**Notes:**
+- Host matching supports exact match and subdomain suffix matching:
+  `sub.example.com` matches `example.com`.
+- Does NOT match `attacker-example.com` against `example.com` (suffix-injection safe).
+- `allowed_hosts` does NOT bypass `block_private_ips` by default.
+  Use `allow_private_ips_for_allowed_hosts` to enable private-IP bypass for
+  trusted environments (see issue #256).
+- When combined with `shared_http_client`, the shared transport is created with
+  SSRF-safe dialer. The `allowed_hosts` check is applied at the ESI parser level.

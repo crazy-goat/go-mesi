@@ -78,6 +78,11 @@ type MesiMiddleware struct {
 	// Required when CacheBackend is "memcached".
 	CacheMemcachedServers []string `json:"cache_memcached_servers,omitempty"`
 
+	// AllowedHosts restricts ESI includes to specified domains.
+	// Empty list allows all hosts (subject to BlockPrivateIPs).
+	// Host matching: exact match or subdomain suffix (sub.example.com matches example.com).
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
+
 	// Timeout is the maximum time allowed for ESI processing, including
 	// all remote fragment fetches. Parsed by time.ParseDuration at
 	// Provision time. Default: "10s".
@@ -202,6 +207,7 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 			DefaultUrl:          middleware.GetDefaultUrl(r),
 			Timeout:             m.parsedTimeout,
 			BlockPrivateIPs:     true,
+			AllowedHosts:        m.AllowedHosts,
 			IncludeErrorMarker:  m.IncludeErrorMarker,
 			Debug:               m.Debug,
 		}
@@ -290,8 +296,10 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				m.Timeout = d.Val()
-			case "shared_http_client":
-				m.SharedHTTPClient = true
+		case "shared_http_client":
+			m.SharedHTTPClient = true
+		case "allowed_hosts":
+			m.AllowedHosts = d.RemainingArgs()
 		case "debug":
 			m.Debug = true
 		case "cache_backend":
