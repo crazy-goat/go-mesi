@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bradfitz/gomemcache/memcache"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
@@ -986,5 +987,323 @@ func TestIntegrationRedisUnreachableDegraded(t *testing.T) {
 	}
 	if originCallCount != 2 {
 		t.Errorf("expected 2 origin calls (no cache with broken Redis), got %d", originCallCount)
+	}
+}
+
+// --- Memcached Cache Backend Integration Tests ---
+
+// TestIntegrationCacheBackendMemcachedFull verifies the full flow:
+// Caddyfile parsing → Provision → cache instantiation → Cleanup
+// with cache_backend memcached.
+func TestIntegrationCacheBackendMemcachedFull(t *testing.T) {
+	input := `mesi {
+		cache_backend memcached
+		cache_memcached_servers 10.0.0.1:11211 10.0.0.2:11211
+		cache_ttl 120s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.CacheBackend != "memcached" {
+		t.Errorf("expected CacheBackend='memcached', got '%s'", m.CacheBackend)
+	}
+	if len(m.CacheMemcachedServers) != 2 {
+		t.Fatalf("expected 2 servers, got %d", len(m.CacheMemcachedServers))
+	}
+	if m.CacheMemcachedServers[0] != "10.0.0.1:11211" {
+		t.Errorf("expected server[0]='10.0.0.1:11211', got '%s'", m.CacheMemcachedServers[0])
+	}
+	if m.CacheMemcachedServers[1] != "10.0.0.2:11211" {
+		t.Errorf("expected server[1]='10.0.0.2:11211', got '%s'", m.CacheMemcachedServers[1])
+	}
+	if m.CacheTTL != "120s" {
+		t.Errorf("expected CacheTTL='120s', got '%s'", m.CacheTTL)
+	}
+
+	err = m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil after Provision with cache_backend memcached")
+	}
+	if m.memcachedClient == nil {
+		t.Fatal("memcachedClient should be non-nil after Provision with cache_backend memcached")
+	}
+	if m.cacheTTL != 120*time.Second {
+		t.Errorf("expected cacheTTL=120s, got %v", m.cacheTTL)
+	}
+
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should still be non-nil after Cleanup")
+	}
+}
+
+// TestIntegrationCacheBackendMemcachedNoServers verifies that memcached backend
+// without servers causes Provision to return an error.
+func TestIntegrationCacheBackendMemcachedNoServers(t *testing.T) {
+	input := `mesi {
+		cache_backend memcached
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	err := m.Provision(caddy.Context{})
+	if err == nil {
+		t.Fatal("Provision() should return error for memcached without servers")
+	}
+}
+
+// TestIntegrationCacheBackendMemcachedInvalidTTL verifies that an invalid
+// cache_ttl causes Provision to return an error for memcached backend.
+func TestIntegrationCacheBackendMemcachedInvalidTTL(t *testing.T) {
+	input := `mesi {
+		cache_backend memcached
+		cache_memcached_servers localhost:11211
+		cache_ttl bad-value
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	err := m.Provision(caddy.Context{})
+	if err == nil {
+		t.Fatal("Provision() should return error for invalid cache_ttl")
+	}
+}
+
+// TestIntegrationCacheBackendMemcachedAllDirectivesTogether verifies all Memcached
+// directives can be combined in a single Caddyfile block.
+func TestIntegrationCacheBackendMemcachedAllDirectivesTogether(t *testing.T) {
+	input := `mesi {
+		cache_backend memcached
+		cache_memcached_servers memcached.internal:11211 memcached2.internal:11211
+		cache_ttl 30s
+		cache_key_template "mesi:${url}"
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.CacheBackend != "memcached" {
+		t.Errorf("expected CacheBackend='memcached', got '%s'", m.CacheBackend)
+	}
+	if len(m.CacheMemcachedServers) != 2 {
+		t.Fatalf("expected 2 servers, got %d", len(m.CacheMemcachedServers))
+	}
+	if m.CacheMemcachedServers[0] != "memcached.internal:11211" {
+		t.Errorf("expected server[0]='memcached.internal:11211', got '%s'", m.CacheMemcachedServers[0])
+	}
+	if m.CacheTTL != "30s" {
+		t.Errorf("expected CacheTTL='30s', got '%s'", m.CacheTTL)
+	}
+	if m.CacheKeyTemplate != "mesi:${url}" {
+		t.Errorf("expected CacheKeyTemplate='mesi:${url}', got '%s'", m.CacheKeyTemplate)
+	}
+
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil")
+	}
+	if m.memcachedClient == nil {
+		t.Fatal("memcachedClient should be non-nil")
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// TestIntegrationCacheBackendMemcachedWithSharedHTTPClient verifies that
+// cache_backend memcached and shared_http_client work together.
+func TestIntegrationCacheBackendMemcachedWithSharedHTTPClient(t *testing.T) {
+	input := `mesi {
+		shared_http_client
+		cache_backend memcached
+		cache_memcached_servers localhost:11211
+		cache_ttl 60s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if !m.SharedHTTPClient {
+		t.Fatal("SharedHTTPClient should be true")
+	}
+	if m.CacheBackend != "memcached" {
+		t.Errorf("expected CacheBackend='memcached', got '%s'", m.CacheBackend)
+	}
+
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.sharedTransport == nil {
+		t.Fatal("sharedTransport should be non-nil after Provision")
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil after Provision")
+	}
+	if m.memcachedClient == nil {
+		t.Fatal("memcachedClient should be non-nil after Provision")
+	}
+
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// --- Memcached Functional Tests (require real Memcached) ---
+
+func newMemcachedClientForTest(t *testing.T) *memcache.Client {
+	t.Helper()
+	client := memcache.New("localhost:11211")
+	if err := client.FlushAll(); err != nil {
+		t.Skip("Memcached not available")
+	}
+	return client
+}
+
+// TestIntegrationMemcachedCacheHitMiss verifies that the first ESI include fetch
+// hits the origin and the second request is served from the Memcached cache.
+func TestIntegrationMemcachedCacheHitMiss(t *testing.T) {
+	mc := newMemcachedClientForTest(t)
+
+	fragmentCallCount := 0
+	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fragmentCallCount++
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fragment content"))
+	}))
+	defer fragmentServer.Close()
+
+	esiContent := `<html><body><esi:include src="` + fragmentServer.URL + `/frag" /></body></html>`
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(esiContent))
+		return nil
+	})
+
+	m := &MesiMiddleware{
+		CacheBackend:          "memcached",
+		CacheMemcachedServers: []string{"localhost:11211"},
+		CacheTTL:              "60s",
+		SharedHTTPClient:      true,
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	m.sharedTransport = &http.Transport{}
+	defer m.Cleanup()
+
+	// Clean up any pre-existing keys
+	mc.FlushAll()
+
+	// Request 1 — cache miss, hits origin
+	req1 := httptest.NewRequest("GET", "http://example.com/page", nil)
+	rec1 := httptest.NewRecorder()
+	if err := m.ServeHTTP(rec1, req1, handler); err != nil {
+		t.Fatalf("ServeHTTP(1) returned error: %v", err)
+	}
+	if rec1.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec1.Code)
+	}
+	if fragmentCallCount != 1 {
+		t.Errorf("expected 1 origin call after cache miss, got %d", fragmentCallCount)
+	}
+
+	// Request 2 — cache hit, no origin call
+	req2 := httptest.NewRequest("GET", "http://example.com/page", nil)
+	rec2 := httptest.NewRecorder()
+	if err := m.ServeHTTP(rec2, req2, handler); err != nil {
+		t.Fatalf("ServeHTTP(2) returned error: %v", err)
+	}
+	if rec2.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec2.Code)
+	}
+	if fragmentCallCount != 1 {
+		t.Errorf("expected 1 origin call (cache hit), got %d", fragmentCallCount)
+	}
+
+	// Verify the cached body is identical
+	if rec1.Body.String() != rec2.Body.String() {
+		t.Errorf("cached response mismatch: %q vs %q", rec1.Body.String(), rec2.Body.String())
+	}
+
+	// Cleanup
+	mc.FlushAll()
+}
+
+// TestIntegrationMemcachedUnreachableDegraded verifies that when Memcached is
+// unreachable, requests fall back to the origin (degraded mode, no crash).
+func TestIntegrationMemcachedUnreachableDegraded(t *testing.T) {
+	originCallCount := 0
+	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCallCount++
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fallback content"))
+	}))
+	defer fragmentServer.Close()
+
+	esiContent := `<html><body><esi:include src="` + fragmentServer.URL + `/frag" /></body></html>`
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(esiContent))
+		return nil
+	})
+
+	m := &MesiMiddleware{
+		CacheBackend:          "memcached",
+		CacheMemcachedServers: []string{"localhost:19999"}, // intentionally unreachable
+		CacheTTL:              "60s",
+		SharedHTTPClient:      true,
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	m.sharedTransport = &http.Transport{}
+	defer m.Cleanup()
+
+	// Make a request — should fall back to origin, no crash
+	req := httptest.NewRequest("GET", "http://example.com/page", nil)
+	rec := httptest.NewRecorder()
+	if err := m.ServeHTTP(rec, req, handler); err != nil {
+		t.Fatalf("ServeHTTP() returned error: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "fallback content") {
+		t.Errorf("expected body to contain 'fallback content', got %q", body)
+	}
+	if originCallCount != 1 {
+		t.Errorf("expected 1 origin call (degraded), got %d", originCallCount)
+	}
+
+	// Make a second request — should also hit origin (no cache)
+	req2 := httptest.NewRequest("GET", "http://example.com/page", nil)
+	rec2 := httptest.NewRecorder()
+	if err := m.ServeHTTP(rec2, req2, handler); err != nil {
+		t.Fatalf("ServeHTTP(2) returned error: %v", err)
+	}
+	if originCallCount != 2 {
+		t.Errorf("expected 2 origin calls (no cache with broken Memcached), got %d", originCallCount)
 	}
 }
