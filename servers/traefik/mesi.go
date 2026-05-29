@@ -16,6 +16,7 @@ const PluginName = "mesi"
 
 type Config struct {
 	MaxDepth           int    `json:"maxDepth" yaml:"maxDepth"`
+	SharedHTTPClient   bool   `json:"sharedHTTPClient" yaml:"sharedHTTPClient"`
 	CacheBackend       string `json:"cacheBackend" yaml:"cacheBackend"`
 	CacheTTL           string `json:"cacheTTL" yaml:"cacheTTL"`
 	CacheSize          int    `json:"cacheSize" yaml:"cacheSize"`
@@ -31,12 +32,13 @@ func CreateConfig() *Config {
 }
 
 type ResponsePlugin struct {
-	next     http.Handler
-	name     string
-	config   *Config
-	cache    mesi.Cache
-	cacheTTL time.Duration
-	closeFn  func() error
+	next            http.Handler
+	name            string
+	config          *Config
+	cache           mesi.Cache
+	cacheTTL        time.Duration
+	sharedTransport *http.Transport
+	closeFn         func() error
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
@@ -52,6 +54,12 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		next:   next,
 		name:   name,
 		config: config,
+	}
+
+	if config.SharedHTTPClient {
+		p.sharedTransport = mesi.NewSSRFSafeTransport(mesi.EsiParserConfig{
+			BlockPrivateIPs: true,
+		})
 	}
 
 	if config.CacheBackend != "" && config.CacheTTL != "" {
@@ -95,6 +103,13 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			config.CacheTTL = p.cacheTTL
 		}
 
+		if p.sharedTransport != nil {
+			config.HTTPClient = &http.Client{
+				Transport: p.sharedTransport,
+				Timeout:   config.Timeout,
+			}
+		}
+
 		processedResponse := mesi.MESIParse(
 			customWriter.Body().String(),
 			config,
@@ -118,6 +133,9 @@ func (p *ResponsePlugin) Name() string {
 }
 
 func (p *ResponsePlugin) Close() error {
+	if p.sharedTransport != nil {
+		p.sharedTransport.CloseIdleConnections()
+	}
 	if p.closeFn != nil {
 		return p.closeFn()
 	}
