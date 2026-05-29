@@ -30,7 +30,49 @@ To enable the mESI middleware, you must add the appropriate entry in the http mo
 http:
   address: "0.0.0.0:8080"
   middleware:
-    - "mesi"
+    mesi:
+```
+
+### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `max_depth` | int | `5` | Maximum ESI nesting depth. Set to `0` to disable ESI processing. |
+| `timeout` | string | `"10s"` | Maximum time for ESI processing (Go duration format). |
+| `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
+| `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`. |
+| `cache_size` | int | `10000` | Max entries for memory cache backend. |
+| `cache_ttl` | string | `""` | Default TTL for cached entries, e.g. `"60s"`. |
+| `cache_redis_addr` | string | `"localhost:6379"` | Redis server address (host:port). |
+| `cache_redis_password` | string | `""` | Redis AUTH password. |
+| `cache_redis_db` | int | `0` | Redis database number. |
+
+### Cache backends
+
+#### Memory
+```yaml
+http:
+  middleware:
+    mesi:
+      cache_backend: memory
+      cache_size: 5000
+      cache_ttl: "60s"
+```
+
+#### Redis
+Requires building with `-tags redis`:
+```shell
+go build -tags redis ./...
+```
+
+```yaml
+http:
+  middleware:
+    mesi:
+      cache_backend: redis
+      cache_ttl: "120s"
+      cache_redis_addr: "10.0.0.5:6379"
+      cache_redis_db: 2
 ```
 
 An example script with the appropriate configuration can be found in the [worker](worker) directory
