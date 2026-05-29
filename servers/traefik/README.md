@@ -22,6 +22,7 @@ http:
       plugin:
         mesi:
           maxDepth: 5
+          sharedHTTPClient: true
 
   routers:
     test-server:
@@ -33,6 +34,25 @@ http:
   services:
     test-server:
     # some service config here
+```
+
+## Shared HTTP Client
+
+When `sharedHTTPClient` is enabled, a shared `http.Transport` with SSRF protection
+is created once and reused for all ESI include requests. This enables TCP connection
+pooling (keep-alive), dramatically reducing latency for pages with multiple includes
+to the same backend origin.
+
+Without this option, each `<esi:include>` creates a fresh `http.Client` + `http.Transport`,
+incurring N × (TCP connect + TLS handshake) overhead.
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          sharedHTTPClient: true
 ```
 
 ## Cache Backend
@@ -75,6 +95,7 @@ http:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
+| `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
 | `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis` |
 | `cacheTTL` | string | `""` | Cache TTL as Go duration (e.g., `"60s"`, `"5m"`) |
 | `cacheSize` | int | `10000` | Max entries for memory cache |
