@@ -58,6 +58,9 @@ type MesiMiddleware struct {
 	// When empty, DefaultCacheKey (URL-only) is used.
 	CacheKeyTemplate string `json:"cache_key_template,omitempty"`
 
+	// Debug enables verbose ESI processing logs to stderr.
+	Debug bool `json:"debug,omitempty"`
+
 	// IncludeErrorMarker is rendered in place of a failed include when no
 	// onerror="continue" and no fallback body is present. Default: "" (silent).
 	// SECURITY: Never include raw errors or URLs in the marker.
@@ -200,6 +203,7 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 			Timeout:             m.parsedTimeout,
 			BlockPrivateIPs:     true,
 			IncludeErrorMarker:  m.IncludeErrorMarker,
+			Debug:               m.Debug,
 		}
 
 		if m.cache != nil {
@@ -288,11 +292,13 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				m.Timeout = d.Val()
 			case "shared_http_client":
 				m.SharedHTTPClient = true
-			case "cache_backend":
-				if !d.NextArg() {
-					return d.ArgErr()
-				}
-				m.CacheBackend = d.Val()
+		case "debug":
+			m.Debug = true
+		case "cache_backend":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			m.CacheBackend = d.Val()
 			case "cache_size":
 				if !d.NextArg() {
 					return d.ArgErr()

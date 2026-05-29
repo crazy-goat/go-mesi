@@ -1979,3 +1979,121 @@ func TestIncludeErrorMarkerIntegrationParseAndProvision(t *testing.T) {
 		t.Fatalf("Cleanup() returned error: %v", err)
 	}
 }
+
+// --- Debug Directive Tests ---
+
+// TestDebugDefaultUnset verifies that when debug is not set, Debug is false.
+func TestDebugDefaultUnset(t *testing.T) {
+	m := &MesiMiddleware{}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.Debug {
+		t.Error("Debug should be false by default")
+	}
+}
+
+// TestUnmarshalCaddyfileDebug parses the debug directive.
+func TestUnmarshalCaddyfileDebug(t *testing.T) {
+	input := `mesi {
+		debug
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if !m.Debug {
+		t.Error("Debug should be true after parsing debug directive")
+	}
+}
+
+// TestDebugProvision verifies that Provision works with Debug enabled.
+func TestDebugProvision(t *testing.T) {
+	m := &MesiMiddleware{Debug: true}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if !m.Debug {
+		t.Error("Debug should be true")
+	}
+}
+
+// TestDebugServeHTTP verifies that the configured Debug flag is passed
+// to EsiParserConfig in ServeHTTP.
+func TestDebugServeHTTP(t *testing.T) {
+	m := &MesiMiddleware{Debug: true}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>debug test</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+// TestDebugWithOtherDirectives verifies debug works alongside other directives.
+func TestDebugWithOtherDirectives(t *testing.T) {
+	input := `mesi {
+		debug
+		max_depth 3
+		shared_http_client
+		timeout 15s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if !m.Debug {
+		t.Error("Debug should be true")
+	}
+	if m.MaxDepth == nil || *m.MaxDepth != 3 {
+		t.Errorf("expected MaxDepth=3, got %v", m.MaxDepth)
+	}
+	if !m.SharedHTTPClient {
+		t.Error("SharedHTTPClient should be true")
+	}
+	if m.Timeout != "15s" {
+		t.Errorf("expected Timeout='15s', got '%s'", m.Timeout)
+	}
+}
+
+// TestDebugIntegrationParseAndProvision verifies the full flow:
+// Caddyfile parsing → Provision → Cleanup with debug.
+func TestDebugIntegrationParseAndProvision(t *testing.T) {
+	input := `mesi {
+		debug
+		max_depth 5
+		timeout 10s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if !m.Debug {
+		t.Error("Debug should be true")
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
