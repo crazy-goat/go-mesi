@@ -307,17 +307,17 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				m.CacheTTL = d.Val()
-		case "cache_key_template":
-			if !d.NextArg() {
-				return d.ArgErr()
-			}
-			m.CacheKeyTemplate = d.Val()
-		case "include_error_marker":
-			if !d.NextArg() {
-				return d.ArgErr()
-			}
-			m.IncludeErrorMarker = d.Val()
-		case "cache_redis_addr":
+			case "cache_key_template":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				m.CacheKeyTemplate = d.Val()
+			case "include_error_marker":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				m.IncludeErrorMarker = d.Val()
+			case "cache_redis_addr":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
