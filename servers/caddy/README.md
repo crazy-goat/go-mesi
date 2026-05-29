@@ -71,6 +71,29 @@ mesi {
 - Useful for preventing infinite recursion in complex ESI layouts.
 - Setting `0` is useful for temporarily disabling ESI processing without removing the middleware.
 
+### `timeout`
+
+Maximum time allowed for ESI processing, including all remote fragment fetches.
+Parsed as a Go duration string (`10s`, `30s`, `2m`). Default: `10s`.
+
+```
+mesi {
+    timeout 30s
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| duration | Maximum time for all ESI fetches combined. |
+| unset | Default: `10s`. |
+
+**Notes:**
+- The timeout covers the total wall-clock time of all `<esi:include>` fetches
+  within a single request. Individual fetches do not have separate timeouts.
+- For pages with many parallel includes, consider increasing this value.
+- When using `shared_http_client`, the timeout also applies to the underlying
+  `http.Client.Timeout`.
+
 ### `shared_http_client`
 
 Enables TCP connection reuse for ESI `<esi:include>` fetches.  
