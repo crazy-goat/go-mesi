@@ -1,3 +1,5 @@
+//go:build memcached || redis
+
 package caddy
 
 import (

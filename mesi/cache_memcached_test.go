@@ -1,3 +1,5 @@
+//go:build memcached
+
 package mesi
 
 import (
