@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2263,5 +2264,235 @@ func TestAllowedHostsIntegrationParseAndProvision(t *testing.T) {
 	}
 	if err := m.Cleanup(); err != nil {
 		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// --- MaxConcurrentRequests Directive Tests ---
+
+// TestMaxConcurrentRequestsDefaultUnset verifies that when max_concurrent_requests
+// is not set, MaxConcurrentRequests is 0 (unlimited).
+func TestMaxConcurrentRequestsDefaultUnset(t *testing.T) {
+	m := &MesiMiddleware{}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.MaxConcurrentRequests != 0 {
+		t.Errorf("MaxConcurrentRequests should be 0 (unlimited) by default, got %d", m.MaxConcurrentRequests)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxConcurrentRequests parses max_concurrent_requests
+// directive with a valid value.
+func TestUnmarshalCaddyfileMaxConcurrentRequests(t *testing.T) {
+	input := `mesi {
+		max_concurrent_requests 5
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxConcurrentRequests != 5 {
+		t.Errorf("expected MaxConcurrentRequests=5, got %d", m.MaxConcurrentRequests)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxConcurrentRequestsZero parses max_concurrent_requests 0
+// (unlimited — backward compatible).
+func TestUnmarshalCaddyfileMaxConcurrentRequestsZero(t *testing.T) {
+	input := `mesi {
+		max_concurrent_requests 0
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxConcurrentRequests != 0 {
+		t.Errorf("expected MaxConcurrentRequests=0 (unlimited), got %d", m.MaxConcurrentRequests)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxConcurrentRequestsInvalid verifies that
+// max_concurrent_requests with a non-numeric value returns an error.
+func TestUnmarshalCaddyfileMaxConcurrentRequestsInvalid(t *testing.T) {
+	input := `mesi {
+		max_concurrent_requests not-a-number
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for invalid max_concurrent_requests")
+	}
+	if !strings.Contains(err.Error(), "invalid max_concurrent_requests") {
+		t.Errorf("expected 'invalid max_concurrent_requests' error, got: %v", err)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxConcurrentRequestsNoArg verifies that
+// max_concurrent_requests without argument returns ArgErr.
+func TestUnmarshalCaddyfileMaxConcurrentRequestsNoArg(t *testing.T) {
+	input := `mesi {
+		max_concurrent_requests
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for max_concurrent_requests without argument")
+	}
+}
+
+// TestMaxConcurrentRequestsProvision verifies that Provision works with
+// MaxConcurrentRequests set.
+func TestMaxConcurrentRequestsProvision(t *testing.T) {
+	m := &MesiMiddleware{MaxConcurrentRequests: 10}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.MaxConcurrentRequests != 10 {
+		t.Errorf("expected MaxConcurrentRequests=10, got %d", m.MaxConcurrentRequests)
+	}
+}
+
+// TestMaxConcurrentRequestsServeHTTP verifies that the configured
+// MaxConcurrentRequests is passed to EsiParserConfig in ServeHTTP.
+func TestMaxConcurrentRequestsServeHTTP(t *testing.T) {
+	m := &MesiMiddleware{MaxConcurrentRequests: 3}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>concurrent test</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+// TestMaxConcurrentRequestsWithOtherDirectives verifies max_concurrent_requests
+// works alongside other directives.
+func TestMaxConcurrentRequestsWithOtherDirectives(t *testing.T) {
+	input := `mesi {
+		max_concurrent_requests 5
+		max_depth 3
+		shared_http_client
+		timeout 15s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxConcurrentRequests != 5 {
+		t.Errorf("expected MaxConcurrentRequests=5, got %d", m.MaxConcurrentRequests)
+	}
+	if m.MaxDepth == nil || *m.MaxDepth != 3 {
+		t.Errorf("expected MaxDepth=3, got %v", m.MaxDepth)
+	}
+	if !m.SharedHTTPClient {
+		t.Error("SharedHTTPClient should be true")
+	}
+	if m.Timeout != "15s" {
+		t.Errorf("expected Timeout='15s', got '%s'", m.Timeout)
+	}
+}
+
+// TestMaxConcurrentRequestsIntegrationParseAndProvision verifies the full flow:
+// Caddyfile parsing → Provision → Cleanup with max_concurrent_requests.
+func TestMaxConcurrentRequestsIntegrationParseAndProvision(t *testing.T) {
+	input := `mesi {
+		max_concurrent_requests 8
+		max_depth 5
+		timeout 10s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxConcurrentRequests != 8 {
+		t.Errorf("expected MaxConcurrentRequests=8, got %d", m.MaxConcurrentRequests)
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// TestMaxConcurrentRequestsIntegrationLimitsConcurrency verifies that
+// max_concurrent_requests limits parallel HTTP fetches.
+func TestMaxConcurrentRequestsIntegrationLimitsConcurrency(t *testing.T) {
+	m := &MesiMiddleware{MaxConcurrentRequests: 2}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	m.sharedTransport = &http.Transport{}
+
+	// Track concurrent fragment server calls
+	var maxConcurrent int32
+	var currentConcurrent int32
+
+	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := atomic.AddInt32(&currentConcurrent, 1)
+		// Track max
+		for {
+			old := atomic.LoadInt32(&maxConcurrent)
+			if cur <= old || atomic.CompareAndSwapInt32(&maxConcurrent, old, cur) {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+		atomic.AddInt32(&currentConcurrent, -1)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+	defer fragmentServer.Close()
+
+	// 4 includes, max_concurrent_requests=2 → max 2 concurrent
+	var esiParts []string
+	for i := 0; i < 4; i++ {
+		esiParts = append(esiParts, `<esi:include src="`+fragmentServer.URL+`/frag" />`)
+	}
+	esiContent := `<html><body>` + strings.Join(esiParts, "") + `</body></html>`
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(esiContent))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+
+	peak := atomic.LoadInt32(&maxConcurrent)
+	if peak > 2 {
+		t.Errorf("expected max 2 concurrent requests, got %d", peak)
 	}
 }

@@ -83,6 +83,11 @@ type MesiMiddleware struct {
 	// Host matching: exact match or subdomain suffix (sub.example.com matches example.com).
 	AllowedHosts []string `json:"allowed_hosts,omitempty"`
 
+	// MaxConcurrentRequests limits the number of concurrent HTTP requests
+	// made during ESI processing. When set, a semaphore limits parallelism.
+	// 0 = unlimited (backward compatible).
+	MaxConcurrentRequests int `json:"max_concurrent_requests,omitempty"`
+
 	// Timeout is the maximum time allowed for ESI processing, including
 	// all remote fragment fetches. Parsed by time.ParseDuration at
 	// Provision time. Default: "10s".
@@ -202,14 +207,15 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 			depth = *m.MaxDepth
 		}
 		config := mesi.EsiParserConfig{
-			Context:             r.Context(),
-			MaxDepth:            uint(depth),
-			DefaultUrl:          middleware.GetDefaultUrl(r),
-			Timeout:             m.parsedTimeout,
-			BlockPrivateIPs:     true,
-			AllowedHosts:        m.AllowedHosts,
-			IncludeErrorMarker:  m.IncludeErrorMarker,
-			Debug:               m.Debug,
+			Context:                r.Context(),
+			MaxDepth:               uint(depth),
+			DefaultUrl:             middleware.GetDefaultUrl(r),
+			Timeout:                m.parsedTimeout,
+			BlockPrivateIPs:        true,
+			AllowedHosts:           m.AllowedHosts,
+			IncludeErrorMarker:     m.IncludeErrorMarker,
+			Debug:                  m.Debug,
+			MaxConcurrentRequests:  m.MaxConcurrentRequests,
 		}
 
 		if m.cache != nil {
@@ -296,6 +302,15 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				m.Timeout = d.Val()
+			case "max_concurrent_requests":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				var err error
+				m.MaxConcurrentRequests, err = strconv.Atoi(d.Val())
+				if err != nil {
+					return d.Errf("invalid max_concurrent_requests %q: %v", d.Val(), err)
+				}
 		case "shared_http_client":
 			m.SharedHTTPClient = true
 		case "allowed_hosts":
