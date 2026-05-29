@@ -10,19 +10,18 @@ import (
 
 	"github.com/crazy-goat/go-mesi/mesi"
 	"github.com/crazy-goat/go-mesi/middleware"
-	"github.com/redis/go-redis/v9"
 )
 
 const PluginName = "mesi"
 
 type Config struct {
-	MaxDepth          int    `json:"maxDepth" yaml:"maxDepth"`
-	CacheBackend      string `json:"cacheBackend" yaml:"cacheBackend"`
-	CacheTTL          string `json:"cacheTTL" yaml:"cacheTTL"`
-	CacheSize         int    `json:"cacheSize" yaml:"cacheSize"`
-	CacheRedisAddr    string `json:"cacheRedisAddr" yaml:"cacheRedisAddr"`
+	MaxDepth           int    `json:"maxDepth" yaml:"maxDepth"`
+	CacheBackend       string `json:"cacheBackend" yaml:"cacheBackend"`
+	CacheTTL           string `json:"cacheTTL" yaml:"cacheTTL"`
+	CacheSize          int    `json:"cacheSize" yaml:"cacheSize"`
+	CacheRedisAddr     string `json:"cacheRedisAddr" yaml:"cacheRedisAddr"`
 	CacheRedisPassword string `json:"cacheRedisPassword" yaml:"cacheRedisPassword"`
-	CacheRedisDB      int    `json:"cacheRedisDb" yaml:"cacheRedisDb"`
+	CacheRedisDB       int    `json:"cacheRedisDb" yaml:"cacheRedisDb"`
 }
 
 func CreateConfig() *Config {
@@ -32,12 +31,12 @@ func CreateConfig() *Config {
 }
 
 type ResponsePlugin struct {
-	next        http.Handler
-	name        string
-	config      *Config
-	cache       mesi.Cache
-	cacheTTL    time.Duration
-	redisClient *redis.Client
+	next     http.Handler
+	name     string
+	config   *Config
+	cache    mesi.Cache
+	cacheTTL time.Duration
+	closeFn  func() error
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
@@ -55,7 +54,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		config: config,
 	}
 
-	// Parse TTL if cache backend is configured
 	if config.CacheBackend != "" && config.CacheTTL != "" {
 		d, err := time.ParseDuration(config.CacheTTL)
 		if err != nil {
@@ -64,37 +62,14 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		p.cacheTTL = d
 	}
 
-	// Initialize cache backend
-	switch config.CacheBackend {
-	case "":
-		// no cache
-	case "memory":
-		size := config.CacheSize
-		if size <= 0 {
-			size = 10000
-		}
-		p.cache = mesi.NewMemoryCache(size, p.cacheTTL)
-	case "redis":
-		addr := config.CacheRedisAddr
-		if addr == "" {
-			addr = "localhost:6379"
-		}
-		rdb := redis.NewClient(&redis.Options{
-			Addr:     addr,
-			Password: config.CacheRedisPassword,
-			DB:       config.CacheRedisDB,
-		})
-		p.redisClient = rdb
-		p.cache = mesi.NewRedisCache(rdb, p.cacheTTL)
-	default:
-		return nil, fmt.Errorf("unknown cacheBackend: %s", config.CacheBackend)
+	if err := initCache(p); err != nil {
+		return nil, err
 	}
 
 	return p, nil
 }
 
 func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-
 	customWriter := middleware.NewResponseWriter(rw)
 
 	_, ok := req.Header["Surrogate-Capability"]
@@ -143,8 +118,8 @@ func (p *ResponsePlugin) Name() string {
 }
 
 func (p *ResponsePlugin) Close() error {
-	if p.redisClient != nil {
-		return p.redisClient.Close()
+	if p.closeFn != nil {
+		return p.closeFn()
 	}
 	return nil
 }

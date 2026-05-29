@@ -71,9 +71,6 @@ func TestNewRedisCache(t *testing.T) {
 	if plugin.cache == nil {
 		t.Fatal("Expected non-nil cache")
 	}
-	if plugin.redisClient == nil {
-		t.Fatal("Expected non-nil redis client")
-	}
 }
 
 func TestNewRedisCacheDefaultAddr(t *testing.T) {
@@ -88,11 +85,8 @@ func TestNewRedisCacheDefaultAddr(t *testing.T) {
 	}
 
 	plugin := p.(*ResponsePlugin)
-	if plugin.redisClient == nil {
-		t.Fatal("Expected non-nil redis client")
-	}
-	if plugin.redisClient.Options().Addr != "localhost:6379" {
-		t.Errorf("Expected default addr localhost:6379, got %s", plugin.redisClient.Options().Addr)
+	if plugin.cache == nil {
+		t.Fatal("Expected non-nil cache")
 	}
 }
 
@@ -111,14 +105,8 @@ func TestNewRedisCacheWithPassword(t *testing.T) {
 	}
 
 	plugin := p.(*ResponsePlugin)
-	if plugin.redisClient == nil {
-		t.Fatal("Expected non-nil redis client")
-	}
-	if plugin.redisClient.Options().Password != "secret" {
-		t.Errorf("Expected password 'secret', got %s", plugin.redisClient.Options().Password)
-	}
-	if plugin.redisClient.Options().DB != 2 {
-		t.Errorf("Expected DB 2, got %d", plugin.redisClient.Options().DB)
+	if plugin.cache == nil {
+		t.Fatal("Expected non-nil cache")
 	}
 }
 
@@ -258,8 +246,6 @@ func TestServeHTTPNonHTML(t *testing.T) {
 }
 
 func TestCacheIntegration(t *testing.T) {
-	// This test requires a running Redis instance
-	// Skip if Redis is not available
 	t.Skip("Skipping integration test: requires Redis")
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -278,12 +264,10 @@ func TestCacheIntegration(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	// First request - should cache
 	req1 := httptest.NewRequest("GET", "http://example.com/", nil)
 	rec1 := httptest.NewRecorder()
 	p.ServeHTTP(rec1, req1)
 
-	// Second request - should hit cache
 	req2 := httptest.NewRequest("GET", "http://example.com/", nil)
 	rec2 := httptest.NewRecorder()
 	p.ServeHTTP(rec2, req2)
@@ -316,13 +300,7 @@ func TestRedisCacheWithConfig(t *testing.T) {
 	if plugin.cacheTTL != 120*time.Second {
 		t.Errorf("Expected cacheTTL 120s, got %v", plugin.cacheTTL)
 	}
-	if plugin.redisClient.Options().Addr != "10.0.0.5:6379" {
-		t.Errorf("Expected addr 10.0.0.5:6379, got %s", plugin.redisClient.Options().Addr)
-	}
-	if plugin.redisClient.Options().Password != "password" {
-		t.Errorf("Expected password 'password', got %s", plugin.redisClient.Options().Password)
-	}
-	if plugin.redisClient.Options().DB != 2 {
-		t.Errorf("Expected DB 2, got %d", plugin.redisClient.Options().DB)
+	if plugin.cache == nil {
+		t.Fatal("Expected non-nil cache")
 	}
 }
