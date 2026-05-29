@@ -12,8 +12,16 @@ import (
 	"github.com/crazy-goat/go-mesi/middleware"
 )
 
+const PluginName = "mesi"
+
 type Config struct {
-	MaxDepth int `json:"maxDepth" yaml:"maxDepth"`
+	MaxDepth           int    `json:"maxDepth" yaml:"maxDepth"`
+	CacheBackend       string `json:"cacheBackend" yaml:"cacheBackend"`
+	CacheTTL           string `json:"cacheTTL" yaml:"cacheTTL"`
+	CacheSize          int    `json:"cacheSize" yaml:"cacheSize"`
+	CacheRedisAddr     string `json:"cacheRedisAddr" yaml:"cacheRedisAddr"`
+	CacheRedisPassword string `json:"cacheRedisPassword" yaml:"cacheRedisPassword"`
+	CacheRedisDB       int    `json:"cacheRedisDb" yaml:"cacheRedisDb"`
 }
 
 func CreateConfig() *Config {
@@ -23,9 +31,12 @@ func CreateConfig() *Config {
 }
 
 type ResponsePlugin struct {
-	next   http.Handler
-	name   string
-	config *Config
+	next     http.Handler
+	name     string
+	config   *Config
+	cache    mesi.Cache
+	cacheTTL time.Duration
+	closeFn  func() error
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
@@ -37,15 +48,28 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		config.MaxDepth = 5
 	}
 
-	return &ResponsePlugin{
+	p := &ResponsePlugin{
 		next:   next,
 		name:   name,
 		config: config,
-	}, nil
+	}
+
+	if config.CacheBackend != "" && config.CacheTTL != "" {
+		d, err := time.ParseDuration(config.CacheTTL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cacheTTL %q: %w", config.CacheTTL, err)
+		}
+		p.cacheTTL = d
+	}
+
+	if err := initCache(p); err != nil {
+		return nil, err
+	}
+
+	return p, nil
 }
 
 func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-
 	customWriter := middleware.NewResponseWriter(rw)
 
 	_, ok := req.Header["Surrogate-Capability"]
@@ -65,6 +89,12 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			Timeout:         10 * time.Second,
 			BlockPrivateIPs: true,
 		}
+
+		if p.cache != nil {
+			config.Cache = p.cache
+			config.CacheTTL = p.cacheTTL
+		}
+
 		processedResponse := mesi.MESIParse(
 			customWriter.Body().String(),
 			config,
@@ -81,4 +111,15 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	rw.Write(customWriter.Body().Bytes())
+}
+
+func (p *ResponsePlugin) Name() string {
+	return PluginName
+}
+
+func (p *ResponsePlugin) Close() error {
+	if p.closeFn != nil {
+		return p.closeFn()
+	}
+	return nil
 }

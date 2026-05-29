@@ -34,3 +34,88 @@ http:
     test-server:
     # some service config here
 ```
+
+## Cache Backend
+
+The plugin supports multiple cache backends for ESI fragment caching:
+
+### Memory Cache
+
+In-memory LRU cache with configurable size and TTL:
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          maxDepth: 5
+          cacheBackend: memory
+          cacheSize: 10000
+          cacheTTL: "60s"
+```
+
+### Redis Cache
+
+Redis-backed cache for sharing ESI fragments across Traefik instances:
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          maxDepth: 5
+          cacheBackend: redis
+          cacheTTL: "120s"
+          cacheRedisAddr: "10.0.0.5:6379"
+          cacheRedisPassword: "your-password"
+          cacheRedisDb: 0
+```
+
+#### Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis` |
+| `cacheTTL` | string | `""` | Cache TTL as Go duration (e.g., `"60s"`, `"5m"`) |
+| `cacheSize` | int | `10000` | Max entries for memory cache |
+| `cacheRedisAddr` | string | `"localhost:6379"` | Redis server address |
+| `cacheRedisPassword` | string | `""` | Redis AUTH password |
+| `cacheRedisDb` | int | `0` | Redis database number |
+
+#### Redis Features
+
+- **Cache sharing**: Share ESI fragments across multiple Traefik instances
+- **Persistence**: Cache survives Traefik restarts
+- **TTL support**: Automatic expiration of cached entries
+- **Connection pooling**: Managed by go-redis library
+
+#### Redis Key Format
+
+Cached entries are stored with key format: `mesi:<url>`
+
+Example: `mesi:http://backend/fragment`
+
+#### Redis Connection Failure
+
+When Redis is unreachable, the plugin continues to work in degraded mode:
+- ESI processing continues without caching
+- Origin server is hit for each request
+- When Redis becomes available, caching resumes
+
+## Development
+
+### Building
+
+```bash
+go build -tags redis ./...
+```
+
+### Testing
+
+```bash
+# Run unit tests (requires Redis)
+go test -tags redis -v ./...
+
+# Run integration tests (requires Redis running)
+go test -tags redis -v -run TestCacheIntegration ./...
+```
