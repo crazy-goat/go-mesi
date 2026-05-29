@@ -3,6 +3,7 @@ module github.com/crazy-goat/go-mesi/servers/traefik
 go 1.24
 
 require (
+	github.com/bradfitz/gomemcache v0.0.0-20250403215159-8d39553ac7cf
 	github.com/crazy-goat/go-mesi v0.0.0-20250204204515-1f5435b2af61
 	github.com/redis/go-redis/v9 v9.20.0
 )
