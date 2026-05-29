@@ -823,3 +823,300 @@ func TestCacheKeyTemplateComplexPattern(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", rec.Code)
 	}
 }
+
+// --- Redis Cache Backend Unit Tests ---
+
+// TestUnmarshalCaddyfileCacheRedisAddr parses cache_redis_addr directive.
+func TestUnmarshalCaddyfileCacheRedisAddr(t *testing.T) {
+	input := `mesi {
+		cache_redis_addr 10.0.0.5:6379
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.CacheRedisAddr != "10.0.0.5:6379" {
+		t.Errorf("expected CacheRedisAddr='10.0.0.5:6379', got '%s'", m.CacheRedisAddr)
+	}
+}
+
+// TestUnmarshalCaddyfileCacheRedisPassword parses cache_redis_password directive.
+func TestUnmarshalCaddyfileCacheRedisPassword(t *testing.T) {
+	input := `mesi {
+		cache_redis_password s3cret
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.CacheRedisPassword != "s3cret" {
+		t.Errorf("expected CacheRedisPassword='s3cret', got '%s'", m.CacheRedisPassword)
+	}
+}
+
+// TestUnmarshalCaddyfileCacheRedisDB parses cache_redis_db directive.
+func TestUnmarshalCaddyfileCacheRedisDB(t *testing.T) {
+	input := `mesi {
+		cache_redis_db 2
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.CacheRedisDB != 2 {
+		t.Errorf("expected CacheRedisDB=2, got %d", m.CacheRedisDB)
+	}
+}
+
+// TestUnmarshalCaddyfileCacheRedisDBInvalid verifies that cache_redis_db with
+// a non-numeric value returns an error.
+func TestUnmarshalCaddyfileCacheRedisDBInvalid(t *testing.T) {
+	input := `mesi {
+		cache_redis_db not-a-number
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for invalid cache_redis_db")
+	}
+}
+
+// TestUnmarshalCaddyfileCacheRedisAddrNoArg verifies that cache_redis_addr
+// without argument returns ArgErr.
+func TestUnmarshalCaddyfileCacheRedisAddrNoArg(t *testing.T) {
+	input := `mesi {
+		cache_redis_addr
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for cache_redis_addr without argument")
+	}
+}
+
+// TestUnmarshalCaddyfileCacheRedisPasswordNoArg verifies that cache_redis_password
+// without argument returns ArgErr.
+func TestUnmarshalCaddyfileCacheRedisPasswordNoArg(t *testing.T) {
+	input := `mesi {
+		cache_redis_password
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for cache_redis_password without argument")
+	}
+}
+
+// TestUnmarshalCaddyfileCacheRedisDBNoArg verifies that cache_redis_db
+// without argument returns ArgErr.
+func TestUnmarshalCaddyfileCacheRedisDBNoArg(t *testing.T) {
+	input := `mesi {
+		cache_redis_db
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for cache_redis_db without argument")
+	}
+}
+
+// TestRedisBackendProvision verifies that cache_backend="redis" creates
+// a non-nil cache and redisClient in Provision().
+func TestRedisBackendProvision(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:    "redis",
+		CacheRedisAddr:  "localhost:6379",
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil when CacheBackend is 'redis'")
+	}
+	if m.redisClient == nil {
+		t.Fatal("redisClient should be non-nil when CacheBackend is 'redis'")
+	}
+	// Cleanup
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// TestRedisBackendDefaultAddr verifies that an empty CacheRedisAddr defaults
+// to "localhost:6379".
+func TestRedisBackendDefaultAddr(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend: "redis",
+		// CacheRedisAddr left empty — should default to localhost:6379
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil")
+	}
+	if m.redisClient == nil {
+		t.Fatal("redisClient should be non-nil")
+	}
+	// Cleanup closes the Redis client
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// TestRedisBackendWithPassword verifies that CacheRedisPassword is passed
+// through to the Redis client options (we verify by checking the client exists).
+func TestRedisBackendProvisionWithPassword(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:       "redis",
+		CacheRedisAddr:     "10.0.0.5:6379",
+		CacheRedisPassword: "hunter2",
+		CacheRedisDB:       1,
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil")
+	}
+	if m.redisClient == nil {
+		t.Fatal("redisClient should be non-nil")
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// TestRedisBackendWithTTL verifies that cache_ttl is parsed when
+// cache_backend is "redis".
+func TestRedisBackendProvisionWithTTL(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:   "redis",
+		CacheRedisAddr: "localhost:6379",
+		CacheTTL:       "120s",
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil")
+	}
+	if m.cacheTTL != 120*time.Second {
+		t.Errorf("expected cacheTTL=120s, got %v", m.cacheTTL)
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// TestRedisBackendInvalidTTL verifies that Provision() returns an error for
+// invalid cache_ttl when cache_backend is "redis".
+func TestRedisBackendInvalidTTL(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:   "redis",
+		CacheRedisAddr: "localhost:6379",
+		CacheTTL:       "not-a-duration",
+	}
+	err := m.Provision(caddy.Context{})
+	if err == nil {
+		t.Fatal("Provision() should return error for invalid cache_ttl")
+	}
+	if !strings.Contains(err.Error(), "invalid cache_ttl") {
+		t.Errorf("expected 'invalid cache_ttl' error, got: %v", err)
+	}
+}
+
+// TestRedisBackendCleanup verifies that Cleanup() closes the Redis client
+// and that double-Cleanup is safe (idempotent).
+func TestRedisBackendCleanup(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:   "redis",
+		CacheRedisAddr: "localhost:6379",
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.redisClient == nil {
+		t.Fatal("redisClient should be non-nil after Provision")
+	}
+
+	// First Cleanup should succeed
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+
+	// Second Cleanup should be safe (idempotent)
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() (second call) returned error: %v", err)
+	}
+}
+
+// TestRedisBackendCleanupWithoutProvision ensures Cleanup is safe
+// when Provision was never called (redisClient is nil).
+func TestRedisBackendCleanupWithoutProvision(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:   "redis",
+		CacheRedisAddr: "localhost:6379",
+	}
+	// Cleanup before Provision — should be a no-op
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// TestRedisBackendServeHTTP verifies that ServeHTTP works with Redis backend
+// (no crash, cache is available).
+func TestRedisBackendServeHTTP(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:   "redis",
+		CacheRedisAddr: "localhost:6379",
+		CacheTTL:       "60s",
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil")
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>redis cached</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "redis cached") {
+		t.Errorf("Expected body to contain 'redis cached', got: %s", body)
+	}
+
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}

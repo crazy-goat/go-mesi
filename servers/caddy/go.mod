@@ -4,7 +4,10 @@ go 1.25.0
 
 toolchain go1.26.2
 
-require github.com/caddyserver/caddy/v2 v2.11.2
+require (
+	github.com/caddyserver/caddy/v2 v2.11.2
+	github.com/redis/go-redis/v9 v9.18.0
+)
 
 require github.com/crazy-goat/go-mesi v0.4.1
 
@@ -82,7 +85,6 @@ require (
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.0 // indirect
-	github.com/redis/go-redis/v9 v9.18.0 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect

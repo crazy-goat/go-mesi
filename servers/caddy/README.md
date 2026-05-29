@@ -69,3 +69,68 @@ protection (private IPs are blocked).
 Note: If adding Caddyfile directives that affect transport behaviour (e.g.
 `block_private_ips`, `allowed_hosts`), `Provision()` must recreate the
 shared transport to respect the new settings.
+
+### `cache_backend memory`
+
+Enables an in-process LRU cache for ESI fragments. Shared-nothing — each Caddy
+instance has its own cache.
+
+```
+mesi {
+    cache_backend memory
+    cache_size 10000       # optional, default 10000
+    cache_ttl 60s          # optional, default no expiry
+}
+```
+
+| Subdirective | Description |
+|---|---|
+| `cache_size` | Max entries in the LRU cache. Default: 10000. |
+| `cache_ttl` | Duration string (`60s`, `5m`, `1h`). Default: no expiry. |
+
+### `cache_backend redis`
+
+Enables a Redis-backed cache shared across Caddy instances. Ideal for
+horizontally scaled deployments.
+
+```
+mesi {
+    cache_backend redis
+    cache_redis_addr   10.0.0.5:6379
+    cache_redis_password s3cret   # optional
+    cache_redis_db     2           # optional, default 0
+    cache_ttl          120s        # optional, default no expiry
+}
+```
+
+| Subdirective | Description |
+|---|---|
+| `cache_redis_addr` | Redis server address as `host:port`. Required. Default: `localhost:6379`. |
+| `cache_redis_password` | Redis AUTH password. Optional. |
+| `cache_redis_db` | Redis database number. Optional. Default: 0. |
+| `cache_ttl` | Duration string (`60s`, `5m`, `1h`). Optional. Default: no expiry. |
+
+**Notes:**
+- `go-redis` pools connections internally. No extra pool configuration needed.
+- Password in Caddyfile — ensure proper file permissions (e.g. `chmod 600`).
+- Key prefix: `mesi:<url>`.
+- Redis unreachable → ESI falls back to origin fetch (degraded, no crash).
+
+### `cache_key_template`
+
+Custom cache key template with placeholders. Available for all cache backends.
+
+```
+mesi {
+    cache_backend memory
+    cache_key_template "mesi:${url}:lang=${header:Accept-Language}"
+}
+```
+
+| Placeholder | Description |
+|---|---|
+| `${url}` | Full URL of the ESI include |
+| `${header:Name}` | Request header value (case-insensitive) |
+| `${cookie:Name}` | Request cookie value (case-insensitive) |
+
+When unset, the URL-only default key is used.
