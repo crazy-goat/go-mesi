@@ -1642,3 +1642,182 @@ func TestMaxDepthWithOtherDirectives(t *testing.T) {
 		t.Errorf("expected CacheTTL='60s', got '%s'", m.CacheTTL)
 	}
 }
+
+// --- Timeout Tests ---
+
+// TestTimeoutDefault verifies that when Timeout is empty,
+// parsedTimeout defaults to 10s.
+func TestTimeoutDefault(t *testing.T) {
+	m := &MesiMiddleware{}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.parsedTimeout != 10*time.Second {
+		t.Errorf("expected parsedTimeout=10s, got %v", m.parsedTimeout)
+	}
+}
+
+// TestTimeoutCustom verifies that a valid timeout string is parsed.
+func TestTimeoutCustom(t *testing.T) {
+	m := &MesiMiddleware{Timeout: "30s"}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.parsedTimeout != 30*time.Second {
+		t.Errorf("expected parsedTimeout=30s, got %v", m.parsedTimeout)
+	}
+}
+
+// TestTimeoutMinutes verifies that minute-based durations work.
+func TestTimeoutMinutes(t *testing.T) {
+	m := &MesiMiddleware{Timeout: "2m"}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.parsedTimeout != 2*time.Minute {
+		t.Errorf("expected parsedTimeout=2m, got %v", m.parsedTimeout)
+	}
+}
+
+// TestTimeoutInvalid verifies that Provision() returns an error for
+// invalid timeout values.
+func TestTimeoutInvalid(t *testing.T) {
+	m := &MesiMiddleware{Timeout: "not-a-duration"}
+	err := m.Provision(caddy.Context{})
+	if err == nil {
+		t.Fatal("Provision() should return error for invalid timeout")
+	}
+	if !strings.Contains(err.Error(), "invalid timeout") {
+		t.Errorf("expected 'invalid timeout' error, got: %v", err)
+	}
+}
+
+// TestTimeoutZero verifies that Provision() returns an error for zero timeout.
+func TestTimeoutZero(t *testing.T) {
+	m := &MesiMiddleware{Timeout: "0s"}
+	err := m.Provision(caddy.Context{})
+	if err == nil {
+		t.Fatal("Provision() should return error for zero timeout")
+	}
+	if !strings.Contains(err.Error(), "timeout must be positive") {
+		t.Errorf("expected 'timeout must be positive' error, got: %v", err)
+	}
+}
+
+// TestTimeoutNegative verifies that Provision() returns an error for negative timeout.
+func TestTimeoutNegative(t *testing.T) {
+	m := &MesiMiddleware{Timeout: "-5s"}
+	err := m.Provision(caddy.Context{})
+	if err == nil {
+		t.Fatal("Provision() should return error for negative timeout")
+	}
+	if !strings.Contains(err.Error(), "timeout must be positive") {
+		t.Errorf("expected 'timeout must be positive' error, got: %v", err)
+	}
+}
+
+// TestTimeoutServeHTTP verifies that the configured timeout is used in
+// EsiParserConfig when ServeHTTP processes ESI content.
+func TestTimeoutServeHTTP(t *testing.T) {
+	m := &MesiMiddleware{Timeout: "25s"}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.parsedTimeout != 25*time.Second {
+		t.Fatalf("expected parsedTimeout=25s, got %v", m.parsedTimeout)
+	}
+
+	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fragment"))
+	}))
+	defer fragmentServer.Close()
+
+	esiContent := `<html><body><esi:include src="` + fragmentServer.URL + `/frag" /></body></html>`
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(esiContent))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+// --- Caddyfile Parsing: Timeout ---
+
+// TestUnmarshalCaddyfileTimeout parses timeout directive.
+func TestUnmarshalCaddyfileTimeout(t *testing.T) {
+	input := `mesi {
+		timeout 30s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.Timeout != "30s" {
+		t.Errorf("expected Timeout='30s', got '%s'", m.Timeout)
+	}
+}
+
+// TestUnmarshalCaddyfileTimeoutNoArg verifies that timeout without
+// argument returns ArgErr.
+func TestUnmarshalCaddyfileTimeoutNoArg(t *testing.T) {
+	input := `mesi {
+		timeout
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for timeout without argument")
+	}
+}
+
+// --- Integration: Timeout + Other Directives ---
+
+// TestTimeoutIntegrationParseAndProvision verifies the full flow:
+// Caddyfile parsing → Provision → Cleanup with timeout.
+func TestTimeoutIntegrationParseAndProvision(t *testing.T) {
+	input := `mesi {
+		timeout 20s
+		max_depth 3
+		shared_http_client
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.Timeout != "20s" {
+		t.Errorf("expected Timeout='20s', got '%s'", m.Timeout)
+	}
+	if m.MaxDepth == nil || *m.MaxDepth != 3 {
+		t.Errorf("expected MaxDepth=3, got %v", m.MaxDepth)
+	}
+	if !m.SharedHTTPClient {
+		t.Error("SharedHTTPClient should be true")
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.parsedTimeout != 20*time.Second {
+		t.Errorf("expected parsedTimeout=20s, got %v", m.parsedTimeout)
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}

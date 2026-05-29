@@ -68,11 +68,17 @@ type MesiMiddleware struct {
 	// Required when CacheBackend is "memcached".
 	CacheMemcachedServers []string `json:"cache_memcached_servers,omitempty"`
 
-	sharedTransport  *http.Transport  `json:"-"`
-	cache            mesi.Cache       `json:"-"`
-	cacheTTL         time.Duration    `json:"-"`
-	redisClient      *redis.Client    `json:"-"`
-	memcachedClient  *memcache.Client `json:"-"`
+	// Timeout is the maximum time allowed for ESI processing, including
+	// all remote fragment fetches. Parsed by time.ParseDuration at
+	// Provision time. Default: "10s".
+	Timeout string `json:"timeout,omitempty"`
+
+	sharedTransport *http.Transport  `json:"-"`
+	cache           mesi.Cache       `json:"-"`
+	cacheTTL        time.Duration    `json:"-"`
+	parsedTimeout   time.Duration    `json:"-"`
+	redisClient     *redis.Client    `json:"-"`
+	memcachedClient *memcache.Client `json:"-"`
 }
 
 func (m *MesiMiddleware) CaddyModule() caddy.ModuleInfo {
@@ -97,6 +103,19 @@ func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("invalid cache_ttl %q: %w", m.CacheTTL, err)
 		}
 		m.cacheTTL = d
+	}
+
+	// Parse timeout.
+	m.parsedTimeout = 10 * time.Second
+	if m.Timeout != "" {
+		d, err := time.ParseDuration(m.Timeout)
+		if err != nil {
+			return fmt.Errorf("invalid timeout %q: %w", m.Timeout, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("timeout must be positive, got %q", m.Timeout)
+		}
+		m.parsedTimeout = d
 	}
 
 	switch m.CacheBackend {
@@ -171,7 +190,7 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 			Context:         r.Context(),
 			MaxDepth:        uint(depth),
 			DefaultUrl:      middleware.GetDefaultUrl(r),
-			Timeout:         10 * time.Second,
+			Timeout:         m.parsedTimeout,
 			BlockPrivateIPs: true,
 		}
 
@@ -254,6 +273,11 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid max_depth %q: %v", d.Val(), err)
 				}
 				m.MaxDepth = &v
+			case "timeout":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				m.Timeout = d.Val()
 			case "shared_http_client":
 				m.SharedHTTPClient = true
 			case "cache_backend":
