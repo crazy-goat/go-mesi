@@ -38,6 +38,7 @@ http:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `max_depth` | int | `5` | Maximum ESI nesting depth. Set to `0` to disable ESI processing. |
+| `shared_http_client` | bool | `false` | Reuse a single HTTP client for all ESI includes (SSRF-safe, connection pooling). |
 | `timeout` | string | `"10s"` | Maximum time for ESI processing (Go duration format). |
 | `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
 | `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`. |
@@ -46,6 +47,16 @@ http:
 | `cache_redis_addr` | string | `"localhost:6379"` | Redis server address (host:port). |
 | `cache_redis_password` | string | `""` | Redis AUTH password. |
 | `cache_redis_db` | int | `0` | Redis database number. |
+
+#### Shared HTTP Client
+Enables TCP connection reuse across ESI includes. The shared client uses an SSRF-safe transport that blocks private IPs.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      shared_http_client: true
+```
 
 ### Cache backends
 
