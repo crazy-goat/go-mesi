@@ -1821,3 +1821,161 @@ func TestTimeoutIntegrationParseAndProvision(t *testing.T) {
 		t.Fatalf("Cleanup() returned error: %v", err)
 	}
 }
+
+// --- IncludeErrorMarker Tests ---
+
+// TestUnmarshalCaddyfileIncludeErrorMarker parses the include_error_marker directive.
+func TestUnmarshalCaddyfileIncludeErrorMarker(t *testing.T) {
+	input := `mesi {
+		include_error_marker "<!-- esi error -->"
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.IncludeErrorMarker != "<!-- esi error -->" {
+		t.Errorf("expected IncludeErrorMarker='<!-- esi error -->', got '%s'", m.IncludeErrorMarker)
+	}
+}
+
+// TestUnmarshalCaddyfileIncludeErrorMarkerNoArg verifies that include_error_marker
+// without argument returns ArgErr.
+func TestUnmarshalCaddyfileIncludeErrorMarkerNoArg(t *testing.T) {
+	input := `mesi {
+		include_error_marker
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for include_error_marker without argument")
+	}
+}
+
+// TestUnmarshalCaddyfileIncludeErrorMarkerEmpty verifies that include_error_marker
+// with an empty string sets the marker to empty.
+func TestUnmarshalCaddyfileIncludeErrorMarkerEmpty(t *testing.T) {
+	input := `mesi {
+		include_error_marker ""
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.IncludeErrorMarker != "" {
+		t.Errorf("expected IncludeErrorMarker='', got '%s'", m.IncludeErrorMarker)
+	}
+}
+
+// TestIncludeErrorMarkerDefaultUnset verifies that when include_error_marker
+// is not set, IncludeErrorMarker is empty.
+func TestIncludeErrorMarkerDefaultUnset(t *testing.T) {
+	m := &MesiMiddleware{}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.IncludeErrorMarker != "" {
+		t.Errorf("IncludeErrorMarker should be empty by default, got '%s'", m.IncludeErrorMarker)
+	}
+}
+
+// TestIncludeErrorMarkerProvision verifies that Provision works with IncludeErrorMarker set.
+func TestIncludeErrorMarkerProvision(t *testing.T) {
+	m := &MesiMiddleware{IncludeErrorMarker: "<!-- ESI_ERROR -->"}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.IncludeErrorMarker != "<!-- ESI_ERROR -->" {
+		t.Errorf("expected IncludeErrorMarker='<!-- ESI_ERROR -->', got '%s'", m.IncludeErrorMarker)
+	}
+}
+
+// TestIncludeErrorMarkerServeHTTP verifies that the configured IncludeErrorMarker
+// is passed to EsiParserConfig in ServeHTTP.
+func TestIncludeErrorMarkerServeHTTP(t *testing.T) {
+	m := &MesiMiddleware{IncludeErrorMarker: "<!-- esi error -->"}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fragment"))
+	}))
+	defer fragmentServer.Close()
+
+	esiContent := `<html><body><esi:include src="` + fragmentServer.URL + `/frag" /></body></html>`
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(esiContent))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+// TestIncludeErrorMarkerWithOtherDirectives verifies include_error_marker
+// works alongside other directives.
+func TestIncludeErrorMarkerWithOtherDirectives(t *testing.T) {
+	input := `mesi {
+		max_depth 3
+		include_error_marker "<!-- ESI_FAIL -->"
+		shared_http_client
+		timeout 15s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxDepth == nil || *m.MaxDepth != 3 {
+		t.Errorf("expected MaxDepth=3, got %v", m.MaxDepth)
+	}
+	if m.IncludeErrorMarker != "<!-- ESI_FAIL -->" {
+		t.Errorf("expected IncludeErrorMarker='<!-- ESI_FAIL -->', got '%s'", m.IncludeErrorMarker)
+	}
+	if !m.SharedHTTPClient {
+		t.Error("SharedHTTPClient should be true")
+	}
+	if m.Timeout != "15s" {
+		t.Errorf("expected Timeout='15s', got '%s'", m.Timeout)
+	}
+}
+
+// TestIncludeErrorMarkerIntegrationParseAndProvision verifies the full flow:
+// Caddyfile parsing → Provision → Cleanup with include_error_marker.
+func TestIncludeErrorMarkerIntegrationParseAndProvision(t *testing.T) {
+	input := `mesi {
+		include_error_marker "<!-- esi error: fragment failed -->"
+		max_depth 5
+		timeout 10s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.IncludeErrorMarker != "<!-- esi error: fragment failed -->" {
+		t.Errorf("expected IncludeErrorMarker='<!-- esi error: fragment failed -->', got '%s'", m.IncludeErrorMarker)
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}

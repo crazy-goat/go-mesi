@@ -58,6 +58,11 @@ type MesiMiddleware struct {
 	// When empty, DefaultCacheKey (URL-only) is used.
 	CacheKeyTemplate string `json:"cache_key_template,omitempty"`
 
+	// IncludeErrorMarker is rendered in place of a failed include when no
+	// onerror="continue" and no fallback body is present. Default: "" (silent).
+	// SECURITY: Never include raw errors or URLs in the marker.
+	IncludeErrorMarker string `json:"include_error_marker,omitempty"`
+
 	// CacheRedisAddr is the Redis server address (host:port).
 	// Required when CacheBackend is "redis". Default: "localhost:6379".
 	CacheRedisAddr string `json:"cache_redis_addr,omitempty"`
@@ -189,11 +194,12 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 			depth = *m.MaxDepth
 		}
 		config := mesi.EsiParserConfig{
-			Context:         r.Context(),
-			MaxDepth:        uint(depth),
-			DefaultUrl:      middleware.GetDefaultUrl(r),
-			Timeout:         m.parsedTimeout,
-			BlockPrivateIPs: true,
+			Context:             r.Context(),
+			MaxDepth:            uint(depth),
+			DefaultUrl:          middleware.GetDefaultUrl(r),
+			Timeout:             m.parsedTimeout,
+			BlockPrivateIPs:     true,
+			IncludeErrorMarker:  m.IncludeErrorMarker,
 		}
 
 		if m.cache != nil {
@@ -301,12 +307,17 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				m.CacheTTL = d.Val()
-			case "cache_key_template":
-				if !d.NextArg() {
-					return d.ArgErr()
-				}
-				m.CacheKeyTemplate = d.Val()
-			case "cache_redis_addr":
+		case "cache_key_template":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			m.CacheKeyTemplate = d.Val()
+		case "include_error_marker":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			m.IncludeErrorMarker = d.Val()
+		case "cache_redis_addr":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
