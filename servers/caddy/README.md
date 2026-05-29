@@ -229,3 +229,27 @@ mesi {
   trusted environments (see issue #256).
 - When combined with `shared_http_client`, the shared transport is created with
   SSRF-safe dialer. The `allowed_hosts` check is applied at the ESI parser level.
+
+### `max_concurrent_requests`
+
+Limits the number of concurrent HTTP requests made during ESI processing.
+Without this, a page with 100 `<esi:include>` tags spawns 100 concurrent
+HTTP goroutines, which can overwhelm upstream services or the Caddy instance itself.
+
+```
+mesi {
+    max_concurrent_requests 5
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| `1–N` | At most N concurrent HTTP fetches across all includes in a single request. |
+| `0` | Unlimited (backward compatible default). |
+| absent | Unlimited. |
+
+**Notes:**
+- The limit applies per request — different incoming requests each get their own concurrency slot.
+- This controls HTTP fetch goroutines, not token-processing goroutines (see `max_workers` for that).
+- For pages with many parallel includes, set this to a reasonable value (e.g. `5–20`) to prevent goroutine explosion.
+- Works well with `timeout` to bound both concurrency and latency.
