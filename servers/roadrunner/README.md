@@ -44,6 +44,7 @@ http:
 | `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`. |
 | `cache_size` | int | `10000` | Max entries for memory cache backend. |
 | `cache_ttl` | string | `""` | Default TTL for cached entries, e.g. `"60s"`. |
+| `cache_key_template` | string | `""` | Custom cache key template (see below). |
 | `cache_redis_addr` | string | `"localhost:6379"` | Redis server address (host:port). |
 | `cache_redis_password` | string | `""` | Redis AUTH password. |
 | `cache_redis_db` | int | `0` | Redis database number. |
@@ -85,5 +86,24 @@ http:
       cache_redis_addr: "10.0.0.5:6379"
       cache_redis_db: 2
 ```
+
+#### Cache Key Template
+Customize cache keys based on request headers or cookies. Useful for multi-language sites or A/B testing.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      cache_backend: memory
+      cache_ttl: "60s"
+      cache_key_template: "mesi:${url}:${header:Accept-Language}"
+```
+
+**Template placeholders:**
+- `${url}` — the include URL
+- `${header:Name}` — request header value (supports canonical, lowercase, uppercase forms)
+- `${cookie:Name}` — cookie value (supports canonical, lowercase, uppercase forms)
+
+Unknown placeholders are left as literals.
 
 An example script with the appropriate configuration can be found in the [worker](worker) directory

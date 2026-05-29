@@ -19,6 +19,7 @@ type Config struct {
 	CacheBackend          string   `mapstructure:"cache_backend"`
 	CacheSize             int      `mapstructure:"cache_size"`
 	CacheTTL              string   `mapstructure:"cache_ttl"`
+	CacheKeyTemplate      string   `mapstructure:"cache_key_template"`
 	CacheRedisAddr        string   `mapstructure:"cache_redis_addr"`
 	CacheRedisPassword    string   `mapstructure:"cache_redis_password"`
 	CacheRedisDB          int      `mapstructure:"cache_redis_db"`
@@ -90,10 +91,16 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 				IncludeErrorMarker: p.config.IncludeErrorMarker,
 			}
 
-			if p.cache != nil {
-				config.Cache = p.cache
-				config.CacheTTL = p.cacheTTL
+		if p.cache != nil {
+			config.Cache = p.cache
+			config.CacheTTL = p.cacheTTL
+			if p.config.CacheKeyTemplate != "" {
+				tmpl := p.config.CacheKeyTemplate
+				config.CacheKeyFunc = func(url string) string {
+					return mesi.BuildCacheKey(url, tmpl, r)
+				}
 			}
+		}
 
 			if p.sharedTransport != nil {
 				config.HTTPClient = &http.Client{

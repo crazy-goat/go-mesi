@@ -211,3 +211,32 @@ func TestMiddlewareIncludeErrorMarker(t *testing.T) {
 		t.Errorf("Expected include_error_marker '<!-- esi error -->', got %s", p.config.IncludeErrorMarker)
 	}
 }
+
+func TestInitCacheKeyTemplate(t *testing.T) {
+	config := CreateConfig()
+	config.CacheBackend = "memory"
+	config.CacheTTL = "60s"
+	config.CacheKeyTemplate = "mesi:${url}:${header:Accept-Language}"
+
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if p.config.CacheKeyTemplate != "mesi:${url}:${header:Accept-Language}" {
+		t.Errorf("Expected cache_key_template 'mesi:${url}:${header:Accept-Language}', got %s", p.config.CacheKeyTemplate)
+	}
+}
+
+func TestInitCacheKeyTemplateDefaultEmpty(t *testing.T) {
+	config := CreateConfig()
+	config.CacheBackend = "memory"
+	config.CacheTTL = "60s"
+
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if p.config.CacheKeyTemplate != "" {
+		t.Errorf("Expected empty cache_key_template, got %s", p.config.CacheKeyTemplate)
+	}
+}

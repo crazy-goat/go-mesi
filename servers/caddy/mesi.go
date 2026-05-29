@@ -238,25 +238,7 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 			if m.CacheKeyTemplate != "" {
 				tmpl := m.CacheKeyTemplate
 				config.CacheKeyFunc = func(url string) string {
-					result := strings.ReplaceAll(tmpl, "${url}", url)
-
-					// ${header:Name} substitution
-					// Supports canonical, lowercase, and uppercase forms.
-					for key, vals := range r.Header {
-						val := vals[0]
-						result = strings.ReplaceAll(result, "${header:"+key+"}", val)
-						result = strings.ReplaceAll(result, "${header:"+strings.ToLower(key)+"}", val)
-						result = strings.ReplaceAll(result, "${header:"+strings.ToUpper(key)+"}", val)
-					}
-
-					// ${cookie:Name} substitution
-					for _, c := range r.Cookies() {
-						result = strings.ReplaceAll(result, "${cookie:"+c.Name+"}", c.Value)
-						result = strings.ReplaceAll(result, "${cookie:"+strings.ToLower(c.Name)+"}", c.Value)
-						result = strings.ReplaceAll(result, "${cookie:"+strings.ToUpper(c.Name)+"}", c.Value)
-					}
-
-					return result
+					return mesi.BuildCacheKey(url, tmpl, r)
 				}
 			}
 		}
