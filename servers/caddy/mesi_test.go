@@ -1338,3 +1338,307 @@ func TestMemcachedBackendServeHTTP(t *testing.T) {
 		t.Fatalf("Cleanup() returned error: %v", err)
 	}
 }
+
+// --- MaxDepth Directive Tests ---
+
+// TestUnmarshalCaddyfileMaxDepth parses max_depth directive with valid value.
+func TestUnmarshalCaddyfileMaxDepth(t *testing.T) {
+	input := `mesi {
+		max_depth 3
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxDepth == nil {
+		t.Fatal("MaxDepth should be non-nil after parsing max_depth 3")
+	}
+	if *m.MaxDepth != 3 {
+		t.Errorf("expected MaxDepth=3, got %d", *m.MaxDepth)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxDepthZero parses max_depth 0 (passthrough).
+func TestUnmarshalCaddyfileMaxDepthZero(t *testing.T) {
+	input := `mesi {
+		max_depth 0
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxDepth == nil {
+		t.Fatal("MaxDepth should be non-nil after parsing max_depth 0")
+	}
+	if *m.MaxDepth != 0 {
+		t.Errorf("expected MaxDepth=0 (passthrough), got %d", *m.MaxDepth)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxDepthInvalid verifies that max_depth with
+// a non-numeric value returns an error.
+func TestUnmarshalCaddyfileMaxDepthInvalid(t *testing.T) {
+	input := `mesi {
+		max_depth abc
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for invalid max_depth")
+	}
+	if !strings.Contains(err.Error(), "invalid max_depth") {
+		t.Errorf("expected 'invalid max_depth' error, got: %v", err)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxDepthNoArg verifies that max_depth without
+// argument returns ArgErr.
+func TestUnmarshalCaddyfileMaxDepthNoArg(t *testing.T) {
+	input := `mesi {
+		max_depth
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for max_depth without argument")
+	}
+}
+
+// TestMaxDepthDefaultUnset verifies that when max_depth is not set,
+// MaxDepth is nil and default 5 is used in ServeHTTP.
+func TestMaxDepthDefaultUnset(t *testing.T) {
+	m := &MesiMiddleware{}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.MaxDepth != nil {
+		t.Errorf("MaxDepth should be nil when not set, got %d", *m.MaxDepth)
+	}
+
+	// ServeHTTP with ESI content should use default depth 5
+	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fragment"))
+	}))
+	defer fragmentServer.Close()
+
+	esiContent := `<html><body><esi:include src="` + fragmentServer.URL + `/frag" /></body></html>`
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(esiContent))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+// TestMaxDepthPassthrough verifies that max_depth 0 disables ESI processing
+// (passthrough — includes are not fetched, tags replaced with empty).
+func TestMaxDepthPassthrough(t *testing.T) {
+	depth := 0
+	m := &MesiMiddleware{MaxDepth: &depth}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	fragmentCallCount := 0
+	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fragmentCallCount++
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fragment"))
+	}))
+	defer fragmentServer.Close()
+
+	esiContent := `<html><body><esi:include src="` + fragmentServer.URL + `/frag" /></body></html>`
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(esiContent))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	// ESI should not be fetched — fragment server not called
+	if fragmentCallCount != 0 {
+		t.Errorf("expected 0 fragment calls (passthrough), got %d", fragmentCallCount)
+	}
+	// ESI tag is stripped and replaced with empty (no IncludeErrorMarker set)
+	expected := `<html><body></body></html>`
+	if rec.Body.String() != expected {
+		t.Errorf("expected %q, got %q", expected, rec.Body.String())
+	}
+}
+
+// TestMaxDepthExplicit verifies that max_depth 1 processes 1 level of includes
+// but does not recursively process nested ESI tags in fetched content.
+func TestMaxDepthExplicit(t *testing.T) {
+	depth := 1
+	m := &MesiMiddleware{MaxDepth: &depth}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	// Fragment returns another ESI include (2 levels deep)
+	innerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("inner"))
+	}))
+	defer innerServer.Close()
+
+	outerFragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<esi:include src="` + innerServer.URL + `/inner" />`))
+	}))
+	defer outerFragmentServer.Close()
+
+	esiContent := `<html><body><esi:include src="` + outerFragmentServer.URL + `/outer" /></body></html>`
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(esiContent))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	// Outer is fetched but inner ESI is processed with MaxDepth=0 (ParseOnly),
+	// so inner tag is replaced with empty string
+	expected := `<html><body></body></html>`
+	if rec.Body.String() != expected {
+		t.Errorf("expected %q, got %q", expected, rec.Body.String())
+	}
+}
+
+// TestMaxDepthProvisionDefault verifies Provision works with MaxDepth nil.
+func TestMaxDepthProvisionDefault(t *testing.T) {
+	m := &MesiMiddleware{}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.MaxDepth != nil {
+		t.Errorf("MaxDepth should be nil, got %v", m.MaxDepth)
+	}
+}
+
+// TestMaxDepthIntegrationParseAndProvision verifies the full flow:
+// Caddyfile parsing → Provision with max_depth.
+func TestMaxDepthIntegrationParseAndProvision(t *testing.T) {
+	input := `mesi {
+		max_depth 10
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxDepth == nil {
+		t.Fatal("MaxDepth should be non-nil")
+	}
+	if *m.MaxDepth != 10 {
+		t.Errorf("expected MaxDepth=10, got %d", *m.MaxDepth)
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// TestMaxDepthIntegrationZeroPassthrough verifies the full flow:
+// Caddyfile parsing → Provision → ServeHTTP with max_depth 0 (passthrough).
+func TestMaxDepthIntegrationZeroPassthrough(t *testing.T) {
+	input := `mesi {
+		max_depth 0
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxDepth == nil || *m.MaxDepth != 0 {
+		t.Fatal("MaxDepth should be 0")
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	fragmentCallCount := 0
+	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fragmentCallCount++
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fragment"))
+	}))
+	defer fragmentServer.Close()
+
+	esiContent := `<html><body><esi:include src="` + fragmentServer.URL + `/frag" /></body></html>`
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(esiContent))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+	if err := m.ServeHTTP(rec, req, handler); err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if fragmentCallCount != 0 {
+		t.Errorf("expected 0 fragment calls (passthrough), got %d", fragmentCallCount)
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// TestMaxDepthWithOtherDirectives verifies max_depth works alongside other directives.
+func TestMaxDepthWithOtherDirectives(t *testing.T) {
+	input := `mesi {
+		max_depth 3
+		shared_http_client
+		cache_backend memory
+		cache_ttl 60s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxDepth == nil || *m.MaxDepth != 3 {
+		t.Errorf("expected MaxDepth=3, got %v", m.MaxDepth)
+	}
+	if !m.SharedHTTPClient {
+		t.Error("SharedHTTPClient should be true")
+	}
+	if m.CacheBackend != "memory" {
+		t.Errorf("expected CacheBackend='memory', got '%s'", m.CacheBackend)
+	}
+	if m.CacheTTL != "60s" {
+		t.Errorf("expected CacheTTL='60s', got '%s'", m.CacheTTL)
+	}
+}
