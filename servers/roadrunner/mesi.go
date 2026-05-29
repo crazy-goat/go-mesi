@@ -14,16 +14,17 @@ import (
 const PluginName = "mesi"
 
 type Config struct {
-	MaxDepth           int      `mapstructure:"max_depth"`
-	CacheBackend       string   `mapstructure:"cache_backend"`
-	CacheSize          int      `mapstructure:"cache_size"`
-	CacheTTL           string   `mapstructure:"cache_ttl"`
-	CacheRedisAddr     string   `mapstructure:"cache_redis_addr"`
-	CacheRedisPassword string   `mapstructure:"cache_redis_password"`
-	CacheRedisDB       int      `mapstructure:"cache_redis_db"`
+	MaxDepth              int      `mapstructure:"max_depth"`
+	SharedHTTPClient      bool     `mapstructure:"shared_http_client"`
+	CacheBackend          string   `mapstructure:"cache_backend"`
+	CacheSize             int      `mapstructure:"cache_size"`
+	CacheTTL              string   `mapstructure:"cache_ttl"`
+	CacheRedisAddr        string   `mapstructure:"cache_redis_addr"`
+	CacheRedisPassword    string   `mapstructure:"cache_redis_password"`
+	CacheRedisDB          int      `mapstructure:"cache_redis_db"`
 	CacheMemcachedServers []string `mapstructure:"cache_memcached_servers"`
-	Timeout            string   `mapstructure:"timeout"`
-	IncludeErrorMarker string   `mapstructure:"include_error_marker"`
+	Timeout               string   `mapstructure:"timeout"`
+	IncludeErrorMarker    string   `mapstructure:"include_error_marker"`
 }
 
 func CreateConfig() *Config {
@@ -33,10 +34,11 @@ func CreateConfig() *Config {
 }
 
 type Plugin struct {
-	config   *Config
-	cache    mesi.Cache
-	cacheTTL time.Duration
-	closeFn  func() error
+	config          *Config
+	cache           mesi.Cache
+	cacheTTL        time.Duration
+	sharedTransport *http.Transport
+	closeFn         func() error
 }
 
 func (p *Plugin) Init() error {
@@ -46,6 +48,12 @@ func (p *Plugin) Init() error {
 
 	if p.config.MaxDepth == 0 {
 		p.config.MaxDepth = 5
+	}
+
+	if p.config.SharedHTTPClient {
+		p.sharedTransport = mesi.NewSSRFSafeTransport(mesi.EsiParserConfig{
+			BlockPrivateIPs: true,
+		})
 	}
 
 	if p.config.CacheBackend != "" && p.config.CacheTTL != "" {
@@ -87,6 +95,13 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 				config.CacheTTL = p.cacheTTL
 			}
 
+			if p.sharedTransport != nil {
+				config.HTTPClient = &http.Client{
+					Transport: p.sharedTransport,
+					Timeout:   config.Timeout,
+				}
+			}
+
 			processedResponse := mesi.MESIParse(
 				customWriter.Body().String(),
 				config,
@@ -111,6 +126,9 @@ func (p *Plugin) Name() string {
 }
 
 func (p *Plugin) Close() error {
+	if p.sharedTransport != nil {
+		p.sharedTransport.CloseIdleConnections()
+	}
 	if p.closeFn != nil {
 		return p.closeFn()
 	}
