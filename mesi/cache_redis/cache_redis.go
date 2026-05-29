@@ -1,6 +1,4 @@
-//go:build redis
-
-package mesi
+package cache_redis
 
 import (
 	"context"

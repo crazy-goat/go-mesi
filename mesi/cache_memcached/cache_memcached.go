@@ -1,6 +1,4 @@
-//go:build memcached
-
-package mesi
+package cache_memcached
 
 import (
 	"context"

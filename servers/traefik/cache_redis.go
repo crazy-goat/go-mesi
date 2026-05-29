@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/crazy-goat/go-mesi/mesi"
+	"github.com/crazy-goat/go-mesi/mesi/cache_redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -30,7 +31,7 @@ func initCache(p *ResponsePlugin) error {
 			Password: p.config.CacheRedisPassword,
 			DB:       p.config.CacheRedisDB,
 		})
-		p.cache = mesi.NewRedisCache(rdb, p.cacheTTL)
+		p.cache = cache_redis.NewRedisCache(rdb, p.cacheTTL)
 		p.closeFn = rdb.Close
 		return nil
 	default:
