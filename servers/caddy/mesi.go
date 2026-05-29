@@ -13,6 +13,7 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/crazy-goat/go-mesi/mesi"
 	"github.com/crazy-goat/go-mesi/middleware"
+	"github.com/redis/go-redis/v9"
 )
 
 func init() {
@@ -49,9 +50,18 @@ type MesiMiddleware struct {
 	// When empty, DefaultCacheKey (URL-only) is used.
 	CacheKeyTemplate string `json:"cache_key_template,omitempty"`
 
+	// CacheRedisAddr is the Redis server address (host:port).
+	// Required when CacheBackend is "redis". Default: "localhost:6379".
+	CacheRedisAddr string `json:"cache_redis_addr,omitempty"`
+	// CacheRedisPassword is the Redis AUTH password. Empty means no auth.
+	CacheRedisPassword string `json:"cache_redis_password,omitempty"`
+	// CacheRedisDB is the Redis database number. Default: 0.
+	CacheRedisDB int `json:"cache_redis_db,omitempty"`
+
 	sharedTransport *http.Transport `json:"-"`
 	cache           mesi.Cache      `json:"-"`
 	cacheTTL        time.Duration   `json:"-"`
+	redisClient     *redis.Client   `json:"-"`
 }
 
 func (m *MesiMiddleware) CaddyModule() caddy.ModuleInfo {
@@ -69,22 +79,36 @@ func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
 		})
 	}
 
+	// Parse TTL once — shared across cache backends.
+	if m.CacheBackend != "" && m.CacheTTL != "" {
+		d, err := time.ParseDuration(m.CacheTTL)
+		if err != nil {
+			return fmt.Errorf("invalid cache_ttl %q: %w", m.CacheTTL, err)
+		}
+		m.cacheTTL = d
+	}
+
 	switch m.CacheBackend {
 	case "":
 		// no cache
 	case "memory":
-		if m.CacheTTL != "" {
-			d, err := time.ParseDuration(m.CacheTTL)
-			if err != nil {
-				return fmt.Errorf("invalid cache_ttl %q: %w", m.CacheTTL, err)
-			}
-			m.cacheTTL = d
-		}
 		size := m.CacheSize
 		if size <= 0 {
 			size = 10000
 		}
 		m.cache = mesi.NewMemoryCache(size, m.cacheTTL)
+	case "redis":
+		addr := m.CacheRedisAddr
+		if addr == "" {
+			addr = "localhost:6379"
+		}
+		rdb := redis.NewClient(&redis.Options{
+			Addr:     addr,
+			Password: m.CacheRedisPassword,
+			DB:       m.CacheRedisDB,
+		})
+		m.redisClient = rdb
+		m.cache = mesi.NewRedisCache(rdb, m.cacheTTL)
 	default:
 		return fmt.Errorf("unknown cache_backend: %s", m.CacheBackend)
 	}
@@ -93,10 +117,15 @@ func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
 }
 
 // Cleanup implements caddy.CleanerUpper. Closes idle connections on the
-// shared transport during config reloads to prevent goroutine/resource leaks.
+// shared transport and Redis client during config reloads to prevent
+// goroutine/resource leaks. Idempotent — safe to call multiple times.
 func (m *MesiMiddleware) Cleanup() error {
 	if m.sharedTransport != nil {
 		m.sharedTransport.CloseIdleConnections()
+	}
+	if m.redisClient != nil {
+		_ = m.redisClient.Close()
+		m.redisClient = nil
 	}
 	return nil
 }
@@ -217,6 +246,25 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				m.CacheKeyTemplate = d.Val()
+			case "cache_redis_addr":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				m.CacheRedisAddr = d.Val()
+			case "cache_redis_password":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				m.CacheRedisPassword = d.Val()
+			case "cache_redis_db":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				var err error
+				m.CacheRedisDB, err = strconv.Atoi(d.Val())
+				if err != nil {
+					return d.Errf("invalid cache_redis_db %q: %v", d.Val(), err)
+				}
 			default:
 				return d.Errf("unrecognized directive: %s", d.Val())
 			}
