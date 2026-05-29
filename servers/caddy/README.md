@@ -50,6 +50,27 @@ caddy run --config Caddyfile
 
 ## Directives
 
+### `max_depth`
+
+Limits ESI nesting depth. Controls how many levels of `<esi:include>` can be
+recursively processed. Default: `5`.
+
+```
+mesi {
+    max_depth 3
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| `0` | ESI processing disabled (passthrough). Tags are stripped but includes are not fetched. |
+| `1–N` | Process up to N levels of nested includes. |
+| unset | Default: `5`. |
+
+**Notes:**
+- Useful for preventing infinite recursion in complex ESI layouts.
+- Setting `0` is useful for temporarily disabling ESI processing without removing the middleware.
+
 ### `shared_http_client`
 
 Enables TCP connection reuse for ESI `<esi:include>` fetches.  

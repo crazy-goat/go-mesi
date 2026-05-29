@@ -29,6 +29,10 @@ var (
 )
 
 type MesiMiddleware struct {
+	// MaxDepth limits ESI nesting depth. Pointer distinguishes "unset" (nil → default 5)
+	// from "explicitly set to 0" (passthrough, ESI disabled).
+	MaxDepth *int `json:"max_depth,omitempty"`
+
 	// SharedHTTPClient enables TCP connection reuse for ESI includes.
 	// When true, a shared http.Transport with SSRF protection is created
 	// in Provision() and reused for all requests. Without this, each
@@ -159,9 +163,13 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 
 	contentType := customWriter.Header().Get("Content-Type")
 	if strings.HasPrefix(contentType, "text/html") {
+		depth := 5
+		if m.MaxDepth != nil {
+			depth = *m.MaxDepth
+		}
 		config := mesi.EsiParserConfig{
 			Context:         r.Context(),
-			MaxDepth:        5,
+			MaxDepth:        uint(depth),
 			DefaultUrl:      middleware.GetDefaultUrl(r),
 			Timeout:         10 * time.Second,
 			BlockPrivateIPs: true,
@@ -237,6 +245,15 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
 			switch d.Val() {
+			case "max_depth":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				v, err := strconv.Atoi(d.Val())
+				if err != nil {
+					return d.Errf("invalid max_depth %q: %v", d.Val(), err)
+				}
+				m.MaxDepth = &v
 			case "shared_http_client":
 				m.SharedHTTPClient = true
 			case "cache_backend":
