@@ -36,8 +36,9 @@ type MesiMiddleware struct {
 	// incurring N × TCP+TLS handshake overhead for multi-include pages.
 	SharedHTTPClient bool `json:"shared_http_client,omitempty"`
 
-	// CacheBackend selects the cache backend: "" (off), "memory".
+	// CacheBackend selects the cache backend: "" (off), "memory", "redis", "memcached".
 	// Memory backend uses an in-process LRU cache with TTL support.
+	// Redis and Memcached backends are shared across Caddy instances.
 	CacheBackend string `json:"cache_backend,omitempty"`
 	// CacheSize is the max number of entries for the memory cache.
 	// Default: 10000 when CacheBackend is "memory".
