@@ -9,7 +9,7 @@ server:
 http:
   address: "0.0.0.0:8080"
   middleware:
-    - "mesi"
+    mesi:
 
 logs:
   level: debug

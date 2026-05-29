@@ -1,6 +1,7 @@
 package roadrunner
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,10 +13,53 @@ import (
 
 const PluginName = "mesi"
 
+type Config struct {
+	MaxDepth           int      `mapstructure:"max_depth"`
+	CacheBackend       string   `mapstructure:"cache_backend"`
+	CacheSize          int      `mapstructure:"cache_size"`
+	CacheTTL           string   `mapstructure:"cache_ttl"`
+	CacheRedisAddr     string   `mapstructure:"cache_redis_addr"`
+	CacheRedisPassword string   `mapstructure:"cache_redis_password"`
+	CacheRedisDB       int      `mapstructure:"cache_redis_db"`
+	CacheMemcachedServers []string `mapstructure:"cache_memcached_servers"`
+	Timeout            string   `mapstructure:"timeout"`
+	IncludeErrorMarker string   `mapstructure:"include_error_marker"`
+}
+
+func CreateConfig() *Config {
+	return &Config{
+		MaxDepth: 5,
+	}
+}
+
 type Plugin struct {
+	config   *Config
+	cache    mesi.Cache
+	cacheTTL time.Duration
+	closeFn  func() error
 }
 
 func (p *Plugin) Init() error {
+	if p.config == nil {
+		p.config = CreateConfig()
+	}
+
+	if p.config.MaxDepth == 0 {
+		p.config.MaxDepth = 5
+	}
+
+	if p.config.CacheBackend != "" && p.config.CacheTTL != "" {
+		d, err := time.ParseDuration(p.config.CacheTTL)
+		if err != nil {
+			return fmt.Errorf("invalid cache_ttl %q: %w", p.config.CacheTTL, err)
+		}
+		p.cacheTTL = d
+	}
+
+	if err := initCache(p); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -30,12 +74,19 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 		contentType := customWriter.Header().Get("Content-Type")
 		if strings.HasPrefix(contentType, "text/html") {
 			config := mesi.EsiParserConfig{
-				Context:         r.Context(),
-				MaxDepth:        5,
-				DefaultUrl:      middleware.GetDefaultUrl(r),
-				Timeout:         10 * time.Second,
-				BlockPrivateIPs: true,
+				Context:            r.Context(),
+				MaxDepth:           uint(p.config.MaxDepth),
+				DefaultUrl:         middleware.GetDefaultUrl(r),
+				Timeout:            10 * time.Second,
+				BlockPrivateIPs:    true,
+				IncludeErrorMarker: p.config.IncludeErrorMarker,
 			}
+
+			if p.cache != nil {
+				config.Cache = p.cache
+				config.CacheTTL = p.cacheTTL
+			}
+
 			processedResponse := mesi.MESIParse(
 				customWriter.Body().String(),
 				config,
@@ -57,4 +108,11 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 
 func (p *Plugin) Name() string {
 	return PluginName
+}
+
+func (p *Plugin) Close() error {
+	if p.closeFn != nil {
+		return p.closeFn()
+	}
+	return nil
 }
