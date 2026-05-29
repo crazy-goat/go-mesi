@@ -2097,3 +2097,171 @@ func TestDebugIntegrationParseAndProvision(t *testing.T) {
 		t.Fatalf("Cleanup() returned error: %v", err)
 	}
 }
+
+// --- AllowedHosts Directive Tests ---
+
+// TestUnmarshalCaddyfileAllowedHosts parses allowed_hosts directive with multiple hosts.
+func TestUnmarshalCaddyfileAllowedHosts(t *testing.T) {
+	input := `mesi {
+		allowed_hosts backend.internal cdn.example.com api.trusted.org
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if len(m.AllowedHosts) != 3 {
+		t.Fatalf("expected 3 AllowedHosts, got %d", len(m.AllowedHosts))
+	}
+	expected := []string{"backend.internal", "cdn.example.com", "api.trusted.org"}
+	for i, h := range expected {
+		if m.AllowedHosts[i] != h {
+			t.Errorf("expected AllowedHosts[%d]='%s', got '%s'", i, h, m.AllowedHosts[i])
+		}
+	}
+}
+
+// TestUnmarshalCaddyfileAllowedHostsSingle parses a single allowed host.
+func TestUnmarshalCaddyfileAllowedHostsSingle(t *testing.T) {
+	input := `mesi {
+		allowed_hosts backend.internal
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if len(m.AllowedHosts) != 1 {
+		t.Fatalf("expected 1 AllowedHost, got %d", len(m.AllowedHosts))
+	}
+	if m.AllowedHosts[0] != "backend.internal" {
+		t.Errorf("expected AllowedHosts[0]='backend.internal', got '%s'", m.AllowedHosts[0])
+	}
+}
+
+// TestUnmarshalCaddyfileAllowedHostsAbsent verifies that absent allowed_hosts
+// leaves AllowedHosts as nil (no restriction).
+func TestUnmarshalCaddyfileAllowedHostsAbsent(t *testing.T) {
+	input := `mesi`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.AllowedHosts != nil {
+		t.Errorf("AllowedHosts should be nil when absent, got %v", m.AllowedHosts)
+	}
+}
+
+// TestAllowedHostsDefaultUnset verifies that when AllowedHosts is not set,
+// it remains nil after Provision.
+func TestAllowedHostsDefaultUnset(t *testing.T) {
+	m := &MesiMiddleware{}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.AllowedHosts != nil {
+		t.Errorf("AllowedHosts should be nil by default, got %v", m.AllowedHosts)
+	}
+}
+
+// TestAllowedHostsProvision verifies that AllowedHosts is preserved through Provision.
+func TestAllowedHostsProvision(t *testing.T) {
+	m := &MesiMiddleware{
+		AllowedHosts: []string{"backend.internal", "cdn.example.com"},
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if len(m.AllowedHosts) != 2 {
+		t.Fatalf("expected 2 AllowedHosts, got %d", len(m.AllowedHosts))
+	}
+}
+
+// TestAllowedHostsServeHTTP verifies that ServeHTTP works with AllowedHosts configured.
+func TestAllowedHostsServeHTTP(t *testing.T) {
+	m := &MesiMiddleware{
+		AllowedHosts: []string{"backend.internal"},
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>allowed hosts test</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+// TestAllowedHostsWithOtherDirectives verifies allowed_hosts works alongside other directives.
+func TestAllowedHostsWithOtherDirectives(t *testing.T) {
+	input := `mesi {
+		allowed_hosts backend.internal cdn.example.com
+		max_depth 3
+		shared_http_client
+		timeout 15s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if len(m.AllowedHosts) != 2 {
+		t.Fatalf("expected 2 AllowedHosts, got %d", len(m.AllowedHosts))
+	}
+	if m.AllowedHosts[0] != "backend.internal" {
+		t.Errorf("expected AllowedHosts[0]='backend.internal', got '%s'", m.AllowedHosts[0])
+	}
+	if m.AllowedHosts[1] != "cdn.example.com" {
+		t.Errorf("expected AllowedHosts[1]='cdn.example.com', got '%s'", m.AllowedHosts[1])
+	}
+	if m.MaxDepth == nil || *m.MaxDepth != 3 {
+		t.Errorf("expected MaxDepth=3, got %v", m.MaxDepth)
+	}
+	if !m.SharedHTTPClient {
+		t.Error("SharedHTTPClient should be true")
+	}
+	if m.Timeout != "15s" {
+		t.Errorf("expected Timeout='15s', got '%s'", m.Timeout)
+	}
+}
+
+// TestAllowedHostsIntegrationParseAndProvision verifies the full flow:
+// Caddyfile parsing → Provision → Cleanup with allowed_hosts.
+func TestAllowedHostsIntegrationParseAndProvision(t *testing.T) {
+	input := `mesi {
+		allowed_hosts backend.internal cdn.example.com
+		max_depth 5
+		timeout 10s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if len(m.AllowedHosts) != 2 {
+		t.Fatalf("expected 2 AllowedHosts, got %d", len(m.AllowedHosts))
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
