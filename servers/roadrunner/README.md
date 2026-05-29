@@ -48,8 +48,6 @@ http:
 | `cache_redis_password` | string | `""` | Redis AUTH password. |
 | `cache_redis_db` | int | `0` | Redis database number. |
 
-### Options
-
 #### Shared HTTP Client
 Enables TCP connection reuse across ESI includes. The shared client uses an SSRF-safe transport that blocks private IPs.
 
