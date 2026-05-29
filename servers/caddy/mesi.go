@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bradfitz/gomemcache/memcache"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -58,10 +59,15 @@ type MesiMiddleware struct {
 	// CacheRedisDB is the Redis database number. Default: 0.
 	CacheRedisDB int `json:"cache_redis_db,omitempty"`
 
-	sharedTransport *http.Transport `json:"-"`
-	cache           mesi.Cache      `json:"-"`
-	cacheTTL        time.Duration   `json:"-"`
-	redisClient     *redis.Client   `json:"-"`
+	// CacheMemcachedServers is the list of Memcached server addresses (host:port).
+	// Required when CacheBackend is "memcached".
+	CacheMemcachedServers []string `json:"cache_memcached_servers,omitempty"`
+
+	sharedTransport  *http.Transport  `json:"-"`
+	cache            mesi.Cache       `json:"-"`
+	cacheTTL         time.Duration    `json:"-"`
+	redisClient      *redis.Client    `json:"-"`
+	memcachedClient  *memcache.Client `json:"-"`
 }
 
 func (m *MesiMiddleware) CaddyModule() caddy.ModuleInfo {
@@ -109,6 +115,13 @@ func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
 		})
 		m.redisClient = rdb
 		m.cache = mesi.NewRedisCache(rdb, m.cacheTTL)
+	case "memcached":
+		if len(m.CacheMemcachedServers) == 0 {
+			return fmt.Errorf("cache_memcached_servers is required for memcached backend")
+		}
+		mc := memcache.New(m.CacheMemcachedServers...)
+		m.memcachedClient = mc
+		m.cache = mesi.NewMemcachedCache(mc, m.cacheTTL)
 	default:
 		return fmt.Errorf("unknown cache_backend: %s", m.CacheBackend)
 	}
@@ -126,6 +139,9 @@ func (m *MesiMiddleware) Cleanup() error {
 	if m.redisClient != nil {
 		_ = m.redisClient.Close()
 		m.redisClient = nil
+	}
+	if m.memcachedClient != nil {
+		m.memcachedClient = nil
 	}
 	return nil
 }
@@ -265,6 +281,8 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if err != nil {
 					return d.Errf("invalid cache_redis_db %q: %v", d.Val(), err)
 				}
+			case "cache_memcached_servers":
+				m.CacheMemcachedServers = d.RemainingArgs()
 			default:
 				return d.Errf("unrecognized directive: %s", d.Val())
 			}

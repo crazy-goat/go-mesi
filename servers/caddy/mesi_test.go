@@ -1120,3 +1120,221 @@ func TestRedisBackendServeHTTP(t *testing.T) {
 		t.Fatalf("Cleanup() returned error: %v", err)
 	}
 }
+
+// --- Memcached Cache Backend Unit Tests ---
+
+// TestUnmarshalCaddyfileCacheMemcachedServers parses cache_memcached_servers directive.
+func TestUnmarshalCaddyfileCacheMemcachedServers(t *testing.T) {
+	input := `mesi {
+		cache_memcached_servers 10.0.0.1:11211
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if len(m.CacheMemcachedServers) != 1 || m.CacheMemcachedServers[0] != "10.0.0.1:11211" {
+		t.Errorf("expected CacheMemcachedServers=['10.0.0.1:11211'], got '%v'", m.CacheMemcachedServers)
+	}
+}
+
+// TestUnmarshalCaddyfileCacheMemcachedServersMultiple parses multiple servers.
+func TestUnmarshalCaddyfileCacheMemcachedServersMultiple(t *testing.T) {
+	input := `mesi {
+		cache_memcached_servers 10.0.0.1:11211 10.0.0.2:11211 10.0.0.3:11211
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if len(m.CacheMemcachedServers) != 3 {
+		t.Fatalf("expected 3 servers, got %d", len(m.CacheMemcachedServers))
+	}
+	expected := []string{"10.0.0.1:11211", "10.0.0.2:11211", "10.0.0.3:11211"}
+	for i, s := range expected {
+		if m.CacheMemcachedServers[i] != s {
+			t.Errorf("expected server[%d]='%s', got '%s'", i, s, m.CacheMemcachedServers[i])
+		}
+	}
+}
+
+// TestUnmarshalCaddyfileCacheMemcachedServersNoArg verifies cache_memcached_servers
+// without argument returns an empty list (no error from RemainingArgs).
+func TestUnmarshalCaddyfileCacheMemcachedServersNoArg(t *testing.T) {
+	input := `mesi {
+		cache_memcached_servers
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if len(m.CacheMemcachedServers) != 0 {
+		t.Errorf("expected empty CacheMemcachedServers, got '%v'", m.CacheMemcachedServers)
+	}
+}
+
+// TestMemcachedBackendProvision verifies that cache_backend="memcached" with
+// servers creates a non-nil cache and memcachedClient in Provision().
+func TestMemcachedBackendProvision(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:          "memcached",
+		CacheMemcachedServers: []string{"localhost:11211"},
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil when CacheBackend is 'memcached'")
+	}
+	if m.memcachedClient == nil {
+		t.Fatal("memcachedClient should be non-nil when CacheBackend is 'memcached'")
+	}
+}
+
+// TestMemcachedBackendProvisionNoServers verifies that cache_backend="memcached"
+// without servers returns an error.
+func TestMemcachedBackendProvisionNoServers(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend: "memcached",
+	}
+	err := m.Provision(caddy.Context{})
+	if err == nil {
+		t.Fatal("Provision() should return error for memcached backend without servers")
+	}
+	if !strings.Contains(err.Error(), "cache_memcached_servers is required") {
+		t.Errorf("expected 'cache_memcached_servers is required' error, got: %v", err)
+	}
+}
+
+// TestMemcachedBackendProvisionWithTTL verifies cache_ttl is parsed for memcached.
+func TestMemcachedBackendProvisionWithTTL(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:          "memcached",
+		CacheMemcachedServers: []string{"localhost:11211"},
+		CacheTTL:              "120s",
+	}
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil")
+	}
+	if m.cacheTTL != 120*time.Second {
+		t.Errorf("expected cacheTTL=120s, got %v", m.cacheTTL)
+	}
+}
+
+// TestMemcachedBackendProvisionInvalidTTL verifies that invalid cache_ttl
+// returns an error for memcached backend.
+func TestMemcachedBackendProvisionInvalidTTL(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:          "memcached",
+		CacheMemcachedServers: []string{"localhost:11211"},
+		CacheTTL:              "not-a-duration",
+	}
+	err := m.Provision(caddy.Context{})
+	if err == nil {
+		t.Fatal("Provision() should return error for invalid cache_ttl")
+	}
+	if !strings.Contains(err.Error(), "invalid cache_ttl") {
+		t.Errorf("expected 'invalid cache_ttl' error, got: %v", err)
+	}
+}
+
+// TestMemcachedBackendCleanup verifies Cleanup is safe for memcached.
+func TestMemcachedBackendCleanup(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:          "memcached",
+		CacheMemcachedServers: []string{"localhost:11211"},
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.memcachedClient == nil {
+		t.Fatal("memcachedClient should be non-nil after Provision")
+	}
+
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// TestMemcachedBackendCleanupIdempotent verifies double Cleanup is safe.
+func TestMemcachedBackendCleanupIdempotent(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:          "memcached",
+		CacheMemcachedServers: []string{"localhost:11211"},
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() (second call) returned error: %v", err)
+	}
+}
+
+// TestMemcachedBackendCleanupWithoutProvision ensures Cleanup is safe
+// when Provision was never called.
+func TestMemcachedBackendCleanupWithoutProvision(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:          "memcached",
+		CacheMemcachedServers: []string{"localhost:11211"},
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// TestMemcachedBackendServeHTTP verifies that ServeHTTP works with memcached backend
+// (no crash, cache is available).
+func TestMemcachedBackendServeHTTP(t *testing.T) {
+	m := &MesiMiddleware{
+		CacheBackend:          "memcached",
+		CacheMemcachedServers: []string{"localhost:11211"},
+		CacheTTL:              "60s",
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.cache == nil {
+		t.Fatal("cache should be non-nil")
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>memcached cached</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "memcached cached") {
+		t.Errorf("Expected body to contain 'memcached cached', got: %s", body)
+	}
+
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}

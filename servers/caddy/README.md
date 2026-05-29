@@ -116,6 +116,30 @@ mesi {
 - Key prefix: `mesi:<url>`.
 - Redis unreachable → ESI falls back to origin fetch (degraded, no crash).
 
+### `cache_backend memcached`
+
+Enables a Memcached-backed cache shared across Caddy instances. Ideal for
+horizontally scaled deployments where Memcached is available.
+
+```
+mesi {
+    cache_backend memcached
+    cache_memcached_servers 10.0.0.1:11211 10.0.0.2:11211
+    cache_ttl 120s
+}
+```
+
+| Subdirective | Description |
+|---|---|
+| `cache_memcached_servers` | Space-separated list of `host:port` addresses. Required. |
+| `cache_ttl` | Duration string (`60s`, `5m`, `1h`). Optional. Default: no expiry. |
+
+**Notes:**
+- Multiple servers are supported — the client distributes keys across them.
+- Memcached has a 1 MB value size limit.
+- Key prefix: `mesi:<url>`.
+- Memcached unreachable → ESI falls back to origin fetch (degraded, no crash).
+
 ### `cache_key_template`
 
 Custom cache key template with placeholders. Available for all cache backends.
