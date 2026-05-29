@@ -24,7 +24,7 @@ Support status of mESI features across all server integrations.
 | `IncludeErrorMarker` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ⚠️ | ✅ |
 | Global MaxDepth | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
 | Global Timeout | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
-| SSRF (BlockPrivateIPs) | ✅ | 🔒 | 🔒 | 🔒 | ❌ | ✅ | ❌ | 🔒 | ✅ |
+| SSRF (BlockPrivateIPs) | ✅ | 🔒 | 🔒 | ✅ | ❌ | ✅ | ❌ | 🔒 | ✅ |
 | AllowedHosts | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ |
 | AllowPrivateIPsForAllowedHosts | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | MaxResponseSize | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |

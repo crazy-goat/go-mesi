@@ -2496,3 +2496,121 @@ func TestMaxConcurrentRequestsIntegrationLimitsConcurrency(t *testing.T) {
 		t.Errorf("expected max 2 concurrent requests, got %d", peak)
 	}
 }
+
+// TestBlockPrivateIPsDefault verifies that BlockPrivateIPs defaults to true
+// when the directive is absent.
+func TestBlockPrivateIPsDefault(t *testing.T) {
+	m := &MesiMiddleware{}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.BlockPrivateIPs != nil {
+		t.Errorf("BlockPrivateIPs should be nil by default, got %v", *m.BlockPrivateIPs)
+	}
+}
+
+// TestBlockPrivateIPsProvisionTrue verifies that Provision works with BlockPrivateIPs=true.
+func TestBlockPrivateIPsProvisionTrue(t *testing.T) {
+	v := true
+	m := &MesiMiddleware{BlockPrivateIPs: &v}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.BlockPrivateIPs == nil || !*m.BlockPrivateIPs {
+		t.Error("BlockPrivateIPs should be true")
+	}
+}
+
+// TestBlockPrivateIPsProvisionFalse verifies that Provision works with BlockPrivateIPs=false.
+func TestBlockPrivateIPsProvisionFalse(t *testing.T) {
+	v := false
+	m := &MesiMiddleware{BlockPrivateIPs: &v}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.BlockPrivateIPs == nil || *m.BlockPrivateIPs {
+		t.Error("BlockPrivateIPs should be false")
+	}
+}
+
+// TestUnmarshalCaddyfileBlockPrivateIPsTrue parses the directive with explicit true.
+func TestUnmarshalCaddyfileBlockPrivateIPsTrue(t *testing.T) {
+	input := `mesi {
+		block_private_ips true
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.BlockPrivateIPs == nil || !*m.BlockPrivateIPs {
+		t.Error("BlockPrivateIPs should be true after parsing block_private_ips true")
+	}
+}
+
+// TestUnmarshalCaddyfileBlockPrivateIPsFalse parses the directive with false.
+func TestUnmarshalCaddyfileBlockPrivateIPsFalse(t *testing.T) {
+	input := `mesi {
+		block_private_ips false
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.BlockPrivateIPs == nil || *m.BlockPrivateIPs {
+		t.Error("BlockPrivateIPs should be false after parsing block_private_ips false")
+	}
+}
+
+// TestUnmarshalCaddyfileBlockPrivateIPsNoArg parses the directive without argument
+// (flag style) and defaults to true.
+func TestUnmarshalCaddyfileBlockPrivateIPsNoArg(t *testing.T) {
+	input := `mesi {
+		block_private_ips
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.BlockPrivateIPs == nil || !*m.BlockPrivateIPs {
+		t.Error("BlockPrivateIPs should be true when used as flag without argument")
+	}
+}
+
+// TestUnmarshalCaddyfileBlockPrivateIPsInvalid parses the directive with an invalid value.
+func TestUnmarshalCaddyfileBlockPrivateIPsInvalid(t *testing.T) {
+	input := `mesi {
+		block_private_ips invalid
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for invalid block_private_ips value")
+	}
+	if !strings.Contains(err.Error(), "invalid block_private_ips") {
+		t.Errorf("Expected 'invalid block_private_ips' error, got: %v", err)
+	}
+}
+
+// TestUnmarshalCaddyfileBlockPrivateIPsAbsent verifies the directive is not set
+// when absent from Caddyfile.
+func TestUnmarshalCaddyfileBlockPrivateIPsAbsent(t *testing.T) {
+	input := `mesi {
+		debug
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.BlockPrivateIPs != nil {
+		t.Error("BlockPrivateIPs should be nil when directive is absent")
+	}
+}

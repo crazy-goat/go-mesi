@@ -93,6 +93,11 @@ type MesiMiddleware struct {
 	// Provision time. Default: "10s".
 	Timeout string `json:"timeout,omitempty"`
 
+	// BlockPrivateIPs controls SSRF protection. When true (default),
+	// ESI includes to private/reserved IPs are blocked. Set to false
+	// to allow internal ESI includes (e.g. service meshes, metadata services).
+	BlockPrivateIPs *bool `json:"block_private_ips,omitempty"`
+
 	sharedTransport *http.Transport  `json:"-"`
 	cache           mesi.Cache       `json:"-"`
 	cacheTTL        time.Duration    `json:"-"`
@@ -110,9 +115,14 @@ func (m *MesiMiddleware) CaddyModule() caddy.ModuleInfo {
 
 // Provision implements caddy.Provisioner. Called once at config load.
 func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
+	blockPrivateIPs := true
+	if m.BlockPrivateIPs != nil {
+		blockPrivateIPs = *m.BlockPrivateIPs
+	}
+
 	if m.SharedHTTPClient {
 		m.sharedTransport = mesi.NewSSRFSafeTransport(mesi.EsiParserConfig{
-			BlockPrivateIPs: true,
+			BlockPrivateIPs: blockPrivateIPs,
 		})
 	}
 
@@ -206,12 +216,16 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 		if m.MaxDepth != nil {
 			depth = *m.MaxDepth
 		}
+		blockPrivateIPs := true
+		if m.BlockPrivateIPs != nil {
+			blockPrivateIPs = *m.BlockPrivateIPs
+		}
 		config := mesi.EsiParserConfig{
 			Context:                r.Context(),
 			MaxDepth:               uint(depth),
 			DefaultUrl:             middleware.GetDefaultUrl(r),
 			Timeout:                m.parsedTimeout,
-			BlockPrivateIPs:        true,
+			BlockPrivateIPs:        blockPrivateIPs,
 			AllowedHosts:           m.AllowedHosts,
 			IncludeErrorMarker:     m.IncludeErrorMarker,
 			Debug:                  m.Debug,
@@ -313,6 +327,17 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 		case "shared_http_client":
 			m.SharedHTTPClient = true
+		case "block_private_ips":
+			if d.NextArg() {
+				v, err := strconv.ParseBool(d.Val())
+				if err != nil {
+					return d.Errf("invalid block_private_ips %q: %v", d.Val(), err)
+				}
+				m.BlockPrivateIPs = &v
+			} else {
+				v := true
+				m.BlockPrivateIPs = &v
+			}
 		case "allowed_hosts":
 			m.AllowedHosts = d.RemainingArgs()
 		case "debug":
