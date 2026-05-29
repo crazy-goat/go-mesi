@@ -13,6 +13,8 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/crazy-goat/go-mesi/mesi"
+	"github.com/crazy-goat/go-mesi/mesi/cache_memcached"
+	"github.com/crazy-goat/go-mesi/mesi/cache_redis"
 	"github.com/crazy-goat/go-mesi/middleware"
 	"github.com/redis/go-redis/v9"
 )
@@ -138,14 +140,14 @@ func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
 			DB:       m.CacheRedisDB,
 		})
 		m.redisClient = rdb
-		m.cache = mesi.NewRedisCache(rdb, m.cacheTTL)
+		m.cache = cache_redis.NewRedisCache(rdb, m.cacheTTL)
 	case "memcached":
 		if len(m.CacheMemcachedServers) == 0 {
 			return fmt.Errorf("cache_memcached_servers is required for memcached backend")
 		}
 		mc := memcache.New(m.CacheMemcachedServers...)
 		m.memcachedClient = mc
-		m.cache = mesi.NewMemcachedCache(mc, m.cacheTTL)
+		m.cache = cache_memcached.NewMemcachedCache(mc, m.cacheTTL)
 	default:
 		return fmt.Errorf("unknown cache_backend: %s", m.CacheBackend)
 	}
