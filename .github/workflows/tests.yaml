@@ -236,9 +236,56 @@ jobs:
         if: always()
         run: cd servers/nginx && docker compose down -v 2>/dev/null || true
 
+  traefik-test:
+    name: Traefik Integration Test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Build libgomesi
+        run: cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go
+
+      - name: Run Traefik tests
+        run: cd servers/traefik && ./test.sh
+
+      - name: Cleanup
+        if: always()
+        run: cd servers/traefik && docker compose down -v 2>/dev/null || true
+
+  caddy-test:
+    name: Caddy Integration Test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Run Caddy tests
+        run: cd servers/caddy && ./test.sh
+
+      - name: Cleanup
+        if: always()
+        run: cd servers/caddy && docker compose down -v 2>/dev/null || true
+
   ci:
     name: CI
-    needs: [lint, test, apache-test, traefik-test, nginx-test, proxy-test, cli-test, cli-e2e-test]
+    needs: [lint, test, apache-test, traefik-test, nginx-test, caddy-test, proxy-test, cli-test, cli-e2e-test]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -249,6 +296,7 @@ jobs:
           if [ "${{ needs.apache-test.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.traefik-test.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.nginx-test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.caddy-test.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.proxy-test.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.cli-test.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.cli-e2e-test.result }}" != "success" ]; then exit 1; fi
