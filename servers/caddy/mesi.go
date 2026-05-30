@@ -98,6 +98,12 @@ type MesiMiddleware struct {
 	// to allow internal ESI includes (e.g. service meshes, metadata services).
 	BlockPrivateIPs *bool `json:"block_private_ips,omitempty"`
 
+	// MaxWorkers limits the number of goroutines used to process ESI tokens
+	// within a single MESIParse call. Zero means runtime.NumCPU()*4 (library default).
+	// This controls token-processing goroutines, not HTTP fetch goroutines
+	// (see max_concurrent_requests for that).
+	MaxWorkers int `json:"max_workers,omitempty"`
+
 	sharedTransport *http.Transport  `json:"-"`
 	cache           mesi.Cache       `json:"-"`
 	cacheTTL        time.Duration    `json:"-"`
@@ -230,6 +236,7 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 			IncludeErrorMarker:     m.IncludeErrorMarker,
 			Debug:                  m.Debug,
 			MaxConcurrentRequests:  m.MaxConcurrentRequests,
+			MaxWorkers:             m.MaxWorkers,
 		}
 
 		if m.cache != nil {
@@ -306,6 +313,15 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				m.MaxConcurrentRequests, err = strconv.Atoi(d.Val())
 				if err != nil {
 					return d.Errf("invalid max_concurrent_requests %q: %v", d.Val(), err)
+				}
+			case "max_workers":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				var err error
+				m.MaxWorkers, err = strconv.Atoi(d.Val())
+				if err != nil {
+					return d.Errf("invalid max_workers %q: %v", d.Val(), err)
 				}
 		case "shared_http_client":
 			m.SharedHTTPClient = true

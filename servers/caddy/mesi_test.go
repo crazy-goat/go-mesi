@@ -2614,3 +2614,198 @@ func TestUnmarshalCaddyfileBlockPrivateIPsAbsent(t *testing.T) {
 		t.Error("BlockPrivateIPs should be nil when directive is absent")
 	}
 }
+
+// --- MaxWorkers Directive Tests ---
+
+// TestMaxWorkersDefaultUnset verifies that when max_workers is not set,
+// MaxWorkers is 0 (library default: runtime.NumCPU()*4).
+func TestMaxWorkersDefaultUnset(t *testing.T) {
+	m := &MesiMiddleware{}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.MaxWorkers != 0 {
+		t.Errorf("MaxWorkers should be 0 (library default) by default, got %d", m.MaxWorkers)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxWorkers parses max_workers directive with valid value.
+func TestUnmarshalCaddyfileMaxWorkers(t *testing.T) {
+	input := `mesi {
+		max_workers 8
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxWorkers != 8 {
+		t.Errorf("expected MaxWorkers=8, got %d", m.MaxWorkers)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxWorkersZero parses max_workers 0 (library default).
+func TestUnmarshalCaddyfileMaxWorkersZero(t *testing.T) {
+	input := `mesi {
+		max_workers 0
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxWorkers != 0 {
+		t.Errorf("expected MaxWorkers=0 (library default), got %d", m.MaxWorkers)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxWorkersInvalid verifies that max_workers with
+// a non-numeric value returns an error.
+func TestUnmarshalCaddyfileMaxWorkersInvalid(t *testing.T) {
+	input := `mesi {
+		max_workers not-a-number
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for invalid max_workers")
+	}
+	if !strings.Contains(err.Error(), "invalid max_workers") {
+		t.Errorf("expected 'invalid max_workers' error, got: %v", err)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxWorkersNoArg verifies that max_workers without
+// argument returns ArgErr.
+func TestUnmarshalCaddyfileMaxWorkersNoArg(t *testing.T) {
+	input := `mesi {
+		max_workers
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for max_workers without argument")
+	}
+}
+
+// TestMaxWorkersProvision verifies that Provision works with MaxWorkers set.
+func TestMaxWorkersProvision(t *testing.T) {
+	m := &MesiMiddleware{MaxWorkers: 4}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.MaxWorkers != 4 {
+		t.Errorf("expected MaxWorkers=4, got %d", m.MaxWorkers)
+	}
+}
+
+// TestMaxWorkersServeHTTP verifies that the configured MaxWorkers is passed
+// to EsiParserConfig in ServeHTTP.
+func TestMaxWorkersServeHTTP(t *testing.T) {
+	m := &MesiMiddleware{MaxWorkers: 2}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>max workers test</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+// TestMaxWorkersWithOtherDirectives verifies max_workers works alongside other directives.
+func TestMaxWorkersWithOtherDirectives(t *testing.T) {
+	input := `mesi {
+		max_workers 4
+		max_depth 3
+		shared_http_client
+		timeout 15s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxWorkers != 4 {
+		t.Errorf("expected MaxWorkers=4, got %d", m.MaxWorkers)
+	}
+	if m.MaxDepth == nil || *m.MaxDepth != 3 {
+		t.Errorf("expected MaxDepth=3, got %v", m.MaxDepth)
+	}
+	if !m.SharedHTTPClient {
+		t.Error("SharedHTTPClient should be true")
+	}
+	if m.Timeout != "15s" {
+		t.Errorf("expected Timeout='15s', got '%s'", m.Timeout)
+	}
+}
+
+// TestMaxWorkersIntegrationParseAndProvision verifies the full flow:
+// Caddyfile parsing → Provision → Cleanup with max_workers.
+func TestMaxWorkersIntegrationParseAndProvision(t *testing.T) {
+	input := `mesi {
+		max_workers 8
+		max_depth 5
+		timeout 10s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxWorkers != 8 {
+		t.Errorf("expected MaxWorkers=8, got %d", m.MaxWorkers)
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// TestMaxWorkersNegative verifies that negative max_workers is accepted
+// (library handles validation, middleware passes it through).
+func TestMaxWorkersNegative(t *testing.T) {
+	input := `mesi {
+		max_workers -1
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxWorkers != -1 {
+		t.Errorf("expected MaxWorkers=-1, got %d", m.MaxWorkers)
+	}
+}
+
+// TestMaxWorkersNegativeProvision verifies that Provision works with negative MaxWorkers.
+// The library treats negative values as invalid and falls back to the default.
+func TestMaxWorkersNegativeProvision(t *testing.T) {
+	m := &MesiMiddleware{MaxWorkers: -1}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.MaxWorkers != -1 {
+		t.Errorf("expected MaxWorkers=-1, got %d", m.MaxWorkers)
+	}
+}

@@ -253,3 +253,29 @@ mesi {
 - This controls HTTP fetch goroutines, not token-processing goroutines (see `max_workers` for that).
 - For pages with many parallel includes, set this to a reasonable value (e.g. `5–20`) to prevent goroutine explosion.
 - Works well with `timeout` to bound both concurrency and latency.
+
+### `max_workers`
+
+Limits the number of goroutines used to process ESI tokens within a single
+`MESIParse` call. This controls token-processing goroutines, not HTTP fetch
+goroutines (see `max_concurrent_requests` for that). Default: `0` (library
+default: `runtime.NumCPU()*4`).
+
+```
+mesi {
+    max_workers 8
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| `1–N` | At most N goroutines for token processing. |
+| `0` | Library default: `runtime.NumCPU()*4`. |
+| absent | Library default. |
+
+**Notes:**
+- Useful for tuning CPU usage on machines with many cores.
+- Lower values reduce CPU consumption; higher values improve throughput for
+  complex ESI pages with many tokens.
+- This is distinct from `max_concurrent_requests` — that limits HTTP fetches,
+  while `max_workers` limits internal parallelism of ESI tag parsing.
