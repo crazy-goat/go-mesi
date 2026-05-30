@@ -1,0 +1,26 @@
+services:
+  nginx:
+    image: go-mesi-nginx-test
+    build:
+      context: ../..
+      dockerfile: servers/nginx/Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/"]
+      interval: 2s
+      retries: 10
+      start_period: 5s
+
+  backend:
+    image: python:3.11-slim
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: /data
+    volumes:
+      - ./tests:/data:ro
+    command: python -m http.server 8000
+    expose:
+      - "8000"
