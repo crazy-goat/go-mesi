@@ -65,4 +65,10 @@ location / {
 }
 ```
 
+## Shared HTTP Client
+
+A shared HTTP client is automatically created once per worker process and reused for all ESI fragment fetches. This reuses idle TCP connections (default: 100 per host, 90s idle timeout), dramatically reducing latency for pages with multiple `<esi:include>` tags to the same backend.
+
+The shared client includes SSRF protection — connections to private/reserved IP addresses are blocked at dial time.
+
 [Here](nginx.conf) you can find full example configuration

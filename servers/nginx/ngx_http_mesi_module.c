@@ -37,8 +37,12 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
                                           void *child);
 
 typedef char *(*ParseFunc)(char *, int, char *);
+typedef void (*InitHTTPClientFunc)(int);
+typedef void (*FreeHTTPClientFunc)(void);
 static void *go_module = NULL;
 ParseFunc EsiParse = NULL;
+InitHTTPClientFunc InitHTTPClient = NULL;
+FreeHTTPClientFunc FreeHTTPClient = NULL;
 
 static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("enable_mesi"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
@@ -313,10 +317,31 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
     return NGX_ERROR;
   }
 
+  InitHTTPClient =
+      (InitHTTPClientFunc)dlsym(go_module, "InitHTTPClient");
+  error = dlerror();
+  if (error != NULL) {
+    ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
+                  "InitHTTPClient not found in libgomesi: %s", error);
+    InitHTTPClient = NULL;
+  } else {
+    InitHTTPClient(1);
+  }
+
+  FreeHTTPClient =
+      (FreeHTTPClientFunc)dlsym(go_module, "FreeHTTPClient");
+  error = dlerror();
+  if (error != NULL) {
+    FreeHTTPClient = NULL;
+  }
+
   return NGX_OK;
 }
 
 static void ngx_http_mesi_thread_exit(ngx_cycle_t *cycle) {
+  if (FreeHTTPClient) {
+    FreeHTTPClient();
+  }
   if (go_module) {
     dlclose(go_module);
     go_module = NULL;
