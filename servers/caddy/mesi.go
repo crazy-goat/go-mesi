@@ -314,7 +314,7 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if err != nil {
 					return d.Errf("invalid max_concurrent_requests %q: %v", d.Val(), err)
 				}
-		case "max_workers":
+			case "max_workers":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
