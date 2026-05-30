@@ -36,6 +36,23 @@ http:
     # some service config here
 ```
 
+## Include Error Marker
+
+When `includeErrorMarker` is set, the specified string is rendered in place of
+a failed `<esi:include>` when no `onerror="continue"` and no fallback body is
+present. Default: empty string (silent — failed includes produce no output).
+
+**SECURITY**: Never include raw error messages or URLs in the marker.
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          includeErrorMarker: "<!-- ESI_ERROR -->"
+```
+
 ## Shared HTTP Client
 
 When `sharedHTTPClient` is enabled, a shared `http.Transport` with SSRF protection
@@ -112,7 +129,9 @@ http:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
+| `maxDepth` | int | `5` | Maximum ESI recursion depth |
 | `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
+| `includeErrorMarker` | string | `""` | String rendered for failed includes (empty = silent) |
 | `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis`, `memcached` |
 | `cacheTTL` | string | `""` | Cache TTL as Go duration (e.g., `"60s"`, `"5m"`) |
 | `cacheSize` | int | `10000` | Max entries for memory cache |
