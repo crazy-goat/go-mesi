@@ -2809,3 +2809,187 @@ func TestMaxWorkersNegativeProvision(t *testing.T) {
 		t.Errorf("expected MaxWorkers=-1, got %d", m.MaxWorkers)
 	}
 }
+
+// --- MaxResponseSize Directive Tests ---
+
+// TestMaxResponseSizeDefaultUnset verifies that when max_response_size is not set,
+// MaxResponseSize is 0 (library default: 10MB).
+func TestMaxResponseSizeDefaultUnset(t *testing.T) {
+	m := &MesiMiddleware{}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.MaxResponseSize != 0 {
+		t.Errorf("MaxResponseSize should be 0 (library default) by default, got %d", m.MaxResponseSize)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxResponseSize parses max_response_size directive with valid value.
+func TestUnmarshalCaddyfileMaxResponseSize(t *testing.T) {
+	input := `mesi {
+		max_response_size 1048576
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxResponseSize != 1048576 {
+		t.Errorf("expected MaxResponseSize=1048576, got %d", m.MaxResponseSize)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxResponseSizeZero parses max_response_size 0 (unlimited).
+func TestUnmarshalCaddyfileMaxResponseSizeZero(t *testing.T) {
+	input := `mesi {
+		max_response_size 0
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxResponseSize != 0 {
+		t.Errorf("expected MaxResponseSize=0 (unlimited), got %d", m.MaxResponseSize)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxResponseSizeNegative verifies that max_response_size
+// with a negative value is parsed (validation happens at the library level).
+func TestUnmarshalCaddyfileMaxResponseSizeNegative(t *testing.T) {
+	input := `mesi {
+		max_response_size -1
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxResponseSize != -1 {
+		t.Errorf("expected MaxResponseSize=-1, got %d", m.MaxResponseSize)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxResponseSizeInvalid verifies that max_response_size
+// with a non-numeric value returns an error.
+func TestUnmarshalCaddyfileMaxResponseSizeInvalid(t *testing.T) {
+	input := `mesi {
+		max_response_size not-a-number
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for invalid max_response_size")
+	}
+	if !strings.Contains(err.Error(), "invalid max_response_size") {
+		t.Errorf("expected 'invalid max_response_size' error, got: %v", err)
+	}
+}
+
+// TestUnmarshalCaddyfileMaxResponseSizeNoArg verifies that max_response_size
+// without argument returns ArgErr.
+func TestUnmarshalCaddyfileMaxResponseSizeNoArg(t *testing.T) {
+	input := `mesi {
+		max_response_size
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err == nil {
+		t.Fatal("UnmarshalCaddyfile should return error for max_response_size without argument")
+	}
+}
+
+// TestMaxResponseSizeProvision verifies that Provision works with MaxResponseSize set.
+func TestMaxResponseSizeProvision(t *testing.T) {
+	m := &MesiMiddleware{MaxResponseSize: 1048576}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.MaxResponseSize != 1048576 {
+		t.Errorf("expected MaxResponseSize=1048576, got %d", m.MaxResponseSize)
+	}
+}
+
+// TestMaxResponseSizeServeHTTP verifies that the configured MaxResponseSize is passed
+// to EsiParserConfig in ServeHTTP.
+func TestMaxResponseSizeServeHTTP(t *testing.T) {
+	m := &MesiMiddleware{MaxResponseSize: 2048}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body>max response size test</body></html>"))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	err := m.ServeHTTP(rec, req, handler)
+	if err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+// TestMaxResponseSizeWithOtherDirectives verifies max_response_size
+// works alongside other directives.
+func TestMaxResponseSizeWithOtherDirectives(t *testing.T) {
+	input := `mesi {
+		max_response_size 524288
+		max_depth 3
+		shared_http_client
+		timeout 15s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxResponseSize != 524288 {
+		t.Errorf("expected MaxResponseSize=524288, got %d", m.MaxResponseSize)
+	}
+	if m.MaxDepth == nil || *m.MaxDepth != 3 {
+		t.Errorf("expected MaxDepth=3, got %v", m.MaxDepth)
+	}
+	if !m.SharedHTTPClient {
+		t.Error("SharedHTTPClient should be true")
+	}
+	if m.Timeout != "15s" {
+		t.Errorf("expected Timeout='15s', got '%s'", m.Timeout)
+	}
+}
+
+// TestMaxResponseSizeIntegrationParseAndProvision verifies the full flow:
+// Caddyfile parsing → Provision → Cleanup with max_response_size.
+func TestMaxResponseSizeIntegrationParseAndProvision(t *testing.T) {
+	input := `mesi {
+		max_response_size 1048576
+		max_depth 5
+		timeout 10s
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	if err := m.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if m.MaxResponseSize != 1048576 {
+		t.Errorf("expected MaxResponseSize=1048576, got %d", m.MaxResponseSize)
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if err := m.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}

@@ -279,3 +279,32 @@ mesi {
   complex ESI pages with many tokens.
 - This is distinct from `max_concurrent_requests` — that limits HTTP fetches,
   while `max_workers` limits internal parallelism of ESI tag parsing.
+
+### `max_response_size`
+
+Limits the size (in bytes) of an individual `<esi:include>` response.
+Responses exceeding this limit are treated as errors — the include is replaced
+with the `include_error_marker` (or silently dropped if no marker is set).
+
+This is a security directive: it prevents a malicious or misconfigured backend
+from returning an unbounded response that exhausts Caddy's memory.
+
+```
+mesi {
+    max_response_size 1048576   # 1 MB
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| `1–N` | Include responses larger than N bytes are rejected. |
+| `0` | Unlimited (no size check). |
+| absent | Library default: `10485760` (10 MB). |
+
+**Notes:**
+- Values are in bytes. For common sizes: `1048576` = 1 MB, `10485760` = 10 MB, `1073741824` = 1 GB.
+- When a response exceeds the limit, the include is replaced with the
+  `include_error_marker` string (if configured) or silently dropped.
+- This limit applies to each individual include response, not the total page size.
+- Consider setting this to a reasonable value based on the largest expected
+  include fragment in your application.
