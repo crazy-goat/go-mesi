@@ -100,9 +100,9 @@ type MesiMiddleware struct {
 
 	// MaxResponseSize limits the size (in bytes) of an individual ESI include
 	// response. Responses exceeding this limit are treated as errors and replaced
-	// with IncludeErrorMarker (or silently dropped). 0 = unlimited, but note the
-	// library default is 10 MB when this is left unset at the config level.
-	MaxResponseSize int64 `json:"max_response_size,omitempty"`
+	// with IncludeErrorMarker (or silently dropped). Pointer distinguishes "unset"
+	// (nil → library default 10 MB) from "explicitly set to 0" (unlimited).
+	MaxResponseSize *int64 `json:"max_response_size,omitempty"`
 
 	// MaxWorkers limits the number of goroutines used to process ESI tokens
 	// within a single MESIParse call. Zero means runtime.NumCPU()*4 (library default).
@@ -243,7 +243,10 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 			Debug:                  m.Debug,
 			MaxConcurrentRequests:  m.MaxConcurrentRequests,
 			MaxWorkers:             m.MaxWorkers,
-			MaxResponseSize:        m.MaxResponseSize,
+		}
+
+		if m.MaxResponseSize != nil {
+			config.MaxResponseSize = *m.MaxResponseSize
 		}
 
 		if m.cache != nil {
@@ -338,7 +341,7 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if err != nil {
 					return d.Errf("invalid max_response_size %q: %v", d.Val(), err)
 				}
-				m.MaxResponseSize = v
+				m.MaxResponseSize = &v
 		case "shared_http_client":
 			m.SharedHTTPClient = true
 		case "block_private_ips":

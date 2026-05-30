@@ -2813,14 +2813,14 @@ func TestMaxWorkersNegativeProvision(t *testing.T) {
 // --- MaxResponseSize Directive Tests ---
 
 // TestMaxResponseSizeDefaultUnset verifies that when max_response_size is not set,
-// MaxResponseSize is 0 (library default: 10MB).
+// MaxResponseSize is nil and the library default (10 MB) is used.
 func TestMaxResponseSizeDefaultUnset(t *testing.T) {
 	m := &MesiMiddleware{}
 	if err := m.Provision(caddy.Context{}); err != nil {
 		t.Fatalf("Provision() returned error: %v", err)
 	}
-	if m.MaxResponseSize != 0 {
-		t.Errorf("MaxResponseSize should be 0 (library default) by default, got %d", m.MaxResponseSize)
+	if m.MaxResponseSize != nil {
+		t.Errorf("MaxResponseSize should be nil by default, got %v", *m.MaxResponseSize)
 	}
 }
 
@@ -2835,8 +2835,11 @@ func TestUnmarshalCaddyfileMaxResponseSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
 	}
-	if m.MaxResponseSize != 1048576 {
-		t.Errorf("expected MaxResponseSize=1048576, got %d", m.MaxResponseSize)
+	if m.MaxResponseSize == nil {
+		t.Fatal("MaxResponseSize should be non-nil after parsing max_response_size 1048576")
+	}
+	if *m.MaxResponseSize != 1048576 {
+		t.Errorf("expected MaxResponseSize=1048576, got %d", *m.MaxResponseSize)
 	}
 }
 
@@ -2851,8 +2854,11 @@ func TestUnmarshalCaddyfileMaxResponseSizeZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
 	}
-	if m.MaxResponseSize != 0 {
-		t.Errorf("expected MaxResponseSize=0 (unlimited), got %d", m.MaxResponseSize)
+	if m.MaxResponseSize == nil {
+		t.Fatal("MaxResponseSize should be non-nil after parsing max_response_size 0")
+	}
+	if *m.MaxResponseSize != 0 {
+		t.Errorf("expected MaxResponseSize=0 (unlimited), got %d", *m.MaxResponseSize)
 	}
 }
 
@@ -2868,8 +2874,11 @@ func TestUnmarshalCaddyfileMaxResponseSizeNegative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
 	}
-	if m.MaxResponseSize != -1 {
-		t.Errorf("expected MaxResponseSize=-1, got %d", m.MaxResponseSize)
+	if m.MaxResponseSize == nil {
+		t.Fatal("MaxResponseSize should be non-nil after parsing max_response_size -1")
+	}
+	if *m.MaxResponseSize != -1 {
+		t.Errorf("expected MaxResponseSize=-1, got %d", *m.MaxResponseSize)
 	}
 }
 
@@ -2906,19 +2915,21 @@ func TestUnmarshalCaddyfileMaxResponseSizeNoArg(t *testing.T) {
 
 // TestMaxResponseSizeProvision verifies that Provision works with MaxResponseSize set.
 func TestMaxResponseSizeProvision(t *testing.T) {
-	m := &MesiMiddleware{MaxResponseSize: 1048576}
+	v := int64(1048576)
+	m := &MesiMiddleware{MaxResponseSize: &v}
 	if err := m.Provision(caddy.Context{}); err != nil {
 		t.Fatalf("Provision() returned error: %v", err)
 	}
-	if m.MaxResponseSize != 1048576 {
-		t.Errorf("expected MaxResponseSize=1048576, got %d", m.MaxResponseSize)
+	if m.MaxResponseSize == nil || *m.MaxResponseSize != 1048576 {
+		t.Errorf("expected MaxResponseSize=1048576, got %v", m.MaxResponseSize)
 	}
 }
 
 // TestMaxResponseSizeServeHTTP verifies that the configured MaxResponseSize is passed
 // to EsiParserConfig in ServeHTTP.
 func TestMaxResponseSizeServeHTTP(t *testing.T) {
-	m := &MesiMiddleware{MaxResponseSize: 2048}
+	v := int64(2048)
+	m := &MesiMiddleware{MaxResponseSize: &v}
 	if err := m.Provision(caddy.Context{}); err != nil {
 		t.Fatalf("Provision() returned error: %v", err)
 	}
@@ -2956,8 +2967,8 @@ func TestMaxResponseSizeWithOtherDirectives(t *testing.T) {
 	if err := m.UnmarshalCaddyfile(d); err != nil {
 		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
 	}
-	if m.MaxResponseSize != 524288 {
-		t.Errorf("expected MaxResponseSize=524288, got %d", m.MaxResponseSize)
+	if m.MaxResponseSize == nil || *m.MaxResponseSize != 524288 {
+		t.Errorf("expected MaxResponseSize=524288, got %v", m.MaxResponseSize)
 	}
 	if m.MaxDepth == nil || *m.MaxDepth != 3 {
 		t.Errorf("expected MaxDepth=3, got %v", m.MaxDepth)
@@ -2983,8 +2994,8 @@ func TestMaxResponseSizeIntegrationParseAndProvision(t *testing.T) {
 	if err := m.UnmarshalCaddyfile(d); err != nil {
 		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
 	}
-	if m.MaxResponseSize != 1048576 {
-		t.Errorf("expected MaxResponseSize=1048576, got %d", m.MaxResponseSize)
+	if m.MaxResponseSize == nil || *m.MaxResponseSize != 1048576 {
+		t.Errorf("expected MaxResponseSize=1048576, got %v", m.MaxResponseSize)
 	}
 	if err := m.Provision(caddy.Context{}); err != nil {
 		t.Fatalf("Provision() returned error: %v", err)
