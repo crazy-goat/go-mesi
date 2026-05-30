@@ -98,6 +98,12 @@ type MesiMiddleware struct {
 	// to allow internal ESI includes (e.g. service meshes, metadata services).
 	BlockPrivateIPs *bool `json:"block_private_ips,omitempty"`
 
+	// MaxResponseSize limits the size (in bytes) of an individual ESI include
+	// response. Responses exceeding this limit are treated as errors and replaced
+	// with IncludeErrorMarker (or silently dropped). Pointer distinguishes "unset"
+	// (nil → library default 10 MB) from "explicitly set to 0" (unlimited).
+	MaxResponseSize *int64 `json:"max_response_size,omitempty"`
+
 	// MaxWorkers limits the number of goroutines used to process ESI tokens
 	// within a single MESIParse call. Zero means runtime.NumCPU()*4 (library default).
 	// This controls token-processing goroutines, not HTTP fetch goroutines
@@ -239,6 +245,10 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 			MaxWorkers:             m.MaxWorkers,
 		}
 
+		if m.MaxResponseSize != nil {
+			config.MaxResponseSize = *m.MaxResponseSize
+		}
+
 		if m.cache != nil {
 			config.Cache = m.cache
 			config.CacheTTL = m.cacheTTL
@@ -314,15 +324,24 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if err != nil {
 					return d.Errf("invalid max_concurrent_requests %q: %v", d.Val(), err)
 				}
-			case "max_workers":
+		case "max_workers":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			var err error
+			m.MaxWorkers, err = strconv.Atoi(d.Val())
+			if err != nil {
+				return d.Errf("invalid max_workers %q: %v", d.Val(), err)
+			}
+			case "max_response_size":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				var err error
-				m.MaxWorkers, err = strconv.Atoi(d.Val())
+				v, err := strconv.ParseInt(d.Val(), 10, 64)
 				if err != nil {
-					return d.Errf("invalid max_workers %q: %v", d.Val(), err)
+					return d.Errf("invalid max_response_size %q: %v", d.Val(), err)
 				}
+				m.MaxResponseSize = &v
 		case "shared_http_client":
 			m.SharedHTTPClient = true
 		case "block_private_ips":
