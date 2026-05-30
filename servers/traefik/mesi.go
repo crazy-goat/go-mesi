@@ -17,6 +17,7 @@ const PluginName = "mesi"
 type Config struct {
 	MaxDepth               int      `json:"maxDepth" yaml:"maxDepth"`
 	SharedHTTPClient       bool     `json:"sharedHTTPClient" yaml:"sharedHTTPClient"`
+	IncludeErrorMarker     string   `json:"includeErrorMarker" yaml:"includeErrorMarker"`
 	CacheBackend           string   `json:"cacheBackend" yaml:"cacheBackend"`
 	CacheTTL               string   `json:"cacheTTL" yaml:"cacheTTL"`
 	CacheSize              int      `json:"cacheSize" yaml:"cacheSize"`
@@ -92,11 +93,12 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	if strings.HasPrefix(contentType, "text/html") {
 		config := mesi.EsiParserConfig{
-			Context:         req.Context(),
-			MaxDepth:        uint(p.config.MaxDepth),
-			DefaultUrl:      middleware.GetDefaultUrl(req),
-			Timeout:         10 * time.Second,
-			BlockPrivateIPs: true,
+			Context:             req.Context(),
+			MaxDepth:            uint(p.config.MaxDepth),
+			DefaultUrl:          middleware.GetDefaultUrl(req),
+			Timeout:             10 * time.Second,
+			BlockPrivateIPs:     true,
+			IncludeErrorMarker:  p.config.IncludeErrorMarker,
 		}
 
 		if p.cache != nil {
