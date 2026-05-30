@@ -4,21 +4,59 @@ package main
 // #include <string.h>
 import "C"
 import (
-	"time"
+	"net/http"
 	"strings"
+	"time"
+	"unsafe"
 
 	"github.com/crazy-goat/go-mesi/mesi"
-	"unsafe"
 )
+
+var (
+	sharedTransport *http.Transport
+	sharedClient    *http.Client
+)
+
+// InitHTTPClient creates a shared HTTP client with SSRF protection.
+// Call once per worker process (e.g. in module init) before Parse.
+// The blockPrivateIPs parameter controls dial-time private IP blocking.
+// Subsequent Parse calls reuse this client for connection pooling.
+//
+//export InitHTTPClient
+func InitHTTPClient(blockPrivateIPs C.int) {
+	config := mesi.EsiParserConfig{
+		BlockPrivateIPs: blockPrivateIPs != 0,
+	}
+	sharedTransport = mesi.NewSSRFSafeTransport(config)
+	sharedClient = &http.Client{
+		Transport: sharedTransport,
+		Timeout:   30 * time.Second,
+	}
+}
+
+// FreeHTTPClient closes idle connections on the shared HTTP client.
+// Call in process exit handler to prevent resource leaks.
+// Idempotent — safe to call multiple times.
+//
+//export FreeHTTPClient
+func FreeHTTPClient() {
+	if sharedTransport != nil {
+		sharedTransport.CloseIdleConnections()
+		sharedTransport = nil
+	}
+	sharedClient = nil
+}
+
+func applySharedClient(config *mesi.EsiParserConfig) {
+	if sharedClient != nil {
+		client := *sharedClient
+		client.Timeout = config.Timeout
+		config.HTTPClient = &client
+	}
+}
 
 // ParseDefault parses ESI tags using sensible defaults (maxDepth=5, defaultUrl=http://127.0.0.1/).
 // Caller must free the returned string with FreeString.
-//
-// Example C usage:
-//
-//	char* result = ParseDefault(input);
-//	// use result
-//	FreeString(result);
 //
 //export ParseDefault
 func ParseDefault(input *C.char) *C.char {
@@ -28,6 +66,7 @@ func ParseDefault(input *C.char) *C.char {
 		MaxDepth:   5,
 		Timeout:    30 * time.Second,
 	}
+	applySharedClient(&config)
 	result := mesi.MESIParse(goInput, config)
 	return C.CString(result)
 }
@@ -41,12 +80,6 @@ func ParseDefault(input *C.char) *C.char {
 // Returns parsed HTML with ESI tags replaced by their content.
 // Caller must free the returned string with FreeString.
 //
-// Example C usage:
-//
-//	char* result = Parse(input, 5, "http://example.com/");
-//	// use result
-//	FreeString(result);
-//
 //export Parse
 func Parse(input *C.char, maxDepth C.int, defaultUrl *C.char) *C.char {
 	goInput := C.GoString(input)
@@ -57,6 +90,7 @@ func Parse(input *C.char, maxDepth C.int, defaultUrl *C.char) *C.char {
 		MaxDepth:   uint(goMaxDepth),
 		Timeout:    30 * time.Second,
 	}
+	applySharedClient(&config)
 	result := mesi.MESIParse(goInput, config)
 	return C.CString(result)
 }
@@ -91,6 +125,7 @@ func ParseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedH
 		AllowedHosts:    hosts,
 		BlockPrivateIPs: blockPrivateIPs != 0,
 	}
+	applySharedClient(&config)
 	result := mesi.MESIParse(goInput, config)
 	return C.CString(result)
 }
