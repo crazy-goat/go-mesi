@@ -28,10 +28,6 @@ RUN cd servers/traefik && go list -m -json all | jq -r 'select(.Dir != null and 
 
 FROM traefik:latest
 
-USER root
-
 COPY --from=deps /plugins-local /plugins-local
 
 ENV GOPATH=/plugins-local
-
-USER traefik
