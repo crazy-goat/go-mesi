@@ -1,5 +1,7 @@
 displayName: MESI
-description: Lightweight ESI (Edge Side Includes) implementation
-name: mesi
+summary: "Lightweight ESI (Edge Side Includes) middleware for Traefik"
 type: middleware
+import: "github.com/crazy-goat/go-mesi/servers/traefik"
 compatibility: ">=3.0"
+testData:
+  maxDepth: 5
