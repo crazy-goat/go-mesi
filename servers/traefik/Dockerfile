@@ -4,6 +4,7 @@ RUN apk add --no-cache git jq
 
 WORKDIR /src
 
+COPY go.mod go.sum ./
 COPY mesi/ ./mesi/
 COPY middleware/ ./middleware/
 COPY libgomesi/ ./libgomesi/
