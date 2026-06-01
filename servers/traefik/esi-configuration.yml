@@ -12,7 +12,7 @@ http:
     test-server:
       loadBalancer:
         servers:
-          - url: http://test-server
+          - url: http://test-server:8080
         passHostHeader: false
 
   middlewares:

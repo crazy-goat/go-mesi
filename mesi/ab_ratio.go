@@ -1,7 +1,11 @@
 package mesi
 
 import (
-	"math/rand/v2"
+	// NOTE: math/rand is used instead of math/rand/v2 for Traefik plugin
+	// compatibility. Yaegi (Traefik's Go interpreter) does not support
+	// packages introduced in Go 1.22+ like math/rand/v2.
+	// See: https://github.com/traefik/yaegi/issues/1674
+	"math/rand"
 	"strconv"
 	"strings"
 )
@@ -58,7 +62,7 @@ func (ratio abRatio) selectUrl(token *esiIncludeToken, rng func(int) int) string
 	}
 
 	if rng == nil {
-		rng = rand.IntN
+		rng = rand.Intn
 	}
 
 	randomValue := rng(int(sum))
