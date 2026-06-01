@@ -1,0 +1,5 @@
+displayName: MESI
+description: Lightweight ESI (Edge Side Includes) implementation
+name: mesi
+type: middleware
+compatibility: ">=3.0"
