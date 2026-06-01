@@ -11,8 +11,7 @@ services:
     ports:
       - "8080:80"
     depends_on:
-      test-server:
-        condition: service_healthy
+      - test-server
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
       interval: 2s
@@ -23,8 +22,3 @@ services:
     image: crazygoat/esi-test-server
     labels:
       - traefik.http.routers.test-server.rule=Host(`domain.com`)
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/esi"]
-      interval: 2s
-      retries: 10
-      start_period: 5s

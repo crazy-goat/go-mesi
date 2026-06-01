@@ -5,7 +5,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$SCRIPT_DIR"
 
-docker compose up -d --wait
+docker compose up -d
+
+echo "Waiting for services to be ready..."
+for i in $(seq 1 30); do
+    if curl -sf -H "Host: domain.com" http://localhost:8080/ >/dev/null 2>&1; then
+        echo "Services ready"
+        break
+    fi
+    if [ "$i" -eq 30 ]; then
+        echo "FAIL: Services did not become ready in time"
+        docker compose logs
+        docker compose down
+        exit 1
+    fi
+    sleep 1
+done
 
 echo "=== Test 1: Traefik starts with mesi plugin ==="
 RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: domain.com" http://localhost:8080/)
@@ -28,7 +43,7 @@ else
     echo "PASS: ESI remove processed correctly"
 fi
 
-echo "=== Test 3: Surrogate-Capability header added to upstream ==="
+echo "=== Test 3: HTML content served through mesi plugin ==="
 RESPONSE=$(curl -s -H "Host: domain.com" http://localhost:8080/)
 if echo "$RESPONSE" | grep -q "Welcome to ESI Test"; then
     echo "PASS: HTML content served through mesi plugin"
@@ -69,13 +84,13 @@ else
     echo "PASS: Raw ESI include tag removed from response"
 fi
 
-echo "=== Test 6: Non-HTML content not processed ==="
+echo "=== Test 6: Non-HTML content passthrough ==="
 HEADERS=$(curl -sI -H "Host: domain.com" http://localhost:8080/esi)
 CT=$(echo "$HEADERS" | grep -i "Content-Type" || true)
 if echo "$CT" | grep -qi "text/html"; then
-    echo "PASS: /esi endpoint returns text/html"
+    echo "PASS: /esi endpoint returns text/html (processed by mesi)"
 else
-    echo "INFO: /esi Content-Type: $CT (non-HTML, ESI tags preserved)"
+    echo "INFO: /esi Content-Type: $CT"
 fi
 
 docker compose down
