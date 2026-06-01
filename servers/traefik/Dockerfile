@@ -37,3 +37,4 @@ RUN mkdir -p /usr/local/go && \
     ln -s /plugins-local/src/go-stdlib /usr/local/go/src
 
 ENV GOPATH=/plugins-local
+ENV GOROOT=/usr/local/go
