@@ -1,22 +1,17 @@
 services:
   traefik:
-    image: traefik:latest
+    image: go-mesi-traefik-test
+    build:
+      context: ../..
+      dockerfile: servers/traefik/Dockerfile
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ../..:/plugins-local/src/github.com/crazy-goat/go-mesi
       - ./traefik.yml:/traefik.yml
       - ./esi-configuration.yml:/esi-configuration.yml
-    environment:
-      GOPATH: /plugins-local
     ports:
       - "8080:80"
     depends_on:
       - test-server
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
-      interval: 2s
-      retries: 10
-      start_period: 5s
 
   test-server:
     image: crazygoat/esi-test-server
