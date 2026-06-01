@@ -13,7 +13,9 @@ COPY servers/traefik/mesi.go servers/traefik/cache.go servers/traefik/cache_memc
 
 RUN cd servers/traefik && go mod download
 
-RUN mkdir -p /plugins-local/src/github.com/crazy-goat/go-mesi && \
+RUN mkdir -p /plugins-local/src && \
+    cp -r /usr/local/go/src /plugins-local/src/go-stdlib && \
+    mkdir -p /plugins-local/src/github.com/crazy-goat/go-mesi && \
     cp -r mesi /plugins-local/src/github.com/crazy-goat/go-mesi/ && \
     cp -r middleware /plugins-local/src/github.com/crazy-goat/go-mesi/ && \
     cp -r libgomesi /plugins-local/src/github.com/crazy-goat/go-mesi/ && \
@@ -29,6 +31,10 @@ RUN cd servers/traefik && go list -m -json all | jq -r 'select(.Dir != null and 
 
 FROM traefik:latest
 
+USER root
+
 COPY --from=deps /plugins-local /plugins-local
+
+RUN ln -s /plugins-local/src/go-stdlib /usr/local/go/src
 
 ENV GOPATH=/plugins-local
