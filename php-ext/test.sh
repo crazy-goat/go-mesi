@@ -10,11 +10,11 @@ docker compose up -d --build
 echo "Waiting for PHP extension server to be ready..."
 for i in $(seq 1 60); do
     if curl -s -o /dev/null http://localhost:8080/health 2>/dev/null; then
-        echo "PHP extension server ready after ${i}s"
+        echo "PHP extension server ready after $((i * 2))s"
         break
     fi
     if [ "$i" -eq 60 ]; then
-        echo "FAIL: PHP extension server did not become ready within 60s"
+        echo "FAIL: PHP extension server did not become ready within $((i * 2))s"
         docker compose logs php-ext
         docker compose down
         exit 1
@@ -114,8 +114,9 @@ fi
 
 echo ""
 echo "=== Test 8: Content-Length correctness ==="
-HEADERS=$(curl -sD - http://localhost:8080/remove -o /tmp/mesi-php-ext-response.txt 2>/dev/null)
-ACTUAL_BODY_SIZE=$(wc -c < /tmp/mesi-php-ext-response.txt)
+TMPFILE=$(mktemp)
+HEADERS=$(curl -sD - http://localhost:8080/remove -o "$TMPFILE" 2>/dev/null)
+ACTUAL_BODY_SIZE=$(wc -c < "$TMPFILE")
 HEADER_CL=$(echo "$HEADERS" | grep -i "Content-Length" | awk '{print $2}' | tr -d '\r')
 if [ -n "$HEADER_CL" ]; then
     if [ "$HEADER_CL" -eq "$ACTUAL_BODY_SIZE" ] 2>/dev/null; then
@@ -128,9 +129,9 @@ if [ -n "$HEADER_CL" ]; then
 else
     echo "PASS: Content-Length correctly absent (processed by PHP built-in server)"
 fi
-rm -f /tmp/mesi-php-ext-response.txt
+rm -f "$TMPFILE"
 
-docker compose down
+docker compose down -v
 
 echo ""
 echo "=== All PHP extension tests passed ==="

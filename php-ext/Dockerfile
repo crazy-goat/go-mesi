@@ -11,8 +11,6 @@ FROM php:8.3-cli-bookworm AS ext-build
 COPY --from=libgomesi-build /build/libgomesi/libgomesi.so /usr/local/lib/
 COPY --from=libgomesi-build /build/libgomesi/libgomesi.h /usr/local/include/
 
-RUN ldconfig
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
     autoconf \
     bison \
@@ -32,12 +30,10 @@ RUN cd php-ext && \
 
 FROM php:8.3-cli-bookworm
 
-COPY --from=ext-build /usr/local/lib/php/extensions/no-debug-non-zts-20230831/mesi.so /usr/local/lib/php/extensions/no-debug-non-zts-20230831/mesi.so
 COPY --from=libgomesi-build /build/libgomesi/libgomesi.so /usr/local/lib/
+COPY --from=ext-build /usr/local/lib/php/extensions/ /usr/local/lib/php/extensions/
 
-RUN ldconfig
-
-RUN docker-php-ext-enable mesi
+RUN ldconfig && docker-php-ext-enable mesi
 
 COPY php-ext/tests/ /app/tests/
 

@@ -28,10 +28,12 @@ PHP_FUNCTION(parse) {
 }
 
 PHP_MINIT_FUNCTION(mesi) {
+    InitHTTPClient(1);
     return SUCCESS;
 }
 
 PHP_MSHUTDOWN_FUNCTION(mesi) {
+    FreeHTTPClient();
     return SUCCESS;
 }
 
