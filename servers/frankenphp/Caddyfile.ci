@@ -1,0 +1,13 @@
+{
+    admin off
+    frankenphp
+    order mesi before php_server
+}
+
+:8080 {
+    root * /app
+    mesi {
+        block_private_ips false
+    }
+    php_server
+}

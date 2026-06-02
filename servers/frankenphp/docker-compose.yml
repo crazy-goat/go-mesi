@@ -1,0 +1,18 @@
+services:
+  frankenphp:
+    build:
+      context: ../..
+      dockerfile: servers/frankenphp/Dockerfile
+    volumes:
+      - ./Caddyfile.ci:/etc/caddy/Caddyfile
+      - ./tests:/app
+    ports:
+      - 8080:8080
+    depends_on:
+      test-server:
+        condition: service_started
+
+  test-server:
+    build:
+      context: ../test-server
+      dockerfile: Dockerfile
