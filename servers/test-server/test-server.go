@@ -19,14 +19,30 @@ const HtmlTemplate = `<!DOCTYPE html>
 
 const HtmlIncludeTemplate = "Hurray: Esi included!"
 
-func main() {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(HtmlTemplate))
-	})
+const PlainTextTemplate = `plain text with <esi:include src="http://test-server/esi" /> tags`
 
-	http.HandleFunc("/esi", func(w http.ResponseWriter, r *http.Request) {
+func echoHeaders(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if sc := r.Header.Get("Surrogate-Capability"); sc != "" {
+			w.Header().Set("Surrogate-Capability", sc)
+		}
+		next(w, r)
+	}
+}
+
+func main() {
+	http.HandleFunc("/", echoHeaders(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(HtmlTemplate))
+	}))
+
+	http.HandleFunc("/esi", echoHeaders(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(HtmlIncludeTemplate))
-	})
+	}))
+
+	http.HandleFunc("/plain", echoHeaders(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte(PlainTextTemplate))
+	}))
 
 	log.Fatal(http.ListenAndServe(":80", nil))
 }
