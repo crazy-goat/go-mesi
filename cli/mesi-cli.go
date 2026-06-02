@@ -4,6 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"github.com/crazy-goat/go-mesi/mesi"
+	"github.com/crazy-goat/go-mesi/mesi/cache_redis"
+	"github.com/redis/go-redis/v9"
 	"io"
 	"log"
 	"net/http"
@@ -24,11 +26,17 @@ func main() {
 	parseOnHeader := flag.Bool("parse-on-header", false, "Enable parsing on header")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	cacheBackend := flag.String("cache-backend", "",
-		"Cache backend for ESI includes: memory (default: off)")
+		"Cache backend for ESI includes: memory, redis (default: off)")
 	cacheSize := flag.Int("cache-size", 10000,
 		"Max cache entries for memory backend")
 	cacheTTL := flag.Duration("cache-ttl", 0,
 		"Cache TTL (e.g. 30s, 5m); 0 = no expiry")
+	cacheRedisAddr := flag.String("cache-redis-addr", "localhost:6379",
+		"Redis server address (host:port)")
+	cacheRedisPassword := flag.String("cache-redis-password", "",
+		"Redis password")
+	cacheRedisDB := flag.Int("cache-redis-db", 0,
+		"Redis database number")
 	allowPrivateIPs := flag.Bool("allow-private-ips", false,
 		"Allow ESI includes to private/reserved IP ranges (for local testing)")
 	maxWorkers := flag.Int("max-workers", 0,
@@ -56,6 +64,15 @@ func main() {
 	case "":
 	case "memory":
 		config.Cache = mesi.NewMemoryCache(*cacheSize, *cacheTTL)
+		config.CacheTTL = *cacheTTL
+	case "redis":
+		rdb := redis.NewClient(&redis.Options{
+			Addr:     *cacheRedisAddr,
+			Password: *cacheRedisPassword,
+			DB:       *cacheRedisDB,
+		})
+		defer rdb.Close()
+		config.Cache = cache_redis.NewRedisCache(rdb, *cacheTTL)
 		config.CacheTTL = *cacheTTL
 	default:
 		log.Fatalf("unknown cache backend: %s", *cacheBackend)
