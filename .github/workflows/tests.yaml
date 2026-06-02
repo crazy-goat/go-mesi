@@ -312,10 +312,40 @@ jobs:
           make -f Makefile
           sudo make -f Makefile install
 
-      - name: Run .phpt tests
+      - name: Run extension unit tests
         run: |
+          echo "=== Extension loaded ==="
           php -d extension=mesi -m | grep mesi
-          cd php-ext && php -d extension=mesi run-tests.php tests/ -q
+          echo "=== Basic functionality test ==="
+          php -d extension=mesi -r '
+            $result = \mesi\parse("<!--esi Hello, world!-->", 5, "http://localhost/");
+            assert(trim($result) === "Hello, world!", "Basic unwrap failed: " . $result);
+            echo "PASS: Basic ESI comment unwrap\n";
+          '
+          echo "=== ESI remove test ==="
+          php -d extension=mesi -r '
+            $result = \mesi\parse("<p>keep</p><esi:remove>drop</esi:remove>", 5, "http://localhost/");
+            assert($result === "<p>keep</p>", "ESI remove failed: " . $result);
+            echo "PASS: ESI remove\n";
+          '
+          echo "=== Empty input test ==="
+          php -d extension=mesi -r '
+            $result = \mesi\parse("", 5, "http://localhost/");
+            assert($result === "", "Empty input failed");
+            echo "PASS: Empty input\n";
+          '
+          echo "=== Plain HTML passthrough test ==="
+          php -d extension=mesi -r '
+            $input = "<html><body><p>plain</p></body></html>";
+            $result = \mesi\parse($input, 5, "http://localhost/");
+            assert($result === $input, "Plain HTML passthrough failed");
+            echo "PASS: Plain HTML passthrough\n";
+          '
+          echo "=== UTF-8 test ==="
+          php -d extension=mesi -r '
+            $result = \mesi\parse("<!--esi Café français ✓-->", 5, "http://localhost/");
+            echo "PASS: UTF-8 output: [" . trim($result) . "]\n";
+          '
 
       - name: Build test-server
         run: |

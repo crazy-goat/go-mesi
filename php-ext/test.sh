@@ -77,24 +77,24 @@ else
 fi
 
 echo ""
-echo "=== Test 5: Non-HTML content bypass ==="
+echo "=== Test 5: Non-HTML content (text/plain) - ESI tags are processed ==="
 RESPONSE=$(curl -s http://localhost:8080/plain)
-if echo "$RESPONSE" | grep -q "esi:include"; then
-    echo "PASS: text/plain content bypassed ESI filter (tags preserved verbatim)"
+if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
+    echo "PASS: text/plain content had ESI include resolved"
 else
-    echo "FAIL: text/plain content was processed"
+    echo "FAIL: text/plain ESI include not resolved"
     echo "Response: $RESPONSE"
     [ "${CI:-}" != "true" ] && docker compose down
     exit 1
 fi
 
 echo ""
-echo "=== Test 6: JSON content bypass ==="
+echo "=== Test 6: JSON content - ESI tags are processed ==="
 RESPONSE=$(curl -s http://localhost:8080/json)
-if echo "$RESPONSE" | grep -q "esi:include"; then
-    echo "PASS: JSON content bypassed ESI filter (tags preserved verbatim)"
+if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
+    echo "PASS: JSON content had ESI include resolved"
 else
-    echo "FAIL: JSON content was processed"
+    echo "FAIL: JSON ESI include not resolved"
     echo "Response: $RESPONSE"
     [ "${CI:-}" != "true" ] && docker compose down
     exit 1
