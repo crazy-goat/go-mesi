@@ -319,21 +319,30 @@ jobs:
 
       - name: Build test-server
         run: |
-          cd servers/test-server
-          go build -o test-server test-server.go
+          cd servers/test-server && go build -o test-server test-server.go
 
       - name: Run integration tests
         run: |
           MESI_TEST_SERVER_PORT=8081 ./servers/test-server/test-server &
-          sleep 2
+          TS_PID=$!
+          echo "test-server PID: $TS_PID"
+          for i in $(seq 1 10); do
+            if curl -s -o /dev/null http://localhost:8081/; then
+              echo "test-server ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
           export MESI_BACKEND_URL='http://localhost:8081/'
-          php -d extension=mesi -S 0.0.0.0:8080 php-ext/tests/router.php &
+          php -d extension=mesi -S 0.0.0.0:8080 php-ext/tests/router.php > /dev/null 2>&1 &
+          PHP_PID=$!
+          echo "PHP server PID: $PHP_PID"
           sleep 2
           cd php-ext && bash test.sh
 
       - name: Cleanup
         if: always()
-        run: pkill -9 test-server 2>/dev/null || true; pkill -f "php -S" 2>/dev/null || true
+        run: pkill -9 test-server 2>/dev/null || true; pkill -f "php -S 0.0.0.0:8080" 2>/dev/null || true
 
   ci:
     name: CI
