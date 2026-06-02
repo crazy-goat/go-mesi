@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CLI cache example</title>
+</head>
+<body>
+<h1>CLI cache example</h1>
+<p>The three includes below point to the same URL. With
+<code>-cacheBackend=memory</code>, the first response is cached and reused
+for the remaining two; without the flag, the origin is hit three times.</p>
+<esi:include src="include.txt"/>
+<esi:include src="include.txt"/>
+<esi:include src="include.txt"/>
+</body>
+</html>
