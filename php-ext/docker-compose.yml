@@ -1,0 +1,16 @@
+services:
+  php-ext:
+    image: go-mesi-php-ext-test
+    build:
+      context: ..
+      dockerfile: php-ext/Dockerfile
+    ports:
+      - 8080:8080
+    depends_on:
+      test-server:
+        condition: service_started
+
+  test-server:
+    build:
+      context: ../servers/test-server
+      dockerfile: Dockerfile
