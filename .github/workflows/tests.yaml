@@ -317,9 +317,8 @@ jobs:
 
       - name: Run .phpt tests
         run: |
-          cd php-ext
           php -d extension=mesi -m | grep mesi
-          REPORT_EXIT_STATUS=1 php -d extension=mesi run-tests.php tests/ -q
+          cd php-ext && php -d extension=mesi run-tests.php tests/ -q
 
       - name: Build test-server
         run: |
