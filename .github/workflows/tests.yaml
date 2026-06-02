@@ -280,6 +280,31 @@ jobs:
         if: always()
         run: cd servers/frankenphp && docker compose down -v 2>/dev/null || true
 
+  roadrunner-test:
+    name: RoadRunner Integration Test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Download roadrunner dependencies
+        run: cd servers/roadrunner && go mod download
+
+      - name: Run RoadRunner tests
+        run: cd servers/roadrunner && bash test.sh
+
+      - name: Cleanup
+        if: always()
+        run: pkill -9 rrtest 2>/dev/null || true; pkill -9 test-server 2>/dev/null || true
+
   php-ext-test:
     name: PHP Extension Test
     runs-on: ubuntu-latest
@@ -376,7 +401,7 @@ jobs:
 
   ci:
     name: CI
-    needs: [lint, test, apache-test, traefik-test, nginx-test, caddy-test, frankenphp-test, php-ext-test, proxy-test, cli-test, cli-e2e-test]
+    needs: [lint, test, apache-test, traefik-test, nginx-test, caddy-test, frankenphp-test, php-ext-test, proxy-test, cli-test, cli-e2e-test, roadrunner-test]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -393,3 +418,4 @@ jobs:
           if [ "${{ needs.proxy-test.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.cli-test.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.cli-e2e-test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.roadrunner-test.result }}" != "success" ]; then exit 1; fi
