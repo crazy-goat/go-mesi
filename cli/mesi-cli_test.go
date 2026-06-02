@@ -250,10 +250,69 @@ func TestCLI_cacheBackendMemory(t *testing.T) {
 	}
 }
 
+func TestCLI_cacheBackendMemcached(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, exitCode := runCLI(t,
+		"-cache-backend=memcached",
+		"-cache-memcached-servers=localhost:11211",
+		"-cache-ttl=10s",
+		inputFile,
+	)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d (stderr=%q)", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, "Hello") {
+		t.Errorf("expected 'Hello' with -cache-backend=memcached, got %q", stdout)
+	}
+}
+
+func TestCLI_cacheBackendMemcachedNoServers(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, exitCode := runCLI(t,
+		"-cache-backend=memcached",
+		"-cache-ttl=10s",
+		inputFile,
+	)
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit code for memcached without servers, got 0")
+	}
+	if !strings.Contains(stderr, "cache-memcached-servers required") {
+		t.Errorf("expected 'cache-memcached-servers required' in stderr, got %q", stderr)
+	}
+}
+
+func TestCLI_cacheBackendMemcachedEmptyServers(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, exitCode := runCLI(t,
+		"-cache-backend=memcached",
+		"-cache-memcached-servers=",
+		"-cache-ttl=10s",
+		inputFile,
+	)
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit code for empty servers, got 0")
+	}
+	if !strings.Contains(stderr, "cache-memcached-servers required") {
+		t.Errorf("expected 'cache-memcached-servers required' in stderr, got %q", stderr)
+	}
+}
+
 func TestCLI_cacheFlagsInHelp(t *testing.T) {
 	stdout, stderr, _ := runCLI(t, "-h")
 	output := stdout + stderr
-	for _, flag := range []string{"-cache-backend", "-cache-size", "-cache-ttl", "-cache-redis-addr", "-cache-redis-password", "-cache-redis-db"} {
+	for _, flag := range []string{"-cache-backend", "-cache-size", "-cache-ttl", "-cache-redis-addr", "-cache-redis-password", "-cache-redis-db", "-cache-memcached-servers"} {
 		if !strings.Contains(output, flag) {
 			t.Errorf("expected %q in -h output, got stdout=%q stderr=%q", flag, stdout, stderr)
 		}

@@ -50,7 +50,7 @@ mesi-cli [options] path/url
 - **max-depth <depth>** (integer): Defines the maximum depth of parsing, which can limit how many nested ESI includes or references are processed. Default: 5
 - **timeout <seconds>** (float): Sets the request timeout duration (in seconds) for all retrieval operations. Default: 10.0
 - **parse-on-header** (bool): Enables ESI parsing on the HTTP headers, if set to `true` response must have `Edge-control: dca=esi` to enable parsing. Default: false
-- **cache-backend <name>** (string): Cache backend for ESI includes. Currently only `memory` is supported (in-process LRU). Default: off (no caching)
+- **cache-backend <name>** (string): Cache backend for ESI includes. Values: `memory`, `redis`, `memcached`. Default: off (no caching)
 - **cache-size <entries>** (int): Max cache entries for the memory backend. Default: 10000
 - **cache-ttl <duration>** (duration): Cache TTL (e.g. `30s`, `5m`); `0` = no expiry. Default: 0
 - **max-workers <count>** (int): Max concurrent ESI include goroutines. `0` = `NumCPU*4`. Useful for forcing sequential processing to make caching deterministic. Default: 0
@@ -58,13 +58,20 @@ mesi-cli [options] path/url
 
 ### Caching
 
-The CLI exposes the in-memory cache from the `mesi` package. Repeated `<esi:include>` URLs within a single invocation are served from the cache instead of hitting the origin again.
+The CLI exposes the in-memory, Redis, and Memcached caches from the `mesi` package. Repeated `<esi:include>` URLs within a single invocation are served from the cache instead of hitting the origin again.
 
 ```shell
+# In-memory cache (per-invocation)
 mesi-cli -cache-backend=memory -cache-size=5000 -cache-ttl=60s ./input.html
+
+# Redis cache (persistent, shared)
+mesi-cli -cache-backend=redis -cache-ttl=60s -cache-redis-addr=localhost:6379 ./input.html
+
+# Memcached cache (persistent, shared)
+mesi-cli -cache-backend=memcached -cache-ttl=60s -cache-memcached-servers=localhost:11211 ./input.html
 ```
 
-The cache is **per-invocation** — it lives for the duration of a single `mesi-cli` run. For persistent or cross-process caching, run multiple inputs through the same invocation or use one of the server integrations (Traefik, Caddy, etc.) that supports Redis or Memcached.
+The memory cache is **per-invocation** — it lives for the duration of a single `mesi-cli` run. Redis and Memcached caches are persistent and can be shared across invocations.
 
 ## Example Usage
 Render an ESI-enabled HTML from a file:
