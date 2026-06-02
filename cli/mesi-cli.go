@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/crazy-goat/go-mesi/mesi"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,6 +23,16 @@ func main() {
 	timeout := flag.Float64("timeout", 10.0, "Request timeout duration in seconds")
 	parseOnHeader := flag.Bool("parse-on-header", false, "Enable parsing on header")
 	debug := flag.Bool("debug", false, "Enable debug logging")
+	cacheBackend := flag.String("cache-backend", "",
+		"Cache backend for ESI includes: memory (default: off)")
+	cacheSize := flag.Int("cache-size", 10000,
+		"Max cache entries for memory backend")
+	cacheTTL := flag.Duration("cache-ttl", 0,
+		"Cache TTL (e.g. 30s, 5m); 0 = no expiry")
+	allowPrivateIPs := flag.Bool("allow-private-ips", false,
+		"Allow ESI includes to private/reserved IP ranges (for local testing)")
+	maxWorkers := flag.Int("max-workers", 0,
+		"Max concurrent ESI include goroutines (0 = NumCPU*4)")
 
 	flag.Parse()
 	args := flag.Args()
@@ -38,6 +49,17 @@ func main() {
 	config.Timeout = time.Duration(*timeout * float64(time.Second))
 	config.ParseOnHeader = *parseOnHeader
 	config.Debug = *debug
+	config.BlockPrivateIPs = !*allowPrivateIPs
+	config.MaxWorkers = *maxWorkers
+
+	switch *cacheBackend {
+	case "":
+	case "memory":
+		config.Cache = mesi.NewMemoryCache(*cacheSize, *cacheTTL)
+		config.CacheTTL = *cacheTTL
+	default:
+		log.Fatalf("unknown cache backend: %s", *cacheBackend)
+	}
 
 	pathOrUrl := args[0]
 	var data string

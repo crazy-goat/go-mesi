@@ -167,9 +167,48 @@ else
 fi
 
 echo ""
+echo "--- Cache Backend Tests ---"
+
+echo "Test 13: -cache-backend=memory deduplicates duplicate includes"
+cat > "$TEST_DIR/dup-includes-cached.html" <<'EOF'
+<esi:include src="count/cache-with-backend"/>
+<esi:include src="count/cache-with-backend"/>
+<esi:include src="count/cache-with-backend"/>
+EOF
+RESULT=$("$CLI_BINARY" -cache-backend=memory -max-workers=1 -allow-private-ips -default-url "http://127.0.0.1:8080/" "$TEST_DIR/dup-includes-cached.html" 2>/dev/null)
+RESULT_TRIM=$(echo "$RESULT" | tr -d '\n')
+if [ "$RESULT_TRIM" = "111" ]; then
+	pass "Cache dedup: 3 duplicate includes resolved with single origin hit"
+else
+	fail "Cache dedup" "Expected '111', got: $RESULT_TRIM"
+fi
+
+echo "Test 14: no -cache-backend hits origin for every include"
+cat > "$TEST_DIR/dup-includes-uncached.html" <<'EOF'
+<esi:include src="count/cache-no-backend"/>
+<esi:include src="count/cache-no-backend"/>
+<esi:include src="count/cache-no-backend"/>
+EOF
+RESULT=$("$CLI_BINARY" -max-workers=1 -allow-private-ips -default-url "http://127.0.0.1:8080/" "$TEST_DIR/dup-includes-uncached.html" 2>/dev/null)
+RESULT_TRIM=$(echo "$RESULT" | tr -d '\n')
+if [ "$RESULT_TRIM" = "123" ]; then
+	pass "No cache: 3 duplicate includes each hit origin"
+else
+	fail "No cache" "Expected '123', got: $RESULT_TRIM"
+fi
+
+echo "Test 15: unknown -cache-backend value exits with error"
+RESULT=$("$CLI_BINARY" -cache-backend=redis -allow-private-ips "$TEST_DIR/dup-includes-cached.html" 2>&1 || true)
+if echo "$RESULT" | grep -qi "unknown cache backend"; then
+	pass "Unknown backend rejected"
+else
+	fail "Unknown backend" "Output: $RESULT"
+fi
+
+echo ""
 echo "--- Error Handling ---"
 
-echo "Test 13: Missing argument produces error message"
+echo "Test 16: Missing argument produces error message"
 RESULT=$("$CLI_BINARY" 2>&1 || true)
 if echo "$RESULT" | grep -qi "error\|missing\|usage"; then
 	pass "Missing argument error reported"
@@ -177,7 +216,7 @@ else
 	fail "Missing argument" "Output: $RESULT"
 fi
 
-echo "Test 14: Nonexistent file produces error message"
+echo "Test 17: Nonexistent file produces error message"
 RESULT=$("$CLI_BINARY" "/nonexistent/file.html" 2>&1 || true)
 if echo "$RESULT" | grep -qi "error"; then
 	pass "Nonexistent file error reported"
@@ -185,7 +224,7 @@ else
 	fail "Nonexistent file" "Output: $RESULT"
 fi
 
-echo "Test 15: Bad URL produces error message"
+echo "Test 18: Bad URL produces error message"
 RESULT=$("$CLI_BINARY" "http://127.0.0.1:99999/" 2>&1 || true)
 if echo "$RESULT" | grep -qi "error\|refused\|timeout\|connection"; then
 	pass "Bad URL error reported"

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -52,6 +53,20 @@ func returnString(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(r.PathValue("data")))
 }
 
+var (
+	countersMu sync.Mutex
+	counters   = map[string]int{}
+)
+
+func countHandler(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	countersMu.Lock()
+	counters[name]++
+	n := counters[name]
+	countersMu.Unlock()
+	w.Write([]byte(strconv.Itoa(n)))
+}
+
 func main() {
 	srv := &http.Server{Addr: ":8080"}
 
@@ -62,6 +77,7 @@ func main() {
 	http.HandleFunc("/returnNonEsiHeader", returnEsiNoHeader)
 	http.HandleFunc("/recursive", recursive)
 	http.HandleFunc("/returnString/{data}", returnString)
+	http.HandleFunc("/count/{name}", countHandler)
 
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("ListenAndServe(): %v", err)
