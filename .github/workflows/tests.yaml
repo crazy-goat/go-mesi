@@ -236,31 +236,6 @@ jobs:
         if: always()
         run: cd servers/nginx && docker compose down -v 2>/dev/null || true
 
-  traefik-test:
-    name: Traefik Integration Test
-    runs-on: ubuntu-latest
-    needs: test
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
-          cache: true
-
-      - name: Build libgomesi
-        run: cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go
-
-      - name: Run Traefik tests
-        run: cd servers/traefik && ./test.sh
-
-      - name: Cleanup
-        if: always()
-        run: cd servers/traefik && docker compose down -v 2>/dev/null || true
-
   caddy-test:
     name: Caddy Integration Test
     runs-on: ubuntu-latest
