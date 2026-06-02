@@ -77,7 +77,7 @@ else
 fi
 
 echo "=== Test 6: Surrogate-Capability header ==="
-HEADERS=$(curl -sI http://localhost:8080/index.html)
+HEADERS=$(curl -sI http://localhost:8080/proxy/)
 if echo "$HEADERS" | grep -q "Surrogate-Capability"; then
     echo "PASS: Surrogate-Capability header present"
 else
