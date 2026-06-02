@@ -18,6 +18,8 @@ COPY . /build/go-mesi
 
 WORKDIR /build/go-mesi
 
+ENV XCADDY_GO_BUILD_FLAGS="-tags=nobadger,nomysql,nopgx,nowatcher"
+
 RUN CGO_ENABLED=1 \
     xcaddy build \
         --output /usr/local/bin/frankenphp \
