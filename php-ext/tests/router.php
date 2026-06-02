@@ -1,5 +1,6 @@
 <?php
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$backend = getenv('MESI_BACKEND_URL') ?: 'http://test-server/';
 
 if ($path === '/') {
     header('Content-Type: text/html');
@@ -11,7 +12,7 @@ if ($path === '/') {
         . '<!--esi <p>Unwrapped content</p> -->'
         . '</body></html>',
         5,
-        'http://test-server/'
+        $backend
     );
     return true;
 }
@@ -21,7 +22,7 @@ if ($path === '/plain') {
     echo \mesi\parse(
         'plain text with <esi:include src="http://test-server/esi" /> tags',
         5,
-        'http://test-server/'
+        $backend
     );
     return true;
 }
@@ -34,7 +35,7 @@ if ($path === '/json') {
             'content' => '<esi:include src="http://test-server/esi" />'
         ]),
         5,
-        'http://test-server/'
+        $backend
     );
     return true;
 }
@@ -44,7 +45,7 @@ if ($path === '/remove') {
     echo \mesi\parse(
         '<p>keep this</p><esi:remove>remove this</esi:remove><p>also keep this</p>',
         5,
-        'http://test-server/'
+        $backend
     );
     return true;
 }

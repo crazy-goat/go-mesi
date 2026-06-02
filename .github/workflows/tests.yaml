@@ -324,8 +324,9 @@ jobs:
 
       - name: Run integration tests
         run: |
-          ./servers/test-server/test-server &
+          MESI_TEST_SERVER_PORT=8081 ./servers/test-server/test-server &
           sleep 2
+          export MESI_BACKEND_URL='http://localhost:8081/'
           php -d extension=mesi -S 0.0.0.0:8080 php-ext/tests/router.php &
           sleep 2
           cd php-ext && bash test.sh

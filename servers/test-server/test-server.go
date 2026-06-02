@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 )
 
 const HtmlTemplate = `<!DOCTYPE html>
@@ -44,5 +45,9 @@ func main() {
 		w.Write([]byte(PlainTextTemplate))
 	}))
 
-	log.Fatal(http.ListenAndServe(":80", nil))
+	port := os.Getenv("MESI_TEST_SERVER_PORT")
+	if port == "" {
+		port = "80"
+	}
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
