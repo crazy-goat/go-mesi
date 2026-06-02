@@ -130,7 +130,11 @@ func MESIParse(input string, config EsiParserConfig) string {
 		var wg sync.WaitGroup
 		jobs := make(chan esiJob, len(esiJobs))
 
-		for range workerCount {
+		// NOTE: Traditional for loop is used instead of "for range workerCount"
+		// (Go 1.22+ range-over-integer) for Traefik plugin compatibility.
+		// Yaegi v0.16.1 panics on this syntax.
+		// See: https://github.com/traefik/yaegi/issues/1701
+		for i := 0; i < workerCount; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()

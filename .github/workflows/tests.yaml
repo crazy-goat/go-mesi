@@ -90,6 +90,36 @@ jobs:
         if: always()
         run: cd servers/apache && docker compose down -v 2>/dev/null || true
 
+  traefik-test:
+    name: Traefik Integration Test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Traefik Docker image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: servers/traefik/Dockerfile
+          push: false
+          load: true
+          tags: go-mesi-traefik-test:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Traefik tests
+        run: cd servers/traefik && ./test.sh
+
+      - name: Cleanup
+        if: always()
+        run: cd servers/traefik && docker compose down -v 2>/dev/null || true
+
   cli-test:
     name: CLI Unit Test
     runs-on: ubuntu-latest
@@ -208,7 +238,7 @@ jobs:
 
   ci:
     name: CI
-    needs: [lint, test, apache-test, nginx-test, proxy-test, cli-test, cli-e2e-test]
+    needs: [lint, test, apache-test, traefik-test, nginx-test, proxy-test, cli-test, cli-e2e-test]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -217,6 +247,7 @@ jobs:
           if [ "${{ needs.lint.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.test.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.apache-test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.traefik-test.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.nginx-test.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.proxy-test.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.cli-test.result }}" != "success" ]; then exit 1; fi

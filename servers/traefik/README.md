@@ -175,6 +175,35 @@ When Redis is unreachable, the plugin continues to work in degraded mode:
 
 ## Development
 
+### Yaegi Compatibility
+
+This plugin runs inside Traefik's embedded [Yaegi](https://github.com/traefik/yaegi)
+Go interpreter (v0.16.1). Yaegi has several limitations that affect which Go
+features can be used in the plugin source code:
+
+| Limitation | Workaround | Issue |
+|---|---|---|
+| `for range N` (Go 1.22+) panics | Use `for i := 0; i < N; i++` | [#1701](https://github.com/traefik/yaegi/issues/1701) |
+| `math/rand/v2` not supported | Use `math/rand` instead | [#1674](https://github.com/traefik/yaegi/issues/1674) |
+| `syscall` / `unsafe` not supported | Dialer code in `ssrf_dialer.go` excluded from build | — |
+| Build tags ignored by Yaegi | Problematic files removed in Dockerfile | — |
+| `min`/`max` builtins (Go 1.21+) | Not used | [#1674](https://github.com/traefik/yaegi/issues/1674) |
+| `nil type` panic in complex packages | Avoid combinations that trigger it | [#1636](https://github.com/traefik/yaegi/issues/1636) |
+
+**Impact**: The Traefik plugin does not support Redis or Memcached cache backends
+(they depend on third-party packages with `unsafe` usage). Only the in-memory
+cache backend is available. Dial-time SSRF protection (private IP blocking at
+TCP connect) is also not available; URL-level protection (allowed hosts) still
+works.
+
+When modifying the `mesi/` package, verify changes with the Yaegi test program
+before pushing:
+
+```bash
+# Quick Yaegi compatibility check (no Docker needed)
+go run ./servers/traefik/yaegi-check/ /path/to/gopath
+```
+
 ### Building
 
 ```bash
