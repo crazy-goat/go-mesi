@@ -22,7 +22,8 @@ RUN CGO_ENABLED=1 \
     xcaddy build \
         --output /usr/local/bin/frankenphp \
         --with github.com/dunglas/frankenphp \
-        --with github.com/crazy-goat/go-mesi/servers/caddy=./servers/caddy
+        --with github.com/crazy-goat/go-mesi/servers/caddy=./servers/caddy \
+        --with github.com/crazy-goat/go-mesi=.
 
 FROM dunglas/frankenphp:latest
 
