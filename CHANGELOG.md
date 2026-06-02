@@ -3,6 +3,8 @@
 ## [0.9.0] - Unreleased
 
 ### Added
+- libgomesi `InitCache` and `FreeCache` exports enable shared cache across C-based consumers (nginx, Apache, PHP extension). Supported backend: `"memory"` with configurable size and TTL (#232)
+- nginx cache backend directives: `mesi_cache_backend memory`, `mesi_cache_size`, and `mesi_cache_ttl` wire the in-memory LRU cache into nginx ESI processing. Duplicate `<esi:include>` URLs within TTL are served from cache, reducing backend load (#232)
 - CLI memory cache backend: `-cache-backend=memory`, `-cache-size`, and `-cache-ttl` flags wire the `mesi.MemoryCache` into CLI invocations so duplicate `<esi:include>` URLs are served from cache within a single run (#207)
 - CLI Redis cache backend: `-cache-backend=redis`, `-cache-redis-addr`, `-cache-redis-password`, and `-cache-redis-db` flags wire the `cache_redis.RedisCache` into CLI invocations, enabling Redis-backed ESI caching from the command line (#212)
 - CLI Memcached cache backend: `-cache-backend=memcached` and `-cache-memcached-servers` flags wire the `cache_memcached.MemcachedCache` into CLI invocations, enabling Memcached-backed ESI caching from the command line (#217)
