@@ -50,6 +50,21 @@ mesi-cli [options] path/url
 - **max-depth <depth>** (integer): Defines the maximum depth of parsing, which can limit how many nested ESI includes or references are processed. Default: 5
 - **timeout <seconds>** (float): Sets the request timeout duration (in seconds) for all retrieval operations. Default: 10.0
 - **parse-on-header** (bool): Enables ESI parsing on the HTTP headers, if set to `true` response must have `Edge-control: dca=esi` to enable parsing. Default: false
+- **cacheBackend <name>** (string): Cache backend for ESI includes. Currently only `memory` is supported (in-process LRU). Default: off (no caching)
+- **cacheSize <entries>** (int): Max cache entries for the memory backend. Default: 10000
+- **cacheTTL <duration>** (duration): Cache TTL (e.g. `30s`, `5m`); `0` = no expiry. Default: 0
+- **max-workers <count>** (int): Max concurrent ESI include goroutines. `0` = `NumCPU*4`. Useful for forcing sequential processing to make caching deterministic. Default: 0
+- **allow-private-ips** (bool): Allow ESI includes to private/reserved IP ranges. Required when testing against a local ESI origin. Default: false
+
+### Caching
+
+The CLI exposes the in-memory cache from the `mesi` package. Repeated `<esi:include>` URLs within a single invocation are served from the cache instead of hitting the origin again.
+
+```shell
+mesi-cli -cacheBackend=memory -cacheSize=5000 -cacheTTL=60s ./input.html
+```
+
+The cache is **per-invocation** — it lives for the duration of a single `mesi-cli` run. For persistent or cross-process caching, run multiple inputs through the same invocation or use one of the server integrations (Traefik, Caddy, etc.) that supports Redis or Memcached.
 
 ## Example Usage
 Render an ESI-enabled HTML from a file:
