@@ -90,10 +90,28 @@ jobs:
         if: always()
         run: cd servers/apache && docker compose down -v 2>/dev/null || true
 
+  yaegi-check:
+    name: Yaegi Compatibility
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Run Yaegi compatibility test
+        working-directory: servers/traefik
+        run: go test -run TestYaegiCompatibility -v -count=1 .
+
   traefik-test:
     name: Traefik Integration Test
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, yaegi-check]
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -401,7 +419,7 @@ jobs:
 
   ci:
     name: CI
-    needs: [lint, test, apache-test, traefik-test, nginx-test, caddy-test, frankenphp-test, php-ext-test, proxy-test, cli-test, cli-e2e-test, roadrunner-test]
+    needs: [lint, test, yaegi-check, apache-test, traefik-test, nginx-test, caddy-test, frankenphp-test, php-ext-test, proxy-test, cli-test, cli-e2e-test, roadrunner-test]
     runs-on: ubuntu-latest
     if: always()
     steps:
