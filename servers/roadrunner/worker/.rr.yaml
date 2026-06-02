@@ -10,6 +10,14 @@ http:
   address: "0.0.0.0:8080"
   middleware:
     mesi:
+      # Example: Memcached backend
+      # Requires building RoadRunner with -tags memcached
+      #
+      # cache_backend: memcached
+      # cache_ttl: "120s"
+      # cache_memcached_servers:
+      #   - "10.0.0.1:11211"
+      #   - "10.0.0.2:11211"
 
 logs:
   level: debug

@@ -1,4 +1,4 @@
-//go:build !redis
+//go:build !redis && !memcached
 
 package roadrunner
 
@@ -16,6 +16,6 @@ func initCache(p *Plugin) error {
 		p.cache = newMemoryCache(size, p.cacheTTL)
 		return nil
 	default:
-		return fmt.Errorf("cache backend %q requires building with -tags redis", p.config.CacheBackend)
+		return fmt.Errorf("cache backend %q requires building with -tags redis or -tags memcached", p.config.CacheBackend)
 	}
 }
