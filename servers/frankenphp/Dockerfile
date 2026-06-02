@@ -1,22 +1,15 @@
-FROM php:8.3-zts-bookworm AS build
+FROM php:8.3-zts-bookworm AS php
+
+FROM golang:1.26-bookworm AS build
+
+COPY --from=php /usr/local /usr/local
+
+RUN ldconfig
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
     git \
     ca-certificates \
-    php8.3-dev \
     && rm -rf /var/lib/apt/lists/*
-
-RUN PHP_INCLUDE_DIR=$(php-config --include-dir) && \
-    echo "PHP include dir: $PHP_INCLUDE_DIR" && \
-    ls -la "$PHP_INCLUDE_DIR" && \
-    if [ ! -d /usr/local/include/php ]; then \
-        ln -sf "$PHP_INCLUDE_DIR" /usr/local/include/php; \
-    fi
-
-RUN curl -fsSL https://go.dev/dl/go1.23.5.linux-amd64.tar.gz | tar -C /usr/local -xz
-
-ENV PATH=$PATH:/usr/local/go/bin:/root/go/bin
 
 RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
