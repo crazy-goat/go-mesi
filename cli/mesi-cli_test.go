@@ -201,7 +201,7 @@ func TestCLI_cacheBackendUnknown(t *testing.T) {
 	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, exitCode := runCLI(t, "-cacheBackend=redis", inputFile)
+	stdout, stderr, exitCode := runCLI(t, "-cache-backend=redis", inputFile)
 	if exitCode == 0 {
 		t.Fatalf("expected non-zero exit code for unknown backend, got 0 (stdout=%q stderr=%q)", stdout, stderr)
 	}
@@ -217,23 +217,23 @@ func TestCLI_cacheBackendMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	stdout, _, exitCode := runCLI(t,
-		"-cacheBackend=memory",
-		"-cacheSize=100",
-		"-cacheTTL=10s",
+		"-cache-backend=memory",
+		"-cache-size=100",
+		"-cache-ttl=10s",
 		inputFile,
 	)
 	if exitCode != 0 {
 		t.Fatalf("unexpected exit code %d", exitCode)
 	}
 	if !strings.Contains(stdout, "Hello") {
-		t.Errorf("expected 'Hello' with -cacheBackend=memory, got %q", stdout)
+		t.Errorf("expected 'Hello' with -cache-backend=memory, got %q", stdout)
 	}
 }
 
 func TestCLI_cacheFlagsInHelp(t *testing.T) {
 	stdout, stderr, _ := runCLI(t, "-h")
 	output := stdout + stderr
-	for _, flag := range []string{"-cacheBackend", "-cacheSize", "-cacheTTL"} {
+	for _, flag := range []string{"-cache-backend", "-cache-size", "-cache-ttl"} {
 		if !strings.Contains(output, flag) {
 			t.Errorf("expected %q in -h output, got stdout=%q stderr=%q", flag, stdout, stderr)
 		}

@@ -3,7 +3,7 @@
 ## [0.9.0] - Unreleased
 
 ### Added
-- CLI memory cache backend: `-cacheBackend=memory`, `-cacheSize`, and `-cacheTTL` flags wire the `mesi.MemoryCache` into CLI invocations so duplicate `<esi:include>` URLs are served from cache within a single run (#207)
+- CLI memory cache backend: `-cache-backend=memory`, `-cache-size`, and `-cache-ttl` flags wire the `mesi.MemoryCache` into CLI invocations so duplicate `<esi:include>` URLs are served from cache within a single run (#207)
 
 ## [0.8.0] - Unreleased
 

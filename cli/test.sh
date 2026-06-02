@@ -169,13 +169,13 @@ fi
 echo ""
 echo "--- Cache Backend Tests ---"
 
-echo "Test 13: -cacheBackend=memory deduplicates duplicate includes"
+echo "Test 13: -cache-backend=memory deduplicates duplicate includes"
 cat > "$TEST_DIR/dup-includes-cached.html" <<'EOF'
 <esi:include src="count/cache-with-backend"/>
 <esi:include src="count/cache-with-backend"/>
 <esi:include src="count/cache-with-backend"/>
 EOF
-RESULT=$("$CLI_BINARY" -cacheBackend=memory -max-workers=1 -allow-private-ips -default-url "http://127.0.0.1:8080/" "$TEST_DIR/dup-includes-cached.html" 2>/dev/null)
+RESULT=$("$CLI_BINARY" -cache-backend=memory -max-workers=1 -allow-private-ips -default-url "http://127.0.0.1:8080/" "$TEST_DIR/dup-includes-cached.html" 2>/dev/null)
 RESULT_TRIM=$(echo "$RESULT" | tr -d '\n')
 if [ "$RESULT_TRIM" = "111" ]; then
 	pass "Cache dedup: 3 duplicate includes resolved with single origin hit"
@@ -183,7 +183,7 @@ else
 	fail "Cache dedup" "Expected '111', got: $RESULT_TRIM"
 fi
 
-echo "Test 14: no -cacheBackend hits origin for every include"
+echo "Test 14: no -cache-backend hits origin for every include"
 cat > "$TEST_DIR/dup-includes-uncached.html" <<'EOF'
 <esi:include src="count/cache-no-backend"/>
 <esi:include src="count/cache-no-backend"/>
@@ -197,8 +197,8 @@ else
 	fail "No cache" "Expected '123', got: $RESULT_TRIM"
 fi
 
-echo "Test 15: unknown -cacheBackend value exits with error"
-RESULT=$("$CLI_BINARY" -cacheBackend=redis -allow-private-ips "$TEST_DIR/dup-includes-cached.html" 2>&1 || true)
+echo "Test 15: unknown -cache-backend value exits with error"
+RESULT=$("$CLI_BINARY" -cache-backend=redis -allow-private-ips "$TEST_DIR/dup-includes-cached.html" 2>&1 || true)
 if echo "$RESULT" | grep -qi "unknown cache backend"; then
 	pass "Unknown backend rejected"
 else

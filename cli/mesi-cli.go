@@ -23,11 +23,11 @@ func main() {
 	timeout := flag.Float64("timeout", 10.0, "Request timeout duration in seconds")
 	parseOnHeader := flag.Bool("parse-on-header", false, "Enable parsing on header")
 	debug := flag.Bool("debug", false, "Enable debug logging")
-	cacheBackend := flag.String("cacheBackend", "",
+	cacheBackend := flag.String("cache-backend", "",
 		"Cache backend for ESI includes: memory (default: off)")
-	cacheSize := flag.Int("cacheSize", 10000,
+	cacheSize := flag.Int("cache-size", 10000,
 		"Max cache entries for memory backend")
-	cacheTTL := flag.Duration("cacheTTL", 0,
+	cacheTTL := flag.Duration("cache-ttl", 0,
 		"Cache TTL (e.g. 30s, 5m); 0 = no expiry")
 	allowPrivateIPs := flag.Bool("allow-private-ips", false,
 		"Allow ESI includes to private/reserved IP ranges (for local testing)")
