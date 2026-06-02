@@ -1,0 +1,32 @@
+# Traefik Memory Cache Configuration Example
+#
+# This example shows how to enable in-memory LRU caching for ESI fragments
+# in the Traefik mesi plugin. Cached fragments are served from memory,
+# reducing backend load for repeated <esi:include> URLs.
+#
+# Usage:
+#   Include this in your Traefik dynamic configuration (esi-configuration.yml)
+#   or in your Docker/Kubernetes Traefik config.
+
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          maxDepth: 5
+          cacheBackend: memory
+          cacheSize: 10000
+          cacheTTL: "60s"
+
+  routers:
+    my-app:
+      middlewares:
+        - mesi
+      service: my-app
+      rule: Host(`example.com`)
+
+  services:
+    my-app:
+      loadBalancer:
+        servers:
+          - url: http://backend:8080

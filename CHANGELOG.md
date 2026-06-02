@@ -3,6 +3,7 @@
 ## [0.9.0] - Unreleased
 
 ### Added
+- Traefik memory cache backend: `cacheBackend: memory`, `cacheSize`, and `cacheTTL` config options wire the in-memory LRU cache into Traefik ESI processing. Duplicate `<esi:include>` URLs within TTL are served from cache, reducing backend load (#234)
 - libgomesi `InitCache` and `FreeCache` exports enable shared cache across C-based consumers (nginx, Apache, PHP extension). Supported backend: `"memory"` with configurable size and TTL (#232)
 - nginx cache backend directives: `mesi_cache_backend memory`, `mesi_cache_size`, and `mesi_cache_ttl` wire the in-memory LRU cache into nginx ESI processing. Duplicate `<esi:include>` URLs within TTL are served from cache, reducing backend load (#232)
 - CLI memory cache backend: `-cache-backend=memory`, `-cache-size`, and `-cache-ttl` flags wire the `mesi.MemoryCache` into CLI invocations so duplicate `<esi:include>` URLs are served from cache within a single run (#207)
