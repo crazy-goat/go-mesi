@@ -196,13 +196,23 @@ cache backend is available. Dial-time SSRF protection (private IP blocking at
 TCP connect) is also not available; URL-level protection (allowed hosts) still
 works.
 
-When modifying the `mesi/` package, verify changes with the Yaegi test program
-before pushing:
+When modifying the `mesi/` package, verify changes with the Yaegi compatibility
+test before pushing (no Docker needed, completes in seconds):
 
 ```bash
-# Quick Yaegi compatibility check (no Docker needed)
-go run ./servers/traefik/yaegi-check/ /path/to/gopath
+# Quick Yaegi compatibility check (standalone tool)
+go run ./servers/traefik/yaegi-check/
+
+# Or via Go test
+go test -run TestYaegiCompatibility -v -count=1 ./servers/traefik/
 ```
+
+The test sets up a temporary GOPATH, copies the plugin sources (excluding
+files that are known to be incompatible: `ssrf_dialer.go`, `cache_redis/`,
+`cache_memcached/`, test files), and uses Yaegi to import the `mesi/` package.
+Any regression (e.g. `for range N`, `math/rand/v2`, `syscall`) will cause a
+clear test failure instead of a cryptic "nil type" panic in the Docker-based
+integration test.
 
 ### Building
 
