@@ -306,12 +306,11 @@ jobs:
 
       - name: Build PHP extension
         run: |
-          sudo cp libgomesi/libgomesi.so /usr/local/lib/
-          sudo cp libgomesi/libgomesi.h /usr/local/include/
-          sudo ldconfig
           cd php-ext
-          make -f GNUmakefile
-          sudo make -f GNUmakefile install
+          phpize
+          ./configure --with-gomesi=../libgomesi
+          make -f Makefile
+          sudo make -f Makefile install
 
       - name: Run .phpt tests
         run: |
@@ -327,7 +326,7 @@ jobs:
         run: |
           ./servers/test-server/test-server &
           sleep 2
-          php -S 0.0.0.0:8080 php-ext/tests/router.php &
+          php -d extension=mesi -S 0.0.0.0:8080 php-ext/tests/router.php &
           sleep 2
           cd php-ext && bash test.sh
 
