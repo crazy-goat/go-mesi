@@ -6,7 +6,8 @@
 <body>
 <h1>CLI cache example</h1>
 <p>The three includes below point to the same URL. With
-<code>-cacheBackend=memory</code>, the first response is cached and reused
+<code>-cacheBackend=memory</code>, <code>-cacheBackend=redis</code>, or
+<code>-cacheBackend=memcached</code>, the first response is cached and reused
 for the remaining two; without the flag, the origin is hit three times.</p>
 <esi:include src="include.txt"/>
 <esi:include src="include.txt"/>

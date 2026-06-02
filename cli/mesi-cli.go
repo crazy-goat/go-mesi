@@ -3,7 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/bradfitz/gomemcache/memcache"
 	"github.com/crazy-goat/go-mesi/mesi"
+	"github.com/crazy-goat/go-mesi/mesi/cache_memcached"
 	"github.com/crazy-goat/go-mesi/mesi/cache_redis"
 	"github.com/redis/go-redis/v9"
 	"io"
@@ -26,7 +28,7 @@ func main() {
 	parseOnHeader := flag.Bool("parse-on-header", false, "Enable parsing on header")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	cacheBackend := flag.String("cache-backend", "",
-		"Cache backend for ESI includes: memory, redis (default: off)")
+		"Cache backend for ESI includes: memory, redis, memcached (default: off)")
 	cacheSize := flag.Int("cache-size", 10000,
 		"Max cache entries for memory backend")
 	cacheTTL := flag.Duration("cache-ttl", 0,
@@ -37,6 +39,8 @@ func main() {
 		"Redis password")
 	cacheRedisDB := flag.Int("cache-redis-db", 0,
 		"Redis database number")
+	cacheMemcachedServers := flag.String("cache-memcached-servers", "",
+		"Comma-separated Memcached servers (host:port)")
 	allowPrivateIPs := flag.Bool("allow-private-ips", false,
 		"Allow ESI includes to private/reserved IP ranges (for local testing)")
 	maxWorkers := flag.Int("max-workers", 0,
@@ -73,6 +77,14 @@ func main() {
 		})
 		defer rdb.Close()
 		config.Cache = cache_redis.NewRedisCache(rdb, *cacheTTL)
+		config.CacheTTL = *cacheTTL
+	case "memcached":
+		servers := strings.Split(*cacheMemcachedServers, ",")
+		if *cacheMemcachedServers == "" || len(servers) == 0 || servers[0] == "" {
+			log.Fatal("cache-memcached-servers required for memcached backend")
+		}
+		mc := memcache.New(servers...)
+		config.Cache = cache_memcached.NewMemcachedCache(mc, *cacheTTL)
 		config.CacheTTL = *cacheTTL
 	default:
 		log.Fatalf("unknown cache backend: %s", *cacheBackend)
