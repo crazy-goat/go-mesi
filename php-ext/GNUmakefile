@@ -1,10 +1,10 @@
 build:
 	phpize
 	./configure --with-gomesi=../libgomesi
-	make
+	$(MAKE) -f Makefile
 
 install: build
-	make install
+	$(MAKE) -f Makefile install
 
 test: build
 	$(MAKE) -f Makefile test

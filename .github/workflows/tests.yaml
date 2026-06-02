@@ -310,10 +310,7 @@ jobs:
           sudo cp libgomesi/libgomesi.h /usr/local/include/
           sudo ldconfig
           cd php-ext
-          phpize
-          ./configure --with-gomesi=/usr/local
-          make
-          make install
+          make -f GNUmakefile install
 
       - name: Run .phpt tests
         run: |
