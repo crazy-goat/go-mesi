@@ -198,7 +198,7 @@ else
 fi
 
 echo "Test 15: unknown -cache-backend value exits with error"
-RESULT=$("$CLI_BINARY" -cache-backend=redis -allow-private-ips "$TEST_DIR/dup-includes-cached.html" 2>&1 || true)
+RESULT=$("$CLI_BINARY" -cache-backend=unknown -allow-private-ips "$TEST_DIR/dup-includes-cached.html" 2>&1 || true)
 if echo "$RESULT" | grep -qi "unknown cache backend"; then
 	pass "Unknown backend rejected"
 else
