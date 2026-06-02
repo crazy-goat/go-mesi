@@ -2,14 +2,13 @@ FROM golang:1.23-bookworm AS libgomesi-build
 
 WORKDIR /build
 
-COPY libgomesi/ libgomesi/
+COPY go.mod go.sum ./
+COPY mesi/ ./mesi/
+COPY libgomesi/ ./libgomesi/
 
 RUN cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go
 
 FROM php:8.3-cli-bookworm AS ext-build
-
-COPY --from=libgomesi-build /build/libgomesi/libgomesi.so /usr/local/lib/
-COPY --from=libgomesi-build /build/libgomesi/libgomesi.h /usr/local/include/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     autoconf \
@@ -20,11 +19,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
+COPY libgomesi/ libgomesi/
 COPY php-ext/ php-ext/
+
+COPY --from=libgomesi-build /build/libgomesi/libgomesi.so /build/libgomesi/
 
 RUN cd php-ext && \
     phpize && \
-    ./configure --with-gomesi=/usr/local && \
+    ./configure --with-gomesi=../libgomesi && \
     make && \
     make install
 
