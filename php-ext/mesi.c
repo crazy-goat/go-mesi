@@ -28,7 +28,7 @@ PHP_FUNCTION(parse) {
 }
 
 PHP_MINIT_FUNCTION(mesi) {
-    InitHTTPClient(1);
+    InitHTTPClient(0);
     return SUCCESS;
 }
 
