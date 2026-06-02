@@ -1,13 +1,14 @@
 <?php
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $backend = getenv('MESI_BACKEND_URL') ?: 'http://test-server/';
+$esiIncludeUrl = rtrim($backend, '/') . '/esi';
 
 if ($path === '/') {
     header('Content-Type: text/html');
     echo \mesi\parse(
         '<!DOCTYPE html><html><body>'
         . '<h1>ESI PHP Extension Test</h1>'
-        . '<esi:include src="http://test-server/esi" />'
+        . '<esi:include src="' . $esiIncludeUrl . '" />'
         . '<esi:remove>Failed to include ESI</esi:remove>'
         . '<!--esi <p>Unwrapped content</p> -->'
         . '</body></html>',
