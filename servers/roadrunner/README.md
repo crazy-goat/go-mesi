@@ -41,13 +41,14 @@ http:
 | `shared_http_client` | bool | `false` | Reuse a single HTTP client for all ESI includes (SSRF-safe, connection pooling). |
 | `timeout` | string | `"10s"` | Maximum time for ESI processing (Go duration format). |
 | `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
-| `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`. |
+| `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`, `"memcached"`. |
 | `cache_size` | int | `10000` | Max entries for memory cache backend. |
 | `cache_ttl` | string | `""` | Default TTL for cached entries, e.g. `"60s"`. |
 | `cache_key_template` | string | `""` | Custom cache key template (see below). |
 | `cache_redis_addr` | string | `"localhost:6379"` | Redis server address (host:port). |
 | `cache_redis_password` | string | `""` | Redis AUTH password. |
 | `cache_redis_db` | int | `0` | Redis database number. |
+| `cache_memcached_servers` | array | `[]` | Memcached server addresses (host:port). |
 
 #### Shared HTTP Client
 Enables TCP connection reuse across ESI includes. The shared client uses an SSRF-safe transport that blocks private IPs.
@@ -69,6 +70,24 @@ http:
       cache_backend: memory
       cache_size: 5000
       cache_ttl: "60s"
+```
+
+#### Memcached
+Requires building with `-tags memcached`:
+
+```shell
+go build -tags memcached ./...
+```
+
+```yaml
+http:
+  middleware:
+    mesi:
+      cache_backend: memcached
+      cache_ttl: "120s"
+      cache_memcached_servers:
+        - "10.0.0.1:11211"
+        - "10.0.0.2:11211"
 ```
 
 #### Redis
