@@ -201,12 +201,32 @@ func TestCLI_cacheBackendUnknown(t *testing.T) {
 	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, exitCode := runCLI(t, "-cache-backend=redis", inputFile)
+	stdout, stderr, exitCode := runCLI(t, "-cache-backend=unknown", inputFile)
 	if exitCode == 0 {
 		t.Fatalf("expected non-zero exit code for unknown backend, got 0 (stdout=%q stderr=%q)", stdout, stderr)
 	}
 	if !strings.Contains(stderr, "unknown cache backend") {
 		t.Errorf("expected 'unknown cache backend' in stderr, got %q", stderr)
+	}
+}
+
+func TestCLI_cacheBackendRedis(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, exitCode := runCLI(t,
+		"-cache-backend=redis",
+		"-cache-redis-addr=localhost:6379",
+		"-cache-ttl=10s",
+		inputFile,
+	)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d (stderr=%q)", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, "Hello") {
+		t.Errorf("expected 'Hello' with -cache-backend=redis, got %q", stdout)
 	}
 }
 
@@ -233,7 +253,7 @@ func TestCLI_cacheBackendMemory(t *testing.T) {
 func TestCLI_cacheFlagsInHelp(t *testing.T) {
 	stdout, stderr, _ := runCLI(t, "-h")
 	output := stdout + stderr
-	for _, flag := range []string{"-cache-backend", "-cache-size", "-cache-ttl"} {
+	for _, flag := range []string{"-cache-backend", "-cache-size", "-cache-ttl", "-cache-redis-addr", "-cache-redis-password", "-cache-redis-db"} {
 		if !strings.Contains(output, flag) {
 			t.Errorf("expected %q in -h output, got stdout=%q stderr=%q", flag, stdout, stderr)
 		}
