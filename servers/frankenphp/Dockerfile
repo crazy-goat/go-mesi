@@ -1,6 +1,7 @@
-FROM php:8.3-cli-bookworm AS build
+FROM dunglas/frankenphp:latest AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
     git \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
