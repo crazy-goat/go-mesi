@@ -151,6 +151,56 @@ else
     exit 1
 fi
 
+echo "=== Test 13: Cache hit in same page (two includes, same URL) ==="
+RESPONSE=$(curl -s http://localhost:8080/cache/cache.html)
+FIRST_NUM=$(echo "$RESPONSE" | grep -oE '[0-9]+' | head -1)
+SECOND_NUM=$(echo "$RESPONSE" | grep -oE '[0-9]+' | tail -1)
+if [ -n "$FIRST_NUM" ] && [ -n "$SECOND_NUM" ]; then
+    if [ "$FIRST_NUM" = "$SECOND_NUM" ]; then
+        echo "PASS: Both includes returned same value ($FIRST_NUM) — cache serving same entry"
+    else
+        echo "FAIL: Cache should serve same value for same URL (got $FIRST_NUM vs $SECOND_NUM)"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+else
+    echo "FAIL: Could not extract counter values from response"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 14: Cache hit across requests (within TTL) ==="
+RESPONSE1=$(curl -s http://localhost:8080/cache/cache_ttl.html)
+NUM1=$(echo "$RESPONSE1" | grep -oE '[0-9]+')
+sleep 1
+RESPONSE2=$(curl -s http://localhost:8080/cache/cache_ttl.html)
+NUM2=$(echo "$RESPONSE2" | grep -oE '[0-9]+')
+if [ -n "$NUM1" ] && [ -n "$NUM2" ]; then
+    if [ "$NUM1" = "$NUM2" ]; then
+        echo "PASS: Second request served from cache (both $NUM1)"
+    else
+        echo "FAIL: Cache miss — values differ ($NUM1 vs $NUM2)"
+        echo "Response1: $RESPONSE1"
+        echo "Response2: $RESPONSE2"
+        exit 1
+    fi
+else
+    echo "FAIL: Could not extract counter values"
+    echo "Response1: $RESPONSE1"
+    echo "Response2: $RESPONSE2"
+    exit 1
+fi
+
+echo "=== Test 15: Cache backend unset — no caching ==="
+RESPONSE=$(curl -s http://localhost:8080/index.html)
+if echo "$RESPONSE" | grep -q "After include"; then
+    echo "PASS: ESI still works without cache backend configured"
+else
+    echo "FAIL: ESI processing broken in non-cache location"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
 docker compose down
 
 echo ""

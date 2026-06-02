@@ -74,6 +74,59 @@ int main(void) {
         FreeHTTPClient();
     }
 
+    printf("Test 7: InitCache with unsupported backend returns -1\n");
+    {
+        int ret = InitCache("invalid", 100, 30);
+        if (ret == -1) {
+            printf("  PASS: InitCache returned -1 for unknown backend\n");
+        } else {
+            printf("  FAIL: expected -1, got %d\n", ret);
+            failed++;
+        }
+    }
+
+    printf("Test 8: InitCache with memory backend returns 0\n");
+    {
+        int ret = InitCache("memory", 5000, 30);
+        if (ret == 0) {
+            printf("  PASS: InitCache returned 0 for memory backend\n");
+        } else {
+            printf("  FAIL: expected 0, got %d\n", ret);
+            failed++;
+        }
+    }
+
+    printf("Test 9: Parse after InitCache still works\n");
+    {
+        char *result = ParseDefault("with cache");
+        if (result == NULL) {
+            printf("  FAIL: ParseDefault returned NULL\n");
+            failed++;
+        } else if (strcmp(result, "with cache") != 0) {
+            printf("  FAIL: expected 'with cache', got '%s'\n", result);
+            failed++;
+        } else {
+            printf("  PASS: ParseDefault works with cache initialized\n");
+        }
+        FreeString(result);
+    }
+
+    printf("Test 10: FreeCache is idempotent\n");
+    FreeCache();
+    FreeCache();
+    printf("  PASS: Double FreeCache did not crash\n");
+
+    printf("Test 11: InitCache with empty backend disables cache\n");
+    {
+        int ret = InitCache("", 100, 30);
+        if (ret == 0) {
+            printf("  PASS: InitCache returned 0 for empty backend\n");
+        } else {
+            printf("  FAIL: expected 0, got %d\n", ret);
+            failed++;
+        }
+    }
+
     printf("\nResults: %d failed\n", failed);
     return failed > 0 ? 1 : 0;
 }

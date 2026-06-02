@@ -8,6 +8,9 @@
 
 typedef struct {
   ngx_flag_t enable_mesi;
+  ngx_str_t  cache_backend;  // "" (off), "memory"
+  ngx_int_t  cache_size;     // max entries for memory cache
+  ngx_int_t  cache_ttl;      // TTL in seconds
 } ngx_http_mesi_loc_conf_t;
 
 typedef struct {
@@ -35,13 +38,32 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
                                           void *child);
 
 typedef char *(*ParseFunc)(char *, int, char *);
+typedef int (*InitCacheFunc)(char *, int, int);
+typedef void (*FreeCacheFunc)(void);
+
 static void *go_module = NULL;
 static ParseFunc EsiParse = NULL;
+static InitCacheFunc EsiInitCache = NULL;
+static FreeCacheFunc EsiFreeCache = NULL;
+static ngx_flag_t cache_initialized = 0;
 
 static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("enable_mesi"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
      ngx_conf_set_flag_slot, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, enable_mesi), NULL},
+
+    {ngx_string("mesi_cache_backend"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, cache_backend), NULL},
+
+    {ngx_string("mesi_cache_size"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_num_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, cache_size), NULL},
+
+    {ngx_string("mesi_cache_ttl"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_num_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, cache_ttl), NULL},
+
     ngx_null_command};
 
 static ngx_http_module_t ngx_http_html_head_filter_module_ctx = {
@@ -218,6 +240,15 @@ static char *ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool) {
 static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   ngx_str_t output;
 
+  ngx_http_mesi_loc_conf_t *lcf =
+      ngx_http_get_module_loc_conf(r, ngx_http_mesi_module);
+
+  if (EsiInitCache && !cache_initialized && lcf->cache_backend.len > 0) {
+    char *backend = ngx_str_to_cstr(&lcf->cache_backend, r->pool);
+    EsiInitCache(backend, lcf->cache_size, lcf->cache_ttl);
+    cache_initialized = 1;
+  }
+
   ngx_str_t scheme = r->schema;
   ngx_str_t host = r->headers_in.host->value;
   size_t len = scheme.len + sizeof("://") - 1 + host.len + sizeof("/") - 1;
@@ -311,13 +342,27 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
     return NGX_ERROR;
   }
 
+  EsiInitCache = (InitCacheFunc)dlsym(go_module, "InitCache");
+  if (dlerror() != NULL) {
+    EsiInitCache = NULL;
+  }
+
+  EsiFreeCache = (FreeCacheFunc)dlsym(go_module, "FreeCache");
+  if (dlerror() != NULL) {
+    EsiFreeCache = NULL;
+  }
+
   return NGX_OK;
 }
 
 static void ngx_http_mesi_thread_exit(ngx_cycle_t *cycle) {
+  if (EsiFreeCache) {
+    EsiFreeCache();
+  }
   if (go_module) {
     dlclose(go_module);
     go_module = NULL;
+    cache_initialized = 0;
   }
 }
 
@@ -328,13 +373,18 @@ static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
     return NULL;
   }
   conf->enable_mesi = NGX_CONF_UNSET;
+  conf->cache_size = NGX_CONF_UNSET;
+  conf->cache_ttl = NGX_CONF_UNSET;
   return conf;
 }
 
 static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
-                                          void *child) {
+                                           void *child) {
   ngx_http_mesi_loc_conf_t *prev = parent;
   ngx_http_mesi_loc_conf_t *conf = child;
   ngx_conf_merge_value(conf->enable_mesi, prev->enable_mesi, 0);
+  ngx_conf_merge_str_value(conf->cache_backend, prev->cache_backend, "");
+  ngx_conf_merge_value(conf->cache_size, prev->cache_size, 10000);
+  ngx_conf_merge_value(conf->cache_ttl, prev->cache_ttl, 30);
   return NGX_CONF_OK;
 }

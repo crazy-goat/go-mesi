@@ -1,14 +1,16 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>CLI cache example</title>
+    <title>Cache example</title>
 </head>
 <body>
-<h1>CLI cache example</h1>
-<p>The three includes below point to the same URL. With
-<code>-cacheBackend=memory</code>, <code>-cacheBackend=redis</code>, or
-<code>-cacheBackend=memcached</code>, the first response is cached and reused
-for the remaining two; without the flag, the origin is hit three times.</p>
+<h1>Cache example</h1>
+<p>The three includes below point to the same URL. With a cache
+backend configured (<code>memory</code>, <code>redis</code>, or
+<code>memcached</code>), the first response is cached and reused
+for the remaining two; without caching, the origin is hit three times.</p>
+<p>CLI: <code>-cache-backend=memory</code></p>
+<p>nginx: <code>mesi_cache_backend memory;</code></p>
 <esi:include src="include.txt"/>
 <esi:include src="include.txt"/>
 <esi:include src="include.txt"/>

@@ -21,6 +21,6 @@ services:
     working_dir: /data
     volumes:
       - ./tests:/data:ro
-    command: python -m http.server 8000
+    command: python /data/server.py
     expose:
       - "8000"

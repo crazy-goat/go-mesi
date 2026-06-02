@@ -71,4 +71,52 @@ A shared HTTP client is automatically created once per worker process and reused
 
 The shared client includes SSRF protection — connections to private/reserved IP addresses are blocked at dial time.
 
+## Cache Backend
+
+The nginx module supports in-memory caching of ESI fragment responses. When enabled, duplicate `<esi:include>` URLs within the configured TTL are served from cache instead of fetching from the origin backend.
+
+**Important limitation**: The in-memory cache is per-worker-process. Different nginx worker processes do **not** share cached entries. This is consistent with nginx's shared-nothing architecture.
+
+### Directives
+
+#### `mesi_cache_backend`
+
+- **Syntax:** `mesi_cache_backend memory | off`
+- **Default:** `off`
+- **Context:** `location`
+
+Enables the in-memory LRU cache. Currently only `memory` is supported. Redis and Memcached backends will be added in future releases.
+
+#### `mesi_cache_size`
+
+- **Syntax:** `mesi_cache_size <number>`
+- **Default:** `10000`
+- **Context:** `location`
+
+Maximum number of cache entries. When the cache is full, the least-recently-used entry is evicted.
+
+#### `mesi_cache_ttl`
+
+- **Syntax:** `mesi_cache_ttl <seconds>`
+- **Default:** `30`
+- **Context:** `location`
+
+Time-to-live in seconds for cached entries. After TTL expiry, the next request hits the origin and refreshes the cache.
+
+### Example
+
+```nginx
+location / {
+    enable_mesi on;
+    mesi_cache_backend memory;
+    mesi_cache_size 5000;
+    mesi_cache_ttl 60;
+    proxy_pass http://backend;
+}
+```
+
+### Memory Usage
+
+Estimated memory: `cache_size × average_include_body_size`. A 10,000-entry cache with 10 KB average entries uses ~100 MB. Plan capacity accordingly.
+
 [Here](nginx.conf) you can find full example configuration

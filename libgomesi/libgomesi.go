@@ -15,6 +15,8 @@ import (
 var (
 	sharedTransport *http.Transport
 	sharedClient    *http.Client
+	sharedCache     mesi.Cache
+	sharedCacheTTL  time.Duration
 )
 
 // InitHTTPClient creates a shared HTTP client with SSRF protection.
@@ -47,11 +49,53 @@ func FreeHTTPClient() {
 	sharedClient = nil
 }
 
-func applySharedClient(config *mesi.EsiParserConfig) {
+// InitCache initializes a shared cache for ESI parsing.
+// Call once per worker process before Parse to enable caching.
+// Supported backends: "memory"
+// Returns 0 on success, -1 if backend is unknown or unsupported.
+//
+//export InitCache
+func InitCache(backend *C.char, size C.int, ttlSeconds C.int) C.int {
+	goBackend := C.GoString(backend)
+	goSize := int(size)
+	goTTL := time.Duration(ttlSeconds) * time.Second
+
+	switch goBackend {
+	case "memory":
+		if goSize <= 0 {
+			goSize = 10000
+		}
+		sharedCache = mesi.NewMemoryCache(goSize, goTTL)
+		sharedCacheTTL = goTTL
+		return 0
+	case "":
+		sharedCache = nil
+		sharedCacheTTL = 0
+		return 0
+	default:
+		return -1
+	}
+}
+
+// FreeCache frees the shared cache.
+// Call in process exit handler to prevent resource leaks.
+// Idempotent — safe to call multiple times.
+//
+//export FreeCache
+func FreeCache() {
+	sharedCache = nil
+	sharedCacheTTL = 0
+}
+
+func applySharedConfig(config *mesi.EsiParserConfig) {
 	if sharedClient != nil {
 		client := *sharedClient
 		client.Timeout = config.Timeout
 		config.HTTPClient = &client
+	}
+	if sharedCache != nil {
+		config.Cache = sharedCache
+		config.CacheTTL = sharedCacheTTL
 	}
 }
 
@@ -66,7 +110,7 @@ func ParseDefault(input *C.char) *C.char {
 		MaxDepth:   5,
 		Timeout:    30 * time.Second,
 	}
-	applySharedClient(&config)
+	applySharedConfig(&config)
 	result := mesi.MESIParse(goInput, config)
 	return C.CString(result)
 }
@@ -90,7 +134,7 @@ func Parse(input *C.char, maxDepth C.int, defaultUrl *C.char) *C.char {
 		MaxDepth:   uint(goMaxDepth),
 		Timeout:    30 * time.Second,
 	}
-	applySharedClient(&config)
+	applySharedConfig(&config)
 	result := mesi.MESIParse(goInput, config)
 	return C.CString(result)
 }
@@ -125,7 +169,7 @@ func ParseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedH
 		AllowedHosts:    hosts,
 		BlockPrivateIPs: blockPrivateIPs != 0,
 	}
-	applySharedClient(&config)
+	applySharedConfig(&config)
 	result := mesi.MESIParse(goInput, config)
 	return C.CString(result)
 }
