@@ -1599,3 +1599,100 @@ func TestESITryE2EFixture(t *testing.T) {
 }
 
 
+func TestMESIParseABRatioRejectsInvalidInput(t *testing.T) {
+	// The mock upstream must never be touched when the ab-ratio attribute
+	// fails validation. We count requests; any non-zero count indicates
+	// the legacy "silent default" behaviour leaked back in.
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("UPSTREAM"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+	config.IncludeErrorMarker = "[ERR]"
+
+	cases := []struct {
+		name        string
+		abRatio     string
+		wantErrMark bool
+		wantContent string // substring inside [ERR] when err-mark path is taken
+	}{
+		{"missing colon", "7030", true, "[ERR]"},
+		{"too many parts", "70:30:10", true, "[ERR]"},
+		{"both zero", "0:0", true, "[ERR]"},
+		{"negative A", "-5:10", true, "[ERR]"},
+		{"A above max", "1000001:1", true, "[ERR]"},
+		{"decimal value", "70.5:29.5", true, "[ERR]"},
+		{"non-numeric", "abc:def", true, "[ERR]"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upstreamHits.Store(0)
+			input := `<esi:include fetch-mode="ab" ab-ratio="` + tc.abRatio + `" src="` + server.URL + `/A" alt="` + server.URL + `/B"/>`
+			result := MESIParse(input, config)
+
+			if upstreamHits.Load() != 0 {
+				t.Errorf("upstream fetched %d times despite invalid ab-ratio %q — silent fallback leaked through",
+					upstreamHits.Load(), tc.abRatio)
+			}
+			if tc.wantErrMark && !strings.Contains(result, tc.wantContent) {
+				t.Errorf("expected IncludeErrorMarker %q in result for ab-ratio=%q, got %q", tc.wantContent, tc.abRatio, result)
+			}
+		})
+	}
+}
+
+func TestMESIParseABRatioAcceptedBoundaries(t *testing.T) {
+	// Accepted boundaries must return the upstream body. Boundary at
+	// MaxABRatio is the largest value we promise to honour.
+	cases := []struct {
+		name    string
+		abRatio string
+		want    string
+	}{
+		{"min 0:1", "0:1", "B"},
+		{"min 1:0", "1:0", "A"},
+		{"max 1000000:0", "1000000:0", "A"},
+		{"max 0:1000000", "0:1000000", "B"},
+		{"both at max 1000000:1000000", "1000000:1000000", ""}, // pick is rng-dependent; just verify it returns A or B (not error mark)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.want))
+			}))
+			defer server.Close()
+
+			config := CreateDefaultConfig()
+			config.DefaultUrl = server.URL + "/"
+			config.MaxDepth = 1
+			config.BlockPrivateIPs = false
+			config.IncludeErrorMarker = "[ERR]"
+
+			if tc.name == "both at max 1000000:1000000" {
+				// rng-driven; just verify no error mark shows up
+				input := `<esi:include fetch-mode="ab" ab-ratio="` + tc.abRatio + `" src="` + server.URL + `/A" alt="` + server.URL + `/B"/>`
+				result := MESIParse(input, config)
+				if strings.Contains(result, "[ERR]") {
+					t.Errorf("both-at-max should not error, got %q", result)
+				}
+				return
+			}
+
+			input := `<esi:include fetch-mode="ab" ab-ratio="` + tc.abRatio + `" src="` + server.URL + `/A" alt="` + server.URL + `/B"/>`
+			result := MESIParse(input, config)
+			if result != tc.want {
+				t.Errorf("ab-ratio=%q -> %q, want %q", tc.abRatio, result, tc.want)
+			}
+		})
+	}
+}

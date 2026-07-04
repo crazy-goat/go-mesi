@@ -59,3 +59,9 @@ Support status of mESI features across all server integrations.
 - **Caddy / FrankenPHP** – FrankenPHP uses the Caddy plugin, identical functionality.
 - **Proxy** – Accepts full `EsiParserConfig`; all features available when provided by calling code.
 - **IncludeErrorMarker (CLI)** – Can only be set programmatically (no CLI flag).
+- **`fetch-mode="ab"` (`ab-ratio`)** – Format requirements enforced since #315:
+  - Exactly one `:` separator (`A:B`); leading and trailing whitespace is trimmed.
+  - Each side must be a non-negative unsigned integer.
+  - Either side may be zero; both zero (`0:0`) is rejected because no traffic would reach `Alt`.
+  - Each side must be ≤ `MaxABRatio` (1,000,000) — protects downstream arithmetic from silent overflow.
+  - Malformed values (missing colon, extra colons, non-numeric, negative, decimal, oversized, both-zero) yield `*ErrInvalidABRatio`. The error surfaces through the existing include-error path: rendered as `IncludeErrorMarker` (empty by default), skipped if `onerror="continue"`, or replaced with the tag body if provided. Empty `ab-ratio` falls back to the documented default `50:50`.

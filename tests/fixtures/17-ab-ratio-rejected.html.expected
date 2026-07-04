@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AB ratio rejection - explicit error path</title>
+</head>
+<body>
+malformed ab-ratio (missing colon): []
+malformed ab-ratio (too many parts): []
+malformed ab-ratio (both zero): []
+malformed ab-ratio (negative A): []
+malformed ab-ratio (A above max): []
+malformed ab-ratio (decimal): []
+malformed ab-ratio (non-numeric): []
+</body>
+</html>

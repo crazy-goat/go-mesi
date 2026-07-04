@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AB ratio rejection - explicit error path</title>
+</head>
+<body>
+malformed ab-ratio (missing colon): [<esi:include fetch-mode="ab" ab-ratio="7030" src="http://127.0.0.1:8080/returnString/A" alt="http://127.0.0.1:8080/returnString/B" />]
+malformed ab-ratio (too many parts): [<esi:include fetch-mode="ab" ab-ratio="70:30:10" src="http://127.0.0.1:8080/returnString/A" alt="http://127.0.0.1:8080/returnString/B" />]
+malformed ab-ratio (both zero): [<esi:include fetch-mode="ab" ab-ratio="0:0" src="http://127.0.0.1:8080/returnString/A" alt="http://127.0.0.1:8080/returnString/B" />]
+malformed ab-ratio (negative A): [<esi:include fetch-mode="ab" ab-ratio="-5:10" src="http://127.0.0.1:8080/returnString/A" alt="http://127.0.0.1:8080/returnString/B" />]
+malformed ab-ratio (A above max): [<esi:include fetch-mode="ab" ab-ratio="1000001:1" src="http://127.0.0.1:8080/returnString/A" alt="http://127.0.0.1:8080/returnString/B" />]
+malformed ab-ratio (decimal): [<esi:include fetch-mode="ab" ab-ratio="70.5:29.5" src="http://127.0.0.1:8080/returnString/A" alt="http://127.0.0.1:8080/returnString/B" />]
+malformed ab-ratio (non-numeric): [<esi:include fetch-mode="ab" ab-ratio="abc:def" src="http://127.0.0.1:8080/returnString/A" alt="http://127.0.0.1:8080/returnString/B" />]
+</body>
+</html>
