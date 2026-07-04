@@ -26,7 +26,7 @@ COPY go.mod go.sum ./
 COPY mesi/ ./mesi/
 COPY libgomesi/ ./libgomesi/
 RUN cd libgomesi && \
-    go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go && \
+    go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go cache_config.go && \
     cp libgomesi.so /usr/lib/ && \
     cp libgomesi.h /usr/include/
 

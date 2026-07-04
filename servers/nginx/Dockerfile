@@ -27,7 +27,7 @@ COPY mesi/ ./mesi/
 COPY libgomesi/ ./libgomesi/
 COPY servers/nginx/ngx_http_mesi_module.c servers/nginx/config ./servers/nginx/
 RUN cd libgomesi && \
-    go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go && \
+    go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go cache_config.go && \
     cp libgomesi.so /usr/lib/ && \
     cp libgomesi.h /usr/include/
 

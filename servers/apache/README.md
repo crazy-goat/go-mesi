@@ -46,14 +46,29 @@ MesiCacheTTL 60
   allowed in `<esi:include src=…>`. Matches `isURLSafe` from libgomesi.
 - `MesiBlockPrivateIPs on|off` — Enable/disable SSRF dial-time private-IP
   blocking. Default: On.
-- `MesiCacheBackend memory` — Cache backend. Only `memory` is supported;
-  any other value (including a typo) is rejected at startup so a misconfig
-  never silently disables caching. Empty string explicitly disables
-  caching. When unset, no cache.
+- `MesiCacheBackend memory|redis|memcached` — Cache backend. Accepts
+  only `memory`, `redis`, `memcached`, or empty (disable); any other
+  value (including a typo) is rejected at startup so a misconfig never
+  silently disables caching. Empty string explicitly disables caching.
+  When unset, no cache. The Redis/Memcached backends require
+  libgomesi `InitCacheWithConfig` (rebuild the .so if upgrading).
 - `MesiCacheSize N` — Max entries for the in-memory cache. Must be a
   positive integer in `[1, 1000000]`. Default: 10000.
 - `MesiCacheTTL N` — TTL in seconds for cached entries. Must be in
   `[0, 86400]`. Default: 0 (no expiry).
+- `MesiCacheRedisAddr host:port` — Redis server address used when
+  `MesiCacheBackend redis`. Required format: `host:port` with port in
+  `[1, 65535]`. Empty clears the field (libgomesi default
+  `localhost:6379` applies). Embedded whitespace, control chars, or
+  JSON-meta chars (`"`, `\`) are rejected so the value is safe to embed
+  in the JSON config passed to libgomesi.
+- `MesiCacheRedisPassword secret` — Redis AUTH password used when
+  `MesiCacheBackend redis`. Empty disables auth. Embedded control
+  chars (`< 0x20`) are rejected; the value is never echoed back into
+  error logs.
+- `MesiCacheRedisDB N` — Redis logical database number used when
+  `MesiCacheBackend redis`. Must be a non-negative integer in `[0, 15]`
+  (Redis `databases 16`). Default: 0.
 
 ### Custom libgomesi path
 

@@ -77,6 +77,45 @@ func InitCache(backend *C.char, size C.int, ttlSeconds C.int) C.int {
 	}
 }
 
+// InitCacheWithConfig initializes a shared cache for ESI parsing, with
+// backend-specific configuration passed as a JSON-encoded string.
+//
+// Currently supported backends:
+//   - "memory":  no extra config required; configJSON may be "" or "{}".
+//   - "redis":   configJSON decodes to redisConfig struct
+//                ({"redisAddr":"host:port","redisPassword":"…","redisDB":N}).
+//                All fields are optional; defaults are localhost:6379,
+//                no password, DB 0.
+//   - "memcached": configJSON decodes to memcachedConfig struct
+//                  ({"servers":["host:port",…]}). servers is required.
+//
+// Returns 0 on success, -1 if backend is unknown or config is malformed.
+// Use this in place of (or after) InitCache when you need redis/memcached
+// configuration — InitCache only supports "memory".
+//
+//export InitCacheWithConfig
+func InitCacheWithConfig(backend *C.char, size C.int, ttlSeconds C.int, configJSON *C.char) C.int {
+	goBackend := C.GoString(backend)
+	goConfigJSON := C.GoString(configJSON)
+	goTTL := time.Duration(ttlSeconds) * time.Second
+	// Detach from any previous cache so a failed init leaves no stale
+	// cache pointer behind (matches InitCache semantics).
+	sharedCache = nil
+	sharedCacheTTL = 0
+	cache, err := initCacheFromConfig(goBackend, int(size), int(ttlSeconds), goConfigJSON)
+	if err != nil {
+		return -1
+	}
+	sharedCache = cache
+	// For the empty backend, cache == nil and sharedCacheTTL stays 0.
+	// For non-empty backends, cache != nil; record the TTL so the
+	// shared config picker doesn't fall back to "no TTL".
+	if cache != nil {
+		sharedCacheTTL = goTTL
+	}
+	return 0
+}
+
 // FreeCache frees the shared cache.
 // Call in process exit handler to prevent resource leaks.
 // Idempotent — safe to call multiple times.
