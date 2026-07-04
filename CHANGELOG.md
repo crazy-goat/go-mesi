@@ -11,6 +11,12 @@
 - CLI Memcached cache backend: `-cache-backend=memcached` and `-cache-memcached-servers` flags wire the `cache_memcached.MemcachedCache` into CLI invocations, enabling Memcached-backed ESI caching from the command line (#217)
 - RoadRunner Memcached cache backend: `cache_backend: memcached` and `cache_memcached_servers` config option wire the `cache_memcached.MemcachedCache` into the RoadRunner middleware, enabling Memcached-backed ESI caching (#245)
 
+### Changed
+- **`<esi:include fetch-mode="ab" ab-ratio="…">` now rejects malformed input.** Previously the parser silently substituted the documented `{A:50, B:50}` default for every malformed value (missing colon, extra colons, negative numbers, decimals, non-integer operands, oversized integers, both-sides-zero). It now returns `*ErrInvalidABRatio` through the existing include-error path, surfacing the operator's actual input in logs and the `IncludeErrorMarker` (#315).
+
+### Fixed
+- `selectUrl` integer-sum overflow at high ratios guarded against `math.MaxInt` saturation (#315).
+
 ## [0.8.0] - Unreleased
 
 ### Added
