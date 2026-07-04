@@ -19,6 +19,7 @@ typedef char *(*ParseFunc)(char *, int, char *);
 typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
 typedef void (*FreeFunc)(char *);
 typedef int (*InitCacheFunc)(char *, int, int);
+typedef int (*InitCacheWithConfigFunc)(char *, int, int, char *);
 typedef void (*FreeCacheFunc)(void);
 
 static void *go_module = NULL;
@@ -26,6 +27,7 @@ static ParseFunc EsiParse = NULL;
 static ParseWithConfigFunc EsiParseWithConfig = NULL;
 static FreeFunc EsiFreeString = NULL;
 static InitCacheFunc EsiInitCache = NULL;
+static InitCacheWithConfigFunc EsiInitCacheWithConfig = NULL;
 static FreeCacheFunc EsiFreeCache = NULL;
 // Tracks whether EsiInitCache has already been called for this worker
 // process. libgomesi keeps cache state in package-level vars; calling
@@ -50,19 +52,24 @@ typedef struct {
     // Cached URI of the merged server config that owns the active
     // cache settings. Each child process uses this to lazy-init
     // InitCache once per cache_backend on first request, then skips.
-    const char *cache_backend;  // "" (off) | "memory"
-    int cache_size;             // >0 = configured, 0 = unset (default 10000)
-    int cache_ttl;              // seconds; >=0 = configured, -1 = unset
+    const char *cache_backend;        // "" (off) | "memory" | "redis" | "memcached"
+    int cache_size;                   // >0 = configured, 0 = unset (default 10000)
+    int cache_ttl;                    // seconds; >=0 = configured, -1 = unset
+    const char *cache_redis_addr;     // "host:port" or NULL = unset (default localhost:6379)
+    const char *cache_redis_password; // "" or NULL = unset (default no auth)
+    int cache_redis_db;               // -1 = unset, >=0 = selected DB (Redis max 16)
 } mesi_config;
 
 // Default memory cache size when MesiCacheSize is not set.
 // Matches libgomesi.InitCache default (10000 entries).
 #define MESI_DEFAULT_CACHE_SIZE 10000
 
-// Allow up to 1M entries / 24h TTL to keep configs in sensible range and
-// avoid silent overflow feeding libgomesi cache internals.
+// Allow up to 1M entries / 24h TTL / Redis DB 0..15 to keep configs in
+// sensible range and avoid silent overflow feeding libgomesi cache
+// internals.
 #define MESI_MAX_CACHE_SIZE 1000000
 #define MESI_MAX_CACHE_TTL_SECONDS (24 * 60 * 60)
+#define MESI_MAX_REDIS_DB 15
 
 static void *create_server_config(apr_pool_t *p, server_rec *s) {
     mesi_config *conf = apr_pcalloc(p, sizeof(*conf));
@@ -72,6 +79,9 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     conf->cache_backend = "";
     conf->cache_size = 0;
     conf->cache_ttl = -1;  // -1 = unset (no expiry)
+    conf->cache_redis_addr = NULL;
+    conf->cache_redis_password = NULL;
+    conf->cache_redis_db = -1;  // -1 = unset, default 0 in libgomesi
     return conf;
 }
 
@@ -90,6 +100,11 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
                            : base->cache_backend;
     conf->cache_size = (add->cache_size > 0) ? add->cache_size : base->cache_size;
     conf->cache_ttl = (add->cache_ttl >= 0) ? add->cache_ttl : base->cache_ttl;
+    // Redis config: child overrides parent when child explicitly sets a
+    // non-NULL value; DB uses -1 sentinel for "unset".
+    conf->cache_redis_addr = add->cache_redis_addr ? add->cache_redis_addr : base->cache_redis_addr;
+    conf->cache_redis_password = add->cache_redis_password ? add->cache_redis_password : base->cache_redis_password;
+    conf->cache_redis_db = (add->cache_redis_db >= 0) ? add->cache_redis_db : base->cache_redis_db;
     return conf;
 }
 
@@ -105,6 +120,7 @@ static apr_status_t mesi_child_cleanup(void *data) {
     EsiParseWithConfig = NULL;
     EsiFreeString = NULL;
     EsiInitCache = NULL;
+    EsiInitCacheWithConfig = NULL;
     EsiFreeCache = NULL;
     cache_initialized = 0;
     return APR_SUCCESS;
@@ -155,6 +171,11 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
         EsiInitCache = NULL;
         (void) dlerror();
     }
+    EsiInitCacheWithConfig = (InitCacheWithConfigFunc)dlsym(go_module, "InitCacheWithConfig");
+    if (dlerror() != NULL) {
+        EsiInitCacheWithConfig = NULL;
+        (void) dlerror();
+    }
     EsiFreeCache = (FreeCacheFunc)dlsym(go_module, "FreeCache");
     if (dlerror() != NULL) {
         EsiFreeCache = NULL;
@@ -172,6 +193,7 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
         EsiParseWithConfig = NULL;
         EsiFreeString = NULL;
         EsiInitCache = NULL;
+        EsiInitCacheWithConfig = NULL;
         EsiFreeCache = NULL;
         return;
     }
@@ -179,10 +201,82 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     apr_pool_cleanup_register(p, NULL, mesi_child_cleanup, apr_pool_cleanup_null);
 }
 
+// build_redis_config_json renders the mesi_config Redis fields into a
+// JSON blob compatible with libgomesi.InitCacheWithConfig. Returns
+// NULL if backend is not "redis" (caller must short-circuit).
+// Memory is allocated from the request pool (short-lived: feeds one cgo
+// call). The numeric DB field is omitted when unset (libgomesi default
+// 0). The password is omitted when NULL.
+static const char *build_redis_config_json(mesi_config *conf, apr_pool_t *pool) {
+    if (!conf->cache_backend || strcmp(conf->cache_backend, "redis") != 0) {
+        return NULL;
+    }
+    const char *addr = conf->cache_redis_addr
+                       ? conf->cache_redis_addr
+                       : "localhost:6379";
+    // Escape any embedded '"' or '\' so a misconfig password can't inject
+    // JSON keys. Use a small stack buffer; bail out via apr_psprintf
+    // for oversized strings (apr_psprintf does allocation regardless).
+    apr_size_t pwd_len = conf->cache_redis_password
+                          ? strlen(conf->cache_redis_password)
+                          : 0;
+    // Worst-case: every char is escaped (×2) + 2 quotes.
+    char *pwd_esc = NULL;
+    if (pwd_len > 0) {
+        apr_size_t esc_cap = pwd_len * 2 + 3;  // + '"' + '"' + NUL
+        pwd_esc = apr_palloc(pool, esc_cap);
+        char *w = pwd_esc;
+        *w++ = '"';
+        const char *r = conf->cache_redis_password;
+        while (*r) {
+            if (*r == '"' || *r == '\\') *w++ = '\\';
+            *w++ = *r++;
+        }
+        *w++ = '"';
+        *w = '\0';
+    }
+    // Escape addr the same way (host:port shouldn't contain JSON meta
+    // characters, but a hostile config could).
+    apr_size_t addr_len = strlen(addr);
+    apr_size_t addr_cap = addr_len * 2 + 3;
+    char *addr_esc = apr_palloc(pool, addr_cap);
+    char *w = addr_esc;
+    *w++ = '"';
+    const char *r = addr;
+    while (*r) {
+        if (*r == '"' || *r == '\\') *w++ = '\\';
+        *w++ = *r++;
+    }
+    *w++ = '"';
+    *w = '\0';
+
+    if (conf->cache_redis_db >= 0) {
+        return apr_psprintf(pool,
+            "{\"redisAddr\":%s,\"redisPassword\":%s,\"redisDB\":%d}",
+            addr_esc,
+            pwd_esc ? pwd_esc : "\"\"",
+            conf->cache_redis_db);
+    }
+    return apr_psprintf(pool,
+        "{\"redisAddr\":%s,\"redisPassword\":%s}",
+        addr_esc,
+        pwd_esc ? pwd_esc : "\"\"");
+}
+
+// build_redis_config_json_max verifies the rendered JSON is small enough
+// to safely copy into a stack-friendly buffer. libgomesi.sscanf-style
+// parsers don't artificially cap; this is a sanity check for operators.
+// 4 KB is more than enough for a host:port + a password.
+#define MESI_MAX_REDIS_CONFIG_JSON 4096
+
 // mesi_init_cache lazily initializes the shared cache for this worker
 // process. Called once per process from mesi_response_filter when
 // caching is enabled. Returns 0 on success or "no cache configured";
 // -1 if InitCache rejected the configuration (already logged).
+// For backends that require extra configuration ("redis", "memcached")
+// this uses the InitCacheWithConfig entry point passing backend-specific
+// JSON. For "memory", it uses the original InitCache so existing
+// libs without InitCacheWithConfig keep working.
 static int mesi_init_cache(mesi_config *conf, request_rec *r) {
     if (cache_initialized) {
         return 0;
@@ -191,11 +285,35 @@ static int mesi_init_cache(mesi_config *conf, request_rec *r) {
         return 0;  // Cache disabled — nothing to do.
     }
     cache_initialized = 1;  // Mark before probing so a failing dlsym is not retried.
-    if (!EsiInitCache) {
-        // Resolve lazily — dlsym is called once per process, but the
-        // first request may arrive before child_init finished probing.
-        // We mirror child_init's approach above; safe because the
-        // shared go_module handle is already open.
+
+    int size = conf->cache_size > 0 ? conf->cache_size : MESI_DEFAULT_CACHE_SIZE;
+    int ttl  = conf->cache_ttl >= 0 ? conf->cache_ttl : 0;
+
+    int needs_config = (strcmp(conf->cache_backend, "redis") == 0)
+                    || (strcmp(conf->cache_backend, "memcached") == 0);
+    if (needs_config) {
+        // Resolve InitCacheWithConfig lazily — mirrors the InitCache
+        // fallback below in case the first request arrives before
+        // child_init finished probing all symbols.
+        if (!EsiInitCacheWithConfig) {
+            if (go_module) {
+                (void) dlerror();
+                EsiInitCacheWithConfig = (InitCacheWithConfigFunc)
+                    dlsym(go_module, "InitCacheWithConfig");
+                if (dlerror() != NULL) {
+                    EsiInitCacheWithConfig = NULL;
+                }
+            }
+        }
+        if (!EsiInitCacheWithConfig) {
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                "mesi: InitCacheWithConfig symbol not available in libgomesi; "
+                "MesiCacheBackend %s requires a newer libgomesi (rebuild). "
+                "ESI will run without cache.",
+                conf->cache_backend);
+            return 0;
+        }
+    } else if (!EsiInitCache) {
         if (go_module) {
             (void) dlerror();
             EsiInitCache = (InitCacheFunc)dlsym(go_module, "InitCache");
@@ -211,9 +329,34 @@ static int mesi_init_cache(mesi_config *conf, request_rec *r) {
             return 0;
         }
     }
-    int size = conf->cache_size > 0 ? conf->cache_size : MESI_DEFAULT_CACHE_SIZE;
-    int ttl  = conf->cache_ttl >= 0 ? conf->cache_ttl : 0;
-    int rc = EsiInitCache((char *)conf->cache_backend, size, ttl);
+
+    int rc;
+    if (needs_config) {
+        const char *cfg_json = build_redis_config_json(conf, r->pool);
+        if (!cfg_json) {
+            // backend was "memcached" — emit a minimal sentinel that
+            // libgomesi.InitCacheWithConfig will reject. We DO NOT
+            // silently fall back to memory.
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                "mesi: cache backend %s lacks server-list configuration; "
+                "ESI will run without cache",
+                conf->cache_backend);
+            cache_initialized = 0;  // Allow next request to retry.
+            return -1;
+        }
+        if (strlen(cfg_json) > MESI_MAX_REDIS_CONFIG_JSON) {
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                "mesi: rendered cache config JSON exceeds %d bytes; "
+                "refusing to init cache",
+                MESI_MAX_REDIS_CONFIG_JSON);
+            cache_initialized = 0;
+            return -1;
+        }
+        rc = EsiInitCacheWithConfig((char *)conf->cache_backend, size, ttl,
+                                    (char *)cfg_json);
+    } else {
+        rc = EsiInitCache((char *)conf->cache_backend, size, ttl);
+    }
     if (rc != 0) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
             "mesi: InitCache(backend=%s, size=%d, ttl=%d) returned %d; "
@@ -306,11 +449,19 @@ static const char *set_cache_backend(cmd_parms *cmd, void *cfg, const char *arg)
     if (!arg) {
         return "MesiCacheBackend requires an argument (use empty string to disable)";
     }
-    // Only "memory" is supported; reject anything else so a typo doesn't
-    // silently fall back to "no cache" (which would change behavior
-    // without operator awareness).
+    // Reject anything outside the supported set so a typo doesn't silently
+    // fall back to "no cache" (which would change behavior without
+    // operator awareness). Backends: "memory", "redis", "memcached".
     if (strcmp(arg, "memory") == 0) {
         conf->cache_backend = "memory";
+        return NULL;
+    }
+    if (strcmp(arg, "redis") == 0) {
+        conf->cache_backend = "redis";
+        return NULL;
+    }
+    if (strcmp(arg, "memcached") == 0) {
+        conf->cache_backend = "memcached";
         return NULL;
     }
     if (arg[0] == '\0') {
@@ -318,7 +469,8 @@ static const char *set_cache_backend(cmd_parms *cmd, void *cfg, const char *arg)
         return NULL;
     }
     return apr_psprintf(cmd->pool,
-        "MesiCacheBackend: unknown backend %s (only \"memory\" is supported)",
+        "MesiCacheBackend: unknown backend %s "
+        "(supported: \"memory\", \"redis\", \"memcached\", or empty)",
         arg);
 }
 
@@ -343,6 +495,90 @@ static const char *set_cache_ttl(cmd_parms *cmd, void *cfg, const char *arg) {
             "MesiCacheTTL: %s", err);
     }
     conf->cache_ttl = v;
+    return NULL;
+}
+
+// MesiCacheRedisAddr — host:port pair. Empty value clears any
+// previously-set addr (treated as "use default localhost:6379").
+// We use a tiny "loose" check: must contain ':' followed by digits
+// (port 1..65535). Reject hostnames containing whitespace, control
+// chars, etc. to keep the address safe to embed in JSON.
+static const char *set_cache_redis_addr(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    if (!arg) {
+        return "MesiCacheRedisAddr requires a host:port argument";
+    }
+    // Empty arg → unset (use default).
+    if (arg[0] == '\0') {
+        conf->cache_redis_addr = NULL;
+        return NULL;
+    }
+    // Disallow embedded whitespace, control chars, or JSON meta chars
+    // in the address — the value gets serialized into JSON.
+    for (const char *p = arg; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == ' ' || c == '\t' || c == '"' || c == '\\' || c < 0x20) {
+            return apr_psprintf(cmd->pool,
+                "MesiCacheRedisAddr: invalid character %d in %s",
+                (int)c, arg);
+        }
+    }
+    // Find last ':' (IPv6 addresses use [...] or no port — we keep it
+    // simple: must contain a colon, port part must be digits in 1..65535).
+    const char *colon = strrchr(arg, ':');
+    if (!colon || colon == arg || *(colon + 1) == '\0') {
+        return apr_psprintf(cmd->pool,
+            "MesiCacheRedisAddr: must be host:port (got: %s)", arg);
+    }
+    // Validate port is a positive decimal in [1, 65535].
+    int port = 0;
+    const char *err = parse_nonneg_int(cmd->pool, colon + 1, 1, 65535, &port);
+    if (err) {
+        return apr_psprintf(cmd->pool,
+            "MesiCacheRedisAddr: port invalid: %s", arg);
+    }
+    conf->cache_redis_addr = apr_pstrdup(cmd->pool, arg);
+    return NULL;
+}
+
+// MesiCacheRedisPassword — raw Redis AUTH password. We do NOT log
+// the password value on error (don't leak creds into error.log).
+// Empty arg clears the password.
+static const char *set_cache_redis_password(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    if (!arg) {
+        // AP_INIT_TAKE1 args are never NULL per Apache directive contract,
+        // but guard anyway — silently treating NULL as "clear" would mask
+        // misconfiguration. Treat NULL as an explicit empty string.
+        conf->cache_redis_password = "";
+        return NULL;
+    }
+    // Reject embedded control chars (< 0x20) and JSON-meta chars
+    // (',",\\,<,>,&) only for control-char detection). Quotes/backslashes
+    // are explicitly escaped by build_redis_config_json, so they're OK.
+    for (const char *p = arg; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x20) {
+            return apr_psprintf(cmd->pool,
+                "MesiCacheRedisPassword: invalid control character 0x%02x in value",
+                (unsigned)c);
+        }
+    }
+    conf->cache_redis_password = apr_pstrdup(cmd->pool, arg);
+    return NULL;
+}
+
+// MesiCacheRedisDB — Redis logical database number. 0..15 (Redis
+// default config; redis.conf "databases 16"). Negatives are rejected.
+static const char *set_cache_redis_db(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    int v = -1;
+    const char *err = parse_nonneg_int(cmd->pool, arg, 0, MESI_MAX_REDIS_DB, &v);
+    if (err) {
+        return apr_psprintf(cmd->pool,
+            "MesiCacheRedisDB: %s", err);
+    }
+    conf->cache_redis_db = v;
     return NULL;
 }
 
@@ -571,9 +807,12 @@ static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("EnableMesi", set_enable_mesi, NULL, RSRC_CONF, "Enable or disable the Mesi module"),
     AP_INIT_RAW_ARGS("MesiAllowedHosts", set_allowed_hosts, NULL, RSRC_CONF, "Space-separated list of allowed hostnames for ESI includes"),
     AP_INIT_FLAG("MesiBlockPrivateIPs", set_block_private_ips, NULL, RSRC_CONF, "Enable or disable private IP blocking (default: On)"),
-    AP_INIT_TAKE1("MesiCacheBackend", set_cache_backend, NULL, RSRC_CONF, "Cache backend: \"memory\" (off when empty). Default: off"),
+    AP_INIT_TAKE1("MesiCacheBackend", set_cache_backend, NULL, RSRC_CONF, "Cache backend: \"memory\", \"redis\", \"memcached\" (off when empty). Default: off"),
     AP_INIT_TAKE1("MesiCacheSize", set_cache_size, NULL, RSRC_CONF, "Memory cache max entries (1..1000000). Default: 10000"),
     AP_INIT_TAKE1("MesiCacheTTL", set_cache_ttl, NULL, RSRC_CONF, "Memory cache entry TTL in seconds (0..86400). Default: 0 (no expiry)"),
+    AP_INIT_TAKE1("MesiCacheRedisAddr", set_cache_redis_addr, NULL, RSRC_CONF, "Redis server address for ESI caching (default: localhost:6379). Used when MesiCacheBackend is redis"),
+    AP_INIT_TAKE1("MesiCacheRedisPassword", set_cache_redis_password, NULL, RSRC_CONF, "Redis AUTH password (default: none). Used when MesiCacheBackend is redis"),
+    AP_INIT_TAKE1("MesiCacheRedisDB", set_cache_redis_db, NULL, RSRC_CONF, "Redis database number (0..15). Default: 0. Used when MesiCacheBackend is redis"),
     {NULL}
 };
 

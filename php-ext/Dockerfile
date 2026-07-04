@@ -6,7 +6,7 @@ COPY go.mod go.sum ./
 COPY mesi/ ./mesi/
 COPY libgomesi/ ./libgomesi/
 
-RUN cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go
+RUN cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go cache_config.go
 
 FROM php:8.3-cli-bookworm AS ext-build
 

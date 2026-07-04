@@ -40,12 +40,17 @@ typedef struct {
     const char *cache_backend;
     int cache_size;
     int cache_ttl;
+    /* Redis backend fields (#175) */
+    const char *cache_redis_addr;
+    const char *cache_redis_password;
+    int cache_redis_db;
 } mesi_config;
 
 /* Sentinel/constant values copied from mod_mesi.c */
 #define MESI_DEFAULT_CACHE_SIZE 10000
 #define MESI_MAX_CACHE_SIZE 1000000
 #define MESI_MAX_CACHE_TTL_SECONDS (24 * 60 * 60)
+#define MESI_MAX_REDIS_DB 15
 
 /* Directive parsing functions (copied from mod_mesi.c for testing) */
 static const char *parse_allowed_hosts(mesi_config *conf, const char *arg) {
@@ -116,12 +121,21 @@ static const char *set_cache_backend(mesi_config *conf, const char *arg) {
         conf->cache_backend = "memory";
         return NULL;
     }
+    if (strcmp(arg, "redis") == 0) {
+        conf->cache_backend = "redis";
+        return NULL;
+    }
+    if (strcmp(arg, "memcached") == 0) {
+        conf->cache_backend = "memcached";
+        return NULL;
+    }
     if (arg[0] == '\0') {
         conf->cache_backend = "";
         return NULL;
     }
     return apr_psprintf(pool,
-        "MesiCacheBackend: unknown backend %s (only \"memory\" is supported)",
+        "MesiCacheBackend: unknown backend %s "
+        "(supported: \"memory\", \"redis\", \"memcached\", or empty)",
         arg);
 }
 
@@ -145,6 +159,72 @@ static const char *set_cache_ttl(mesi_config *conf, const char *arg) {
     return NULL;
 }
 
+/* MesiCacheRedisAddr — host:port. Empty arg clears config (default
+ * localhost:6379 in libgomesi). Must contain ':' and a valid port
+ * (1..65535). No whitespace, control chars, or JSON-meta chars. */
+static const char *set_cache_redis_addr(mesi_config *conf, const char *arg) {
+    if (!arg) {
+        return "MesiCacheRedisAddr requires a host:port argument";
+    }
+    if (arg[0] == '\0') {
+        conf->cache_redis_addr = NULL;
+        return NULL;
+    }
+    for (const char *p = arg; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == ' ' || c == '\t' || c == '"' || c == '\\' || c < 0x20) {
+            return apr_psprintf(pool,
+                "MesiCacheRedisAddr: invalid character %d in %s",
+                (int)c, arg);
+        }
+    }
+    const char *colon = strrchr(arg, ':');
+    if (!colon || colon == arg || *(colon + 1) == '\0') {
+        return apr_psprintf(pool,
+            "MesiCacheRedisAddr: must be host:port (got: %s)", arg);
+    }
+    int port = 0;
+    const char *err = parse_nonneg_int(pool, colon + 1, 1, 65535, &port);
+    if (err) {
+        return apr_psprintf(pool,
+            "MesiCacheRedisAddr: port invalid: %s", arg);
+    }
+    conf->cache_redis_addr = apr_pstrdup(pool, arg);
+    return NULL;
+}
+
+/* MesiCacheRedisPassword — raw Redis AUTH password. No control chars.
+ * Empty arg sets empty password (auth disabled). Mock must not leak
+ * the password into error messages. */
+static const char *set_cache_redis_password(mesi_config *conf, const char *arg) {
+    if (!arg) {
+        conf->cache_redis_password = "";
+        return NULL;
+    }
+    for (const char *p = arg; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x20) {
+            return apr_psprintf(pool,
+                "MesiCacheRedisPassword: invalid control character 0x%02x in value",
+                (unsigned)c);
+        }
+    }
+    conf->cache_redis_password = apr_pstrdup(pool, arg);
+    return NULL;
+}
+
+/* MesiCacheRedisDB — Redis logical DB number. 0..15 (Redis default). */
+static const char *set_cache_redis_db(mesi_config *conf, const char *arg) {
+    int v = -1;
+    const char *err = parse_nonneg_int(pool, arg, 0, MESI_MAX_REDIS_DB, &v);
+    if (err) {
+        return apr_psprintf(pool,
+            "MesiCacheRedisDB: %s", err);
+    }
+    conf->cache_redis_db = v;
+    return NULL;
+}
+
 static void init_config(mesi_config *conf) {
     memset(conf, 0, sizeof(*conf));
     conf->allowed_hosts = apr_array_make(pool, 4, sizeof(const char *));
@@ -152,6 +232,9 @@ static void init_config(mesi_config *conf) {
     conf->cache_backend = "";
     conf->cache_size = 0;
     conf->cache_ttl = -1;
+    conf->cache_redis_addr = NULL;
+    conf->cache_redis_password = NULL;
+    conf->cache_redis_db = -1;
 }
 
 static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merged) {
@@ -163,6 +246,9 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
                            : base->cache_backend;
     merged->cache_size = (add->cache_size > 0) ? add->cache_size : base->cache_size;
     merged->cache_ttl = (add->cache_ttl >= 0) ? add->cache_ttl : base->cache_ttl;
+    merged->cache_redis_addr = add->cache_redis_addr ? add->cache_redis_addr : base->cache_redis_addr;
+    merged->cache_redis_password = add->cache_redis_password ? add->cache_redis_password : base->cache_redis_password;
+    merged->cache_redis_db = (add->cache_redis_db >= 0) ? add->cache_redis_db : base->cache_redis_db;
 }
 
 /* Test cases */
@@ -326,22 +412,45 @@ TEST(cache_backend_unknown_rejected) {
     mesi_config conf;
     init_config(&conf);
 
-    const char *err = set_cache_backend(&conf, "redis");
+    const char *err = set_cache_backend(&conf, "file");
     ASSERT_NOT_NULL(err);
-    ASSERT_STR_CONTAINS(err, "redis");
+    ASSERT_STR_CONTAINS(err, "file");
     ASSERT_STR_CONTAINS(err, "memory");
+    ASSERT_STR_CONTAINS(err, "redis");
+    ASSERT_STR_CONTAINS(err, "memcached");
     /* config left at default "" instead of being polluted with bogus value */
     ASSERT_STR_EQ(conf.cache_backend, "");
 }
 
-TEST(cache_backend_redis_rejected) {
-    /* redis/memcached are unsupported on Apache in this milestone. */
+TEST(cache_backend_redis_accepted) {
+    /* Redis backend is supported (#175). */
     mesi_config conf;
     init_config(&conf);
 
-    const char *err = set_cache_backend(&conf, "memcached");
+    ASSERT_NULL(set_cache_backend(&conf, "redis"));
+    ASSERT_STR_EQ(conf.cache_backend, "redis");
+}
+
+TEST(cache_backend_memcached_accepted) {
+    /* Memcached backend string is accepted; runtime InitCacheWithConfig
+     * will surface the missing servers list (#176). */
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_backend(&conf, "memcached"));
+    ASSERT_STR_EQ(conf.cache_backend, "memcached");
+}
+
+TEST(cache_backend_unknown_variant_rejected) {
+    /* A near-miss like "rediscluster" must be rejected, not silently
+     * aliased. Parity with #174 unknown-rejected test. */
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_backend(&conf, "rediscluster");
     ASSERT_NOT_NULL(err);
-    ASSERT_STR_CONTAINS(err, "memcached");
+    /* value was NOT stored */
+    ASSERT_STR_EQ(conf.cache_backend, "");
 }
 
 TEST(cache_size_default_unset) {
@@ -602,6 +711,362 @@ TEST(merge_cache_ttl_child_inherits) {
     ASSERT_EQ(merged.cache_ttl, 30);
 }
 
+/* --- Redis backend directive tests (#175) --- */
+
+TEST(redis_addr_default_unset) {
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(conf.cache_redis_addr);
+}
+
+TEST(redis_addr_valid) {
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_redis_addr(&conf, "10.0.0.5:6379"));
+    ASSERT_STR_EQ(conf.cache_redis_addr, "10.0.0.5:6379");
+}
+
+TEST(redis_addr_localhost_default_port) {
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_redis_addr(&conf, "localhost:6379"));
+    ASSERT_STR_EQ(conf.cache_redis_addr, "localhost:6379");
+}
+
+TEST(redis_addr_hostname_with_port) {
+    /* Issue example: "10.0.0.5:6379" — also confirms hostnames work. */
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_redis_addr(&conf, "redis.local:6380"));
+    ASSERT_STR_EQ(conf.cache_redis_addr, "redis.local:6380");
+}
+
+TEST(redis_addr_empty_clears) {
+    /* Empty arg explicitly clears the address (operator action: use
+     * libgomesi defaults localhost:6379). Mirrors mod_mesi.c
+     * set_cache_redis_addr() behavior. */
+    mesi_config conf;
+    init_config(&conf);
+    conf.cache_redis_addr = "10.0.0.5:6379";  // existing value
+
+    ASSERT_NULL(set_cache_redis_addr(&conf, ""));
+    ASSERT_NULL(conf.cache_redis_addr);
+}
+
+TEST(redis_addr_missing_port_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_addr(&conf, "10.0.0.5");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "host:port");
+}
+
+TEST(redis_addr_missing_host_rejected) {
+    /* ":6379" — colon at start, no host. */
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_addr(&conf, ":6379");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "host:port");
+}
+
+TEST(redis_addr_missing_port_value_rejected) {
+    /* "host:" — colon at end. */
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_addr(&conf, "10.0.0.5:");
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(redis_addr_port_zero_rejected) {
+    /* Boundary: port must be >= 1. */
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_addr(&conf, "10.0.0.5:0");
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(redis_addr_port_max_accepted) {
+    /* Boundary: port 65535 is the largest legal port. */
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_redis_addr(&conf, "10.0.0.5:65535"));
+    ASSERT_STR_EQ(conf.cache_redis_addr, "10.0.0.5:65535");
+}
+
+TEST(redis_addr_port_max_plus_one_rejected) {
+    /* Boundary: 65536 rejected. */
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_addr(&conf, "10.0.0.5:65536");
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(redis_addr_port_negative_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_addr(&conf, "10.0.0.5:-1");
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(redis_addr_with_whitespace_rejected) {
+    /* JSON cannot be safely generated with embedded whitespace or
+     * tabs. Reject so misconfig never silently produces odd JSON. */
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_addr(&conf, "10.0.0.5 :6379");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "invalid character");
+}
+
+TEST(redis_addr_with_quote_rejected) {
+    /* Embedded '"' would inject JSON keys. Reject. */
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_addr(&conf, "10.0.0.5\" :6379");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "invalid character");
+}
+
+TEST(redis_addr_with_backslash_rejected) {
+    /* Embedded '\\' would inject JSON escape sequences. Reject. */
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_addr(&conf, "10.0.0.5\\:6379");
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(redis_addr_null_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_addr(&conf, NULL);
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(redis_addr_ipv6_localhost_accepted) {
+    /* [::1]:6379 — IPv6 literal. Note: we treat as a single colon in
+     * strrchr so the *last* colon is the port separator; the host
+     * itself may contain colons. Validate that the resulting port
+     * is in 1..65535 and that the inner content is unfiltered only
+     * for control chars (we don't validate IPv6 syntax beyond that). */
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_redis_addr(&conf, "[::1]:6379"));
+    ASSERT_STR_EQ(conf.cache_redis_addr, "[::1]:6379");
+}
+
+TEST(redis_password_default_unset) {
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(conf.cache_redis_password);
+}
+
+TEST(redis_password_empty_accepted) {
+    /* Empty password explicitly set = no auth. */
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_redis_password(&conf, ""));
+    ASSERT_STR_EQ(conf.cache_redis_password, "");
+}
+
+TEST(redis_password_valid) {
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_redis_password(&conf, "supersecret123"));
+    ASSERT_STR_EQ(conf.cache_redis_password, "supersecret123");
+}
+
+TEST(redis_password_with_special_chars_accepted) {
+    /* Quotes and backslashes inside the password are fine — they get
+     * escaped by build_redis_config_json. */
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_redis_password(&conf, "p@ssw0rd\"with\\quotes"));
+    ASSERT_STR_EQ(conf.cache_redis_password, "p@ssw0rd\"with\\quotes");
+}
+
+TEST(redis_password_with_control_char_rejected) {
+    /* Newlines, tabs, BEL, etc. would corrupt the rendered JSON. */
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_password(&conf, "abc\x01");
+    ASSERT_NOT_NULL(err);
+    /* Must NOT leak the password into the error message. */
+    ASSERT_NULL(strstr(err, "abc"));
+    ASSERT_STR_CONTAINS(err, "control character");
+}
+
+TEST(redis_password_null_accepted) {
+    /* AP_INIT_TAKE1 args are never NULL per Apache contract, but the
+     * parser must guard anyway — treat NULL as "clear password". */
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_redis_password(&conf, NULL));
+    ASSERT_STR_EQ(conf.cache_redis_password, "");
+}
+
+TEST(redis_db_default_unset) {
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_EQ(conf.cache_redis_db, -1);
+}
+
+TEST(redis_db_zero_accepted) {
+    /* Boundary: 0 is the smallest legal DB number. */
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_redis_db(&conf, "0"));
+    ASSERT_EQ(conf.cache_redis_db, 0);
+}
+
+TEST(redis_db_valid) {
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_redis_db(&conf, "2"));
+    ASSERT_EQ(conf.cache_redis_db, 2);
+}
+
+TEST(redis_db_max_accepted) {
+    /* Boundary: MESI_MAX_REDIS_DB (15) is the largest legal DB. */
+    mesi_config conf;
+    init_config(&conf);
+
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", MESI_MAX_REDIS_DB);
+    ASSERT_NULL(set_cache_redis_db(&conf, buf));
+    ASSERT_EQ(conf.cache_redis_db, MESI_MAX_REDIS_DB);
+}
+
+TEST(redis_db_max_plus_one_rejected) {
+    /* Boundary: 16 is out of range (Redis default max is 16). */
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_db(&conf, "16");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "out of range");
+}
+
+TEST(redis_db_negative_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_db(&conf, "-1");
+    ASSERT_NOT_NULL(err);
+    /* config must NOT silently retain a non-negative value */
+    ASSERT_EQ(conf.cache_redis_db, -1);
+}
+
+TEST(redis_db_decimal_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_db(&conf, "2.5");
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(redis_db_empty_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_db(&conf, "");
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(redis_db_oversized_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_db(&conf, "12345678901");
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(merge_redis_addr_child_overrides) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.cache_redis_addr = NULL;
+    add.cache_redis_addr = "10.0.0.5:6379";
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_NOT_NULL(merged.cache_redis_addr);
+    ASSERT_STR_EQ(merged.cache_redis_addr, "10.0.0.5:6379");
+}
+
+TEST(merge_redis_addr_child_inherits) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.cache_redis_addr = "10.0.0.5:6379";
+    add.cache_redis_addr = NULL;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_STR_EQ(merged.cache_redis_addr, "10.0.0.5:6379");
+}
+
+TEST(merge_redis_db_child_overrides) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.cache_redis_db = -1;
+    add.cache_redis_db = 2;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.cache_redis_db, 2);
+}
+
+TEST(merge_redis_db_child_inherits) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.cache_redis_db = 5;
+    add.cache_redis_db = -1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.cache_redis_db, 5);
+}
+
+TEST(merge_redis_password_child_overrides) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.cache_redis_password = NULL;
+    add.cache_redis_password = "secret";
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_STR_EQ(merged.cache_redis_password, "secret");
+}
+
 int main(int argc, char *argv[]) {
     printf("=== Apache Module Directive Unit Tests ===\n\n");
 
@@ -629,7 +1094,8 @@ int main(int argc, char *argv[]) {
     RUN_TEST(cache_backend_memory);
     RUN_TEST(cache_backend_empty_disables);
     RUN_TEST(cache_backend_unknown_rejected);
-    RUN_TEST(cache_backend_redis_rejected);
+    // (#175): "redis_rejected" test renamed -> "redis_accepted" (and added
+    // memcached variant) — see below.
 
     printf("\nTesting set_cache_size() (#174):\n");
     RUN_TEST(cache_size_default_unset);
@@ -662,6 +1128,56 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_cache_size_child_inherits);
     RUN_TEST(merge_cache_ttl_child_overrides);
     RUN_TEST(merge_cache_ttl_child_inherits);
+
+    printf("\nTesting set_cache_backend() (#175):\n");
+    RUN_TEST(cache_backend_redis_accepted);
+    RUN_TEST(cache_backend_memcached_accepted);
+    RUN_TEST(cache_backend_unknown_variant_rejected);
+
+    printf("\nTesting set_cache_redis_addr() (#175):\n");
+    RUN_TEST(redis_addr_default_unset);
+    RUN_TEST(redis_addr_valid);
+    RUN_TEST(redis_addr_localhost_default_port);
+    RUN_TEST(redis_addr_hostname_with_port);
+    RUN_TEST(redis_addr_empty_clears);
+    RUN_TEST(redis_addr_missing_port_rejected);
+    RUN_TEST(redis_addr_missing_host_rejected);
+    RUN_TEST(redis_addr_missing_port_value_rejected);
+    RUN_TEST(redis_addr_port_zero_rejected);
+    RUN_TEST(redis_addr_port_max_accepted);
+    RUN_TEST(redis_addr_port_max_plus_one_rejected);
+    RUN_TEST(redis_addr_port_negative_rejected);
+    RUN_TEST(redis_addr_with_whitespace_rejected);
+    RUN_TEST(redis_addr_with_quote_rejected);
+    RUN_TEST(redis_addr_with_backslash_rejected);
+    RUN_TEST(redis_addr_null_rejected);
+    RUN_TEST(redis_addr_ipv6_localhost_accepted);
+
+    printf("\nTesting set_cache_redis_password() (#175):\n");
+    RUN_TEST(redis_password_default_unset);
+    RUN_TEST(redis_password_empty_accepted);
+    RUN_TEST(redis_password_valid);
+    RUN_TEST(redis_password_with_special_chars_accepted);
+    RUN_TEST(redis_password_with_control_char_rejected);
+    RUN_TEST(redis_password_null_accepted);
+
+    printf("\nTesting set_cache_redis_db() (#175):\n");
+    RUN_TEST(redis_db_default_unset);
+    RUN_TEST(redis_db_zero_accepted);
+    RUN_TEST(redis_db_valid);
+    RUN_TEST(redis_db_max_accepted);
+    RUN_TEST(redis_db_max_plus_one_rejected);
+    RUN_TEST(redis_db_negative_rejected);
+    RUN_TEST(redis_db_decimal_rejected);
+    RUN_TEST(redis_db_empty_rejected);
+    RUN_TEST(redis_db_oversized_rejected);
+
+    printf("\nTesting merge_server_config() redis fields (#175):\n");
+    RUN_TEST(merge_redis_addr_child_overrides);
+    RUN_TEST(merge_redis_addr_child_inherits);
+    RUN_TEST(merge_redis_db_child_overrides);
+    RUN_TEST(merge_redis_db_child_inherits);
+    RUN_TEST(merge_redis_password_child_overrides);
 
     apr_pool_destroy(pool);
     apr_terminate();
