@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Cache Test</title>
+</head>
+<body>
+    <h1>Memory Cache Test</h1>
+    <!-- Two duplicate includes of the same URL — without cache the
+         backend would be hit twice. With MemiCacheBackend memory,
+         the second include must be served from libgomesi's shared
+         in-memory cache. -->
+    <esi:include src="http://backend:8000/cached-fragment.txt" />
+    <esi:include src="http://backend:8000/cached-fragment.txt" />
+    <p>After duplicate includes</p>
+</body>
+</html>
