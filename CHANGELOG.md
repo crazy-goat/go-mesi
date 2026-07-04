@@ -16,9 +16,11 @@
 
 ### Changed
 - **`<esi:include fetch-mode="ab" ab-ratio="…">` now rejects malformed input.** Previously the parser silently substituted the documented `{A:50, B:50}` default for every malformed value (missing colon, extra colons, negative numbers, decimals, non-integer operands, oversized integers, both-sides-zero). It now returns `*ErrInvalidABRatio` through the existing include-error path, surfacing the operator's actual input in logs and the `IncludeErrorMarker` (#315).
+- **`<esi:include max-depth="…">` now rejects malformed input and clamps to a documented upper bound.** Previously the parser silently substituted the parent's `MaxDepth` for every malformed value (non-numeric, negative, decimal, oversize — including values past `MaxUint64`), and silently accepted any parsed-but-unbounded value via `uint(v)+1`. It now returns `*ErrInvalidMaxDepth` through the configured logger (visible via `Debug` and any logger implementing `Warn`) and preserves the parent's `MaxDepth` for the rejected override. Empty / whitespace-only attributes continue to be treated as "no override" so existing templates that omit the attribute or pass a blank one are not silently downgraded. Accepted values are bounded by `MaxMaxDepth` (10,000) so the `+1` arithmetic that clamps the parent's depth can never approach any platform's `uint` wrap boundary (#317).
 
 ### Fixed
 - `selectUrl` integer-sum overflow at high ratios guarded against `math.MaxInt` saturation (#315).
+- `OverrideConfig` `max-depth` path previously accepted any parseable value and propagated it through the `uint(v)+1` clamp with no upper bound. Inputs above `MaxMaxDepth` (10,000) or syntactically invalid now produce `*ErrInvalidMaxDepth` so operator typos and hostile templates both surface through the logger while the parent's `MaxDepth` survives untouched — preventing a single misconfigured include from silently disabling all nested ESI processing under it (#317).
 
 ## [0.8.0] - Unreleased
 

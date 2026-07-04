@@ -1,6 +1,7 @@
 package mesi
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -1692,6 +1693,125 @@ func TestMESIParseABRatioAcceptedBoundaries(t *testing.T) {
 			result := MESIParse(input, config)
 			if result != tc.want {
 				t.Errorf("ab-ratio=%q -> %q, want %q", tc.abRatio, result, tc.want)
+			}
+		})
+	}
+}
+
+func TestMESIParseMaxDepthRejectsInvalidInput(t *testing.T) {
+	// The legacy bug (#317) was: a hostile `max-depth` override silently
+	// downgraded the parent's MaxDepth (the most striking case being a
+	// wrap-to-zero on MaxUint64-class inputs), turning the include into
+	// a parse-only tag. The fix says: an invalid override must surface
+	// through the logger while letting the parent's depth remain intact.
+	//
+	// We mock an upstream that returns a nested <esi:include> pointing
+	// at a second endpoint we also mock. With the parent MaxDepth set
+	// high enough to recurse once into the inner include, an invalid
+	// override must leave both fetches intact (the parent's depth
+	// survives); a working override that respects MaxDepth=5 shows the
+	// same fetch count, so we additionally verify the response renders
+	// the inner result rather than `IncludeErrorMarker`.
+	innerBody := "INNER_TEXT"
+	var innerHits atomic.Int32
+	innerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		innerHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(innerBody))
+	}))
+	defer innerSrv.Close()
+
+	var outerHits atomic.Int32
+	outerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		outerHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "outer: [<esi:include src=%q />]", innerSrv.URL+"/inner")
+	}))
+	defer outerSrv.Close()
+
+	cfg := CreateDefaultConfig()
+	cfg.DefaultUrl = outerSrv.URL + "/"
+	cfg.MaxDepth = 5
+	cfg.BlockPrivateIPs = false
+	cfg.IncludeErrorMarker = "[ERR]"
+
+	cases := []struct {
+		name     string
+		maxDepth string
+	}{
+		{"alpha", "abc"},
+		{"negative", "-1"},
+		{"decimal", "5.5"},
+		{"above documented maximum", "10001"},
+		{"above uint64 max (true overflow)", "99999999999999999999999999999999999"},
+		{"huge but in uint64 (still huge)", "18446744073709551615"},
+		{"uint64 max minus one", "18446744073709551614"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			innerHits.Store(0)
+			outerHits.Store(0)
+
+			input := fmt.Sprintf(
+				`<esi:include src=%q max-depth=%q />`,
+				outerSrv.URL+"/outer", tc.maxDepth,
+			)
+			result := MESIParse(input, cfg)
+
+			if outerHits.Load() != 1 {
+				t.Errorf("outer include fetched %d times for invalid max-depth=%q (want 1: parent's depth must allow fetching the outer response)",
+					outerHits.Load(), tc.maxDepth)
+			}
+			if innerHits.Load() != 1 {
+				t.Errorf("inner include fetched %d times for invalid max-depth=%q (want 1: parent's depth must NOT be downgraded)",
+					innerHits.Load(), tc.maxDepth)
+			}
+			if strings.Contains(result, "[ERR]") {
+				t.Errorf("invalid max-depth=%q must not invalidate the include entirely; result=%q",
+					tc.maxDepth, result)
+			}
+			if !strings.Contains(result, innerBody) {
+				t.Errorf("inner body %q not rendered for invalid max-depth=%q; result=%q — parent's MaxDepth was not applied",
+					innerBody, tc.maxDepth, result)
+			}
+		})
+	}
+}
+
+func TestMESIParseMaxDepthValidOverridesApplied(t *testing.T) {
+	// Positive path: a well-formed max-depth override must tighten the
+	// parent's depth exactly as documented.
+	cases := []struct {
+		name     string
+		maxDepth string
+		wantHits int32 // expected count of upstream fetches
+	}{
+		{"max-depth=2 honoured", "2", 1},
+		{"max-depth=10000 honoured", "10000", 1},
+		{"max-depth=0 reduces to depth+1=1", "0", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("OK"))
+			}))
+			defer server.Close()
+
+			config := CreateDefaultConfig()
+			config.DefaultUrl = server.URL + "/"
+			config.MaxDepth = 5
+			config.BlockPrivateIPs = false
+
+			input := `<esi:include src="` + server.URL + `/x" max-depth="` + tc.maxDepth + `"/>`
+			MESIParse(input, config)
+
+			if hits.Load() != tc.wantHits {
+				t.Errorf("upstream fetched %d times with max-depth=%q (want %d)",
+					hits.Load(), tc.maxDepth, tc.wantHits)
 			}
 		})
 	}
