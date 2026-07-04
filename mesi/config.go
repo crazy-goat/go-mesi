@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -134,6 +135,19 @@ func (c EsiParserConfig) WithElapsedTime(t time.Duration) EsiParserConfig {
 	return c
 }
 
+// OverrideConfig layers per-`<esi:include>` overrides on top of the parent
+// EsiParserConfig. Only fields actually present on the token are touched;
+// every other field is preserved verbatim.
+//
+// The `max-depth` override is validated through parseMaxDepth so operator
+// typos (non-numeric, negative, decimal, oversized values — including the
+// historical MaxUint64-1 wrap-to-zero boundary) are surfaced through the
+// configured logger rather than silently substituted. A validated override
+// then clamps the parent's MaxDepth to (depth+1), matching the documented
+// "token override can only tighten, never widen" semantics. An invalid
+// override is dropped: the parent's MaxDepth is preserved, which keeps a
+// single misconfigured include from silently disabling all nested ESI
+// processing downstream of it.
 func (c EsiParserConfig) OverrideConfig(token esiIncludeToken) EsiParserConfig {
 	if token.Timeout != "" {
 		tokenTimeout, err := strconv.ParseFloat(token.Timeout, 64)
@@ -145,14 +159,39 @@ func (c EsiParserConfig) OverrideConfig(token esiIncludeToken) EsiParserConfig {
 		}
 	}
 
-	if token.MaxDepth != "" {
-		tokenMaxDepth, err := strconv.Atoi(token.MaxDepth)
-		if err == nil && tokenMaxDepth >= 0 {
-			limit := uint(tokenMaxDepth) + 1
-			if c.MaxDepth > limit {
-				c.MaxDepth = limit
-			}
-		}
+	// The empty / whitespace-only case is documented as "no override":
+	// the operator has not asked for any change, so the parent's
+	// MaxDepth must survive untouched. Historically both `strconv.Atoi`
+	// rejected these inputs and the legacy code's "skip if err != nil"
+	// short-circuit produced the same behaviour — restore that contract
+	// here before parseMaxDepth normalises whitespace into a "0" that
+	// would otherwise clamp the parent down to depth+1=1.
+	if token.MaxDepth == "" || strings.TrimSpace(token.MaxDepth) == "" {
+		return c
+	}
+	depth, err := parseMaxDepth(token.MaxDepth)
+	if err != nil {
+		// Surface the invalid value through c.warn so a logger
+		// implementing LoggerWarn receives it at warn severity;
+		// loggers that do not (including the default
+		// DiscardLogger) record it under Debug. The override
+		// is dropped: we keep the parent's MaxDepth, which is
+		// safer than silently substituting a parsed-but-
+		// clamped value and is required to keep a malformed
+		// attribute from silently disabling nested ESI
+		// processing under this include.
+		c.warn("max_depth_invalid", "src", token.Src, "max_depth", token.MaxDepth, "error", err.Error())
+		return c
+	}
+	// For an accepted (non-empty, non-whitespace, parseable, in-
+	// range) value, clamp the parent MaxDepth to (depth+1) —
+	// matching the historical "token override can only tighten
+	// the parent's depth, never widen it" semantics. This also
+	// covers the documented "max-depth=0 → depth+1=1" signal
+	// from the legacy contract.
+	limit := uint(depth) + 1
+	if c.MaxDepth > limit {
+		c.MaxDepth = limit
 	}
 
 	return c

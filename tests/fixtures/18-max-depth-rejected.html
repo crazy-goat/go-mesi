@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Max-depth override rejection - parent depth preserved</title>
+</head>
+<body>
+invalid (alpha) keeps parent depth: [<esi:include max-depth="abc" src="http://127.0.0.1:8080/returnEsi" />]
+invalid (negative) keeps parent depth: [<esi:include max-depth="-1" src="http://127.0.0.1:8080/returnEsi" />]
+invalid (decimal) keeps parent depth: [<esi:include max-depth="5.5" src="http://127.0.0.1:8080/returnEsi" />]
+invalid (above documented maximum) keeps parent depth: [<esi:include max-depth="10001" src="http://127.0.0.1:8080/returnEsi" />]
+invalid (huge uint64 value) keeps parent depth: [<esi:include max-depth="18446744073709551615" src="http://127.0.0.1:8080/returnEsi" />]
+invalid (beyond uint64) keeps parent depth: [<esi:include max-depth="99999999999999999999999999999999999" src="http://127.0.0.1:8080/returnEsi" />]
+valid override above parent depth honours parent: [<esi:include max-depth="100" src="http://127.0.0.1:8080/returnEsi" />]
+valid override at parent depth matches parent: [<esi:include max-depth="5" src="http://127.0.0.1:8080/returnEsi" />]
+empty max-depth is treated as no override: [<esi:include max-depth="" src="http://127.0.0.1:8080/returnEsi" />]
+whitespace-only max-depth is treated as no override: [<esi:include max-depth=" " src="http://127.0.0.1:8080/returnEsi" />]
+</body>
+</html>
