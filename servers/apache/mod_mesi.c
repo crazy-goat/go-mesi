@@ -18,11 +18,20 @@
 typedef char *(*ParseFunc)(char *, int, char *);
 typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
 typedef void (*FreeFunc)(char *);
+typedef int (*InitCacheFunc)(char *, int, int);
+typedef void (*FreeCacheFunc)(void);
 
 static void *go_module = NULL;
 static ParseFunc EsiParse = NULL;
 static ParseWithConfigFunc EsiParseWithConfig = NULL;
 static FreeFunc EsiFreeString = NULL;
+static InitCacheFunc EsiInitCache = NULL;
+static FreeCacheFunc EsiFreeCache = NULL;
+// Tracks whether EsiInitCache has already been called for this worker
+// process. libgomesi keeps cache state in package-level vars; calling
+// InitCache() multiple times resets it, so we only invoke it once and
+// guard subsequent requests. Reset to 0 in mesi_child_cleanup().
+static int cache_initialized = 0;
 
 // Test-only: set MESI_FORCE_FLATTEN_ERROR=1 in the environment to force
 // flatten_brigade() to return 0, simulating a brigade flatten failure.
@@ -38,13 +47,31 @@ typedef struct {
     int enable_mesi;
     apr_array_header_t *allowed_hosts;
     int block_private_ips;  // -1=unset, 0=off, 1=on
+    // Cached URI of the merged server config that owns the active
+    // cache settings. Each child process uses this to lazy-init
+    // InitCache once per cache_backend on first request, then skips.
+    const char *cache_backend;  // "" (off) | "memory"
+    int cache_size;             // >0 = configured, 0 = unset (default 10000)
+    int cache_ttl;              // seconds; >=0 = configured, -1 = unset
 } mesi_config;
+
+// Default memory cache size when MesiCacheSize is not set.
+// Matches libgomesi.InitCache default (10000 entries).
+#define MESI_DEFAULT_CACHE_SIZE 10000
+
+// Allow up to 1M entries / 24h TTL to keep configs in sensible range and
+// avoid silent overflow feeding libgomesi cache internals.
+#define MESI_MAX_CACHE_SIZE 1000000
+#define MESI_MAX_CACHE_TTL_SECONDS (24 * 60 * 60)
 
 static void *create_server_config(apr_pool_t *p, server_rec *s) {
     mesi_config *conf = apr_pcalloc(p, sizeof(*conf));
     conf->enable_mesi = 0;
     conf->allowed_hosts = apr_array_make(p, 4, sizeof(const char *));
     conf->block_private_ips = -1;  // -1 = unset, default will be applied in filter
+    conf->cache_backend = "";
+    conf->cache_size = 0;
+    conf->cache_ttl = -1;  // -1 = unset (no expiry)
     return conf;
 }
 
@@ -55,10 +82,21 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     conf->enable_mesi = (add->enable_mesi != 0) ? add->enable_mesi : base->enable_mesi;
     conf->allowed_hosts = (add->allowed_hosts->nelts > 0) ? add->allowed_hosts : base->allowed_hosts;
     conf->block_private_ips = (add->block_private_ips != -1) ? add->block_private_ips : base->block_private_ips;
+    // Cache config: child overrides parent when child explicitly sets a
+    // backend ("" means "inherit from base"); size/ttl use 0 (unconfigured)
+    // sentinel so add's explicit value wins over base's explicit value.
+    conf->cache_backend = (add->cache_backend && add->cache_backend[0] != '\0')
+                           ? add->cache_backend
+                           : base->cache_backend;
+    conf->cache_size = (add->cache_size > 0) ? add->cache_size : base->cache_size;
+    conf->cache_ttl = (add->cache_ttl >= 0) ? add->cache_ttl : base->cache_ttl;
     return conf;
 }
 
 static apr_status_t mesi_child_cleanup(void *data) {
+    if (EsiFreeCache) {
+        EsiFreeCache();
+    }
     if (go_module) {
         dlclose(go_module);
         go_module = NULL;
@@ -66,6 +104,9 @@ static apr_status_t mesi_child_cleanup(void *data) {
     EsiParse = NULL;
     EsiParseWithConfig = NULL;
     EsiFreeString = NULL;
+    EsiInitCache = NULL;
+    EsiFreeCache = NULL;
+    cache_initialized = 0;
     return APR_SUCCESS;
 }
 
@@ -87,9 +128,38 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
         return;
     }
 
+    // Resolve symbols defensively. dlerror() must be cleared before
+    // probing so a NULL result from dlerror() after dlsym() means
+    // "found", not "stale error from earlier lookup". Treat all five
+    // as optional — required ones (Parse*/FreeString) are checked below,
+    // InitCache/FreeCache are optional and just downgraded to a warning
+    // at request time when missing.
+    (void) dlerror();
     EsiParse = (ParseFunc)dlsym(go_module, "Parse");
+    if (dlerror() != NULL) {
+        EsiParse = NULL;
+        (void) dlerror();
+    }
     EsiParseWithConfig = (ParseWithConfigFunc)dlsym(go_module, "ParseWithConfig");
+    if (dlerror() != NULL) {
+        EsiParseWithConfig = NULL;
+        (void) dlerror();
+    }
     EsiFreeString = (FreeFunc)dlsym(go_module, "FreeString");
+    if (dlerror() != NULL) {
+        EsiFreeString = NULL;
+        (void) dlerror();
+    }
+    EsiInitCache = (InitCacheFunc)dlsym(go_module, "InitCache");
+    if (dlerror() != NULL) {
+        EsiInitCache = NULL;
+        (void) dlerror();
+    }
+    EsiFreeCache = (FreeCacheFunc)dlsym(go_module, "FreeCache");
+    if (dlerror() != NULL) {
+        EsiFreeCache = NULL;
+        (void) dlerror();
+    }
 
     // Require at least one parse function and FreeString to avoid memory leaks
     if ((!EsiParse && !EsiParseWithConfig) || !EsiFreeString) {
@@ -101,10 +171,61 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
         EsiParse = NULL;
         EsiParseWithConfig = NULL;
         EsiFreeString = NULL;
+        EsiInitCache = NULL;
+        EsiFreeCache = NULL;
         return;
     }
 
     apr_pool_cleanup_register(p, NULL, mesi_child_cleanup, apr_pool_cleanup_null);
+}
+
+// mesi_init_cache lazily initializes the shared cache for this worker
+// process. Called once per process from mesi_response_filter when
+// caching is enabled. Returns 0 on success or "no cache configured";
+// -1 if InitCache rejected the configuration (already logged).
+static int mesi_init_cache(mesi_config *conf, request_rec *r) {
+    if (cache_initialized) {
+        return 0;
+    }
+    if (!conf->cache_backend || conf->cache_backend[0] == '\0') {
+        return 0;  // Cache disabled — nothing to do.
+    }
+    cache_initialized = 1;  // Mark before probing so a failing dlsym is not retried.
+    if (!EsiInitCache) {
+        // Resolve lazily — dlsym is called once per process, but the
+        // first request may arrive before child_init finished probing.
+        // We mirror child_init's approach above; safe because the
+        // shared go_module handle is already open.
+        if (go_module) {
+            (void) dlerror();
+            EsiInitCache = (InitCacheFunc)dlsym(go_module, "InitCache");
+            if (dlerror() != NULL) {
+                EsiInitCache = NULL;
+            }
+        }
+        if (!EsiInitCache) {
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r,
+                "mesi: InitCache symbol not available in libgomesi; "
+                "ESI will run without cache despite MesiCacheBackend %s",
+                conf->cache_backend);
+            return 0;
+        }
+    }
+    int size = conf->cache_size > 0 ? conf->cache_size : MESI_DEFAULT_CACHE_SIZE;
+    int ttl  = conf->cache_ttl >= 0 ? conf->cache_ttl : 0;
+    int rc = EsiInitCache((char *)conf->cache_backend, size, ttl);
+    if (rc != 0) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+            "mesi: InitCache(backend=%s, size=%d, ttl=%d) returned %d; "
+            "ESI will run without cache",
+            conf->cache_backend, size, ttl, rc);
+        cache_initialized = 0;  // Allow next request to retry.
+        return -1;
+    }
+    ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r,
+        "mesi: cache initialized (backend=%s, size=%d, ttl=%ds)",
+        conf->cache_backend, size, ttl);
+    return 0;
 }
 
 static const char *set_enable_mesi(cmd_parms *cmd, void *cfg, int flag) {
@@ -133,6 +254,95 @@ static const char *set_allowed_hosts(cmd_parms *cmd, void *cfg, const char *arg)
 static const char *set_block_private_ips(cmd_parms *cmd, void *cfg, int flag) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
     conf->block_private_ips = flag;
+    return NULL;
+}
+
+// Parse a non-negative decimal integer from arg. Reject empty input,
+// non-digit characters (including '-', '+', '.') — fail-fast instead of
+// silently coercing via strtol, and values outside [min, max].
+// Returns NULL on success (parsed value stored in *out) or an
+// Apache-pool-allocated error string suitable as set_* return value.
+static const char *parse_nonneg_int(apr_pool_t *pool, const char *arg, int min, int max, int *out) {
+    const char *p = arg ? arg : "";
+    // Skip leading spaces and tabs only (no newlines per Apache directive).
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '\0') {
+        return apr_psprintf(pool,
+            "MesiCache* requires a non-negative integer argument");
+    }
+    const char *digits = p;
+    while (*p >= '0' && *p <= '9') p++;
+    if (*p != '\0') {
+        return apr_psprintf(pool,
+            "MesiCache* must be a non-negative integer (got: %s)", arg);
+    }
+    if (digits == p) {
+        return apr_psprintf(pool,
+            "MesiCache* must contain at least one digit (got: %s)", arg);
+    }
+    // Compute length and compare without atoi to catch overflow cheaply.
+    size_t n = (size_t)(p - digits);
+    if (n > 9) {
+        // 9 digits fits in 1_000_000_000; reject anything longer to
+        // guarantee we stay inside int32 range (max is 2_147_483_647,
+        // which is 10 digits, but we cap at MESI_MAX_* anyway).
+        return apr_psprintf(pool,
+            "MesiCache* value %s exceeds maximum allowed (%d)", arg, max);
+    }
+    long val = 0;
+    for (size_t i = 0; i < n; i++) {
+        val = val * 10 + (digits[i] - '0');
+    }
+    if (val < min || val > max) {
+        return apr_psprintf(pool,
+            "MesiCache* value %s out of range [%d, %d]", arg, min, max);
+    }
+    *out = (int)val;
+    return NULL;
+}
+
+static const char *set_cache_backend(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    if (!arg) {
+        return "MesiCacheBackend requires an argument (use empty string to disable)";
+    }
+    // Only "memory" is supported; reject anything else so a typo doesn't
+    // silently fall back to "no cache" (which would change behavior
+    // without operator awareness).
+    if (strcmp(arg, "memory") == 0) {
+        conf->cache_backend = "memory";
+        return NULL;
+    }
+    if (arg[0] == '\0') {
+        conf->cache_backend = "";
+        return NULL;
+    }
+    return apr_psprintf(cmd->pool,
+        "MesiCacheBackend: unknown backend %s (only \"memory\" is supported)",
+        arg);
+}
+
+static const char *set_cache_size(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    int v = 0;
+    const char *err = parse_nonneg_int(cmd->pool, arg, 1, MESI_MAX_CACHE_SIZE, &v);
+    if (err) {
+        return apr_psprintf(cmd->pool,
+            "MesiCacheSize: %s", err);
+    }
+    conf->cache_size = v;
+    return NULL;
+}
+
+static const char *set_cache_ttl(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    int v = 0;
+    const char *err = parse_nonneg_int(cmd->pool, arg, 0, MESI_MAX_CACHE_TTL_SECONDS, &v);
+    if (err) {
+        return apr_psprintf(cmd->pool,
+            "MesiCacheTTL: %s", err);
+    }
+    conf->cache_ttl = v;
     return NULL;
 }
 
@@ -261,6 +471,14 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         return ap_pass_brigade(f->next, ctx->bb);
     }
 
+    // Initialize shared cache on first request. The cache lives across
+    // requests in this worker process; once initialized, repeated
+    // calls are no-ops (guarded by cache_initialized).
+    if (conf->cache_backend && conf->cache_backend[0] != '\0') {
+        /* Errors here are logged; on -1 we proceed without cache. */
+        (void) mesi_init_cache(conf, f->r);
+    }
+
     // Build allowed_hosts string from config (O(n) time, single allocation)
     char *allowed_hosts_str = "";
     if (conf->allowed_hosts && conf->allowed_hosts->nelts > 0) {
@@ -353,6 +571,9 @@ static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("EnableMesi", set_enable_mesi, NULL, RSRC_CONF, "Enable or disable the Mesi module"),
     AP_INIT_RAW_ARGS("MesiAllowedHosts", set_allowed_hosts, NULL, RSRC_CONF, "Space-separated list of allowed hostnames for ESI includes"),
     AP_INIT_FLAG("MesiBlockPrivateIPs", set_block_private_ips, NULL, RSRC_CONF, "Enable or disable private IP blocking (default: On)"),
+    AP_INIT_TAKE1("MesiCacheBackend", set_cache_backend, NULL, RSRC_CONF, "Cache backend: \"memory\" (off when empty). Default: off"),
+    AP_INIT_TAKE1("MesiCacheSize", set_cache_size, NULL, RSRC_CONF, "Memory cache max entries (1..1000000). Default: 10000"),
+    AP_INIT_TAKE1("MesiCacheTTL", set_cache_ttl, NULL, RSRC_CONF, "Memory cache entry TTL in seconds (0..86400). Default: 0 (no expiry)"),
     {NULL}
 };
 

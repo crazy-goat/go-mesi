@@ -302,6 +302,65 @@ else
     exit 1
 fi
 
+# --- Cache backend tests (#174) ---
+# Scenario: MesiCacheBackend memory + duplicate <esi:include> in one
+# response. We verify:
+#   1. Both <esi:include> tags still resolve correctly (filter runs).
+#   2. libgomesi.InitCache was wired up — proven by the INFO log written
+#      to apache error log via ap_log_rerror(APLOG_NOTICE, ...) on first
+#      request that touches a cache-enabled config.
+#   3. libgomesi's shared cache is exercised on the include URL. With
+#      MesiCacheBackend memory active, the backend must be hit at least
+#      once; the upper bound is loose (1 or 2 hits) because MESIParse's
+#      token worker pool processes duplicate includes in parallel
+#      goroutines and the in-memory cache has no singleflight, so
+#      simultaneous Get() calls can both miss before either Set()
+#      completes. Cross-request dedup across Apache MPM prefork workers
+#      is also non-deterministic (each worker has its own libgomesi
+#      state), so we don't assert it here. The unit tests in
+#      test_directives.c exercise the parser; the cross-process
+#      correctness of the Get/Set paths is covered by mesi/fetch_test.go.
+
+echo "=== Test 24: Memory cache backend wired up (#174) ==="
+RESPONSE=$(curl -s http://localhost:8080/cache-test.html)
+OCCURRENCES=$(echo "$RESPONSE" | grep -o "cached fragment from backend" | wc -l | tr -d ' ')
+if [ "$OCCURRENCES" -ne 2 ]; then
+    echo "FAIL: Expected exactly 2 fragment occurrences in rendered HTML, got $OCCURRENCES"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+# Apache writes our ap_log_rerror messages to error.log (not stderr),
+# so use docker exec to read them. Confirms InitCache was driven.
+INIT_LOG=$(docker exec apache-apache-1 grep -c "mesi: cache initialized" /var/log/apache2/error.log 2>/dev/null || echo 0)
+if [ "$INIT_LOG" -gt 0 ]; then
+    echo "PASS: InitCache called by libgomesi ($INIT_LOG cache-init log lines in apache error.log)"
+    # Print one matched entry for diagnostics.
+    docker exec apache-apache-1 grep "mesi: cache initialized" /var/log/apache2/error.log | head -1
+else
+    echo "FAIL: No 'mesi: cache initialized' log line found in apache error.log — InitCache wiring broken"
+    docker compose down
+    exit 1
+fi
+# Backend (python http.server) logs each GET to stderr. /cached-fragment.txt
+# is only referenced from cache-test.html, so any GET for it is from this
+# test. With cache active we expect 1 or 2 hits (single-worker dedup yields
+# 1; thundering-herd across MESIParse's parallel goroutines yields 2).
+HITS=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /cached-fragment.txt HTTP/1.1" || true)
+if [ "$HITS" -ge 1 ] && [ "$HITS" -le 2 ]; then
+    echo "PASS: Backend served cache-test URL $HITS time(s) (1 expected with cache, 2 acceptable due to in-response race)"
+elif [ "$HITS" -eq 0 ]; then
+    echo "FAIL: Backend received no GET /cached-fragment.txt requests — cache test setup broken"
+    docker compose logs --no-color backend 2>&1 | tail -20
+    docker compose down
+    exit 1
+else
+    echo "FAIL: Backend served cache-test URL $HITS times — expected 1-2 (cache misspath broken)"
+    docker compose logs --no-color backend 2>&1 | grep "cached-fragment" || true
+    docker compose down
+    exit 1
+fi
+
 docker compose down
 
 echo ""

@@ -1,6 +1,8 @@
 *
 !.gitignore
 !allowed.txt
+!cached-fragment.txt
+!cache-test.html
 !comment.html
 !fallback.html
 !include.txt
