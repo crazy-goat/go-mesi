@@ -66,6 +66,40 @@ php -m | grep mesi
 
 Hello world! example script:
 ```php
-<php 
 echo \mesi\parse('<!--esi Hello, world!-->', 5, "http://127.0.0.1");
+```
+
+## Extended API: `parse_with_config()`
+
+For caching, use `parse_with_config()` with an associative `config` array. Only the `"memory"` cache backend is currently exposed to PHP; Redis and Memcached are tracked in #231 and #235.
+
+```php
+$html = \mesi\parse_with_config(
+    $input,
+    5,                          // max_depth (recommended: 5)
+    'http://edge.example.com/', // default URL for relative includes
+    [
+        'cache_backend' => 'memory',
+        'cache_size'    => 5000,   // entries; default 10000, range [1, 1_000_000]
+        'cache_ttl'     => 60,     // seconds; default 0 (no expiry), range [0, 86_400]
+    ]
+);
+```
+
+Validation is strict: an unknown `cache_backend`, out-of-range `cache_size` / `cache_ttl`, or non-integer value emits an `E_WARNING` and returns `false`. The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
+
+### Cache scope
+
+The in-memory cache lives inside `libgomesi` and is **per PHP worker process**. Each worker has its own cache; entries are not shared across workers. If you need shared state, run the planned Redis or Memcached backends.
+
+### Example: cache with same TTL forever
+
+```php
+$esi = file_get_contents('template.html');
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    ['cache_backend' => 'memory', 'cache_size' => 1000, 'cache_ttl' => 3600]
+);
 ```

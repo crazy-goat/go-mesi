@@ -32,7 +32,7 @@ Support status of mESI features across all server integrations.
 | MaxWorkers | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | ParseOnHeader | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
 | Debug mode | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
-| Cache (in-memory) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| Cache (in-memory) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Cache (Redis) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ |
 | Cache (Memcached) | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ |
 | Custom CacheKeyFunc | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
@@ -70,3 +70,10 @@ Support status of mESI features across all server integrations.
   - Must be ≤ `MaxMaxDepth` (10,000) — well above any realistic ESI recursion depth and far below any platform's `uint` wrap boundary, so the `uint(v)+1` clamp that strengthens the parent's `MaxDepth` can never overflow.
   - A validated override clamps the parent's `MaxDepth` to `v+1` ("override can only tighten, never widen" semantics, identical to the legacy contract). Explicit `max-depth="0"` therefore reduces the parent's `MaxDepth` to `1` (the historical "one more level" signal).
   - Malformed values (non-numeric, negative, decimal, oversized, beyond `MaxUint64`) yield `*ErrInvalidMaxDepth`. The error surfaces through the configured logger (Debug when running with `Debug: true` or the supplied `Logger` accepts `Warn`; no-op under the default `DiscardLogger`) and the override is dropped: the parent's `MaxDepth` survives untouched, preventing a single misconfigured include from silently disabling all nested ESI processing under it. Empty / whitespace-only `max-depth` is treated as "no override" and the parent's value is preserved verbatim.
+- **PHP Extension – in-memory cache (`parse_with_config()`)** since #226:
+  - Exposed via `mesi\parse_with_config($input, $max_depth, $default_url, $config)` where `$config` is an associative array.
+  - `cache_backend` accepts only `"memory"` or absent/empty; any other string triggers `E_WARNING` and `parse_with_config()` returns `false` (the function never silently degrades to "no cache" on a typo). The "memory" backend is wired through libgomesi `InitCache` per PHP worker process.
+  - `cache_size` must be a non-zero integer in `[1, 1_000_000]`; `cache_ttl` must be an integer in `[0, 86_400]` seconds. Out-of-range or wrong-type values produce `E_WARNING` plus `false`.
+  - The extension caches the last `(backend, size, ttl)` tuple per worker process; subsequent calls with the same parameters skip `InitCache` so the existing in-process entries survive. Calling with different parameters (e.g. pointing the same worker at a larger size) wipes the cache by design — callers that need long-lived cache state therefore keep parameters consistent.
+  - Cache is **per-worker-process**: each PHP-FPM/PHP-CLI worker has its own private cache; entries are not shared across workers. For cross-process / cross-host sharing, use the planned Redis and Memcached backends (#231, #235).
+  - The legacy `mesi\parse($input, $max_depth, $default_url)` entrypoint is unchanged — it never touches the cache.
