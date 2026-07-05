@@ -41,10 +41,12 @@ list($r2, $w2) = run(['cache_backend' => 'memory']);
 echo "memory_backend_result=" . ($r2 === false ? 'false' : 'string') . "\n";
 echo "memory_backend_warnings=" . count($w2) . "\n";
 
-// 3. cache_backend => 'redis' (not currently exposed to PHP)
+// 3. cache_backend => 'redis' is now accepted (track #231), but
+//    requires cache_redis_addr. Passing it without an address fires
+//    the same E_WARNING path as a missing-key config would.
 list($r3, $w3) = run(['cache_backend' => 'redis']);
-echo "unsupported_backend_result=" . ($r3 === false ? 'false' : 'string') . "\n";
-echo "unsupported_backend_warnings=" . count($w3) . "\n";
+echo "redis_no_addr_result=" . ($r3 === false ? 'false' : 'string') . "\n";
+echo "redis_no_addr_warnings=" . count($w3) . "\n";
 
 // 4. cache_size out of range (> 1_000_000)
 list($r4, $w4) = run(['cache_backend' => 'memory', 'cache_size' => 9999999]);
@@ -82,8 +84,8 @@ empty_backend_result=string
 empty_backend_warnings=0
 memory_backend_result=string
 memory_backend_warnings=0
-unsupported_backend_result=false
-unsupported_backend_warnings=1
+redis_no_addr_result=false
+redis_no_addr_warnings=1
 oversize_cache_size_result=false
 oversize_cache_size_warnings=1
 negative_ttl_result=false
