@@ -21,6 +21,7 @@
 ### Fixed
 - `selectUrl` integer-sum overflow at high ratios guarded against `math.MaxInt` saturation (#315).
 - `OverrideConfig` `max-depth` path previously accepted any parseable value and propagated it through the `uint(v)+1` clamp with no upper bound. Inputs above `MaxMaxDepth` (10,000) or syntactically invalid now produce `*ErrInvalidMaxDepth` so operator typos and hostile templates both surface through the logger while the parent's `MaxDepth` survives untouched — preventing a single misconfigured include from silently disabling all nested ESI processing under it (#317).
+- `mesi` test suite: removed a hand-rolled `contains` / `containsHelper` substring-search reimplementation from `fetch_test.go` and `ssrf_test.go`; the same call sites now use the standard-library `strings.Contains`. A new `TestNoDuplicatedHelper` regression test fails if any local substring helper is reintroduced (#117).
 
 ## [0.8.0] - Unreleased
 
