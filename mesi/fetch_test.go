@@ -4,28 +4,20 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
-}
-
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
 
 func TestSingleFetchUrlSchemeValidation(t *testing.T) {
 	tests := []struct {
@@ -57,7 +49,7 @@ func TestSingleFetchUrlSchemeValidation(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("expected error containing %q, got nil", tt.errSubstr)
-				} else if tt.errSubstr != "" && !contains(err.Error(), tt.errSubstr) {
+				} else if tt.errSubstr != "" && !strings.Contains(err.Error(), tt.errSubstr) {
 					t.Errorf("error %q does not contain %q", err.Error(), tt.errSubstr)
 				}
 			} else {
@@ -1141,5 +1133,82 @@ func TestSentinelErrorsIs(t *testing.T) {
 				t.Errorf("errors.Is(%v, %v) = %v, want %v\nerr.Error() = %q", tt.err, tt.target, got, tt.want, tt.err)
 			}
 		})
+	}
+}
+// TestNoDuplicatedHelper guards against re-introducing a hand-rolled
+// substring-search helper in fetch_test.go. The standard library
+// strings.Contains is the accepted implementation; any local
+// reimplementation of substring matching must be reviewed and
+// justified before being merged.
+func TestNoDuplicatedHelper(t *testing.T) {
+	const target = "fetch_test.go"
+
+	path, err := filepath.Abs(target)
+	if err != nil {
+		t.Fatalf("filepath.Abs(%q): %v", target, err)
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q): %v", path, err)
+	}
+
+	// Parse the file with go/parser so Go's parameter syntax (grouped
+	// shared-type declarations like `s, substr string`) is handled
+	// exactly as the compiler would. A top-level `func name(...) bool`
+	// is forbidden iff it declares at least two `string` parameters
+	// and one of them is named `s` — the signature shape used by the
+	// deleted `contains` / `containsHelper` helpers.
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, target, src, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parser.ParseFile(%q): %v", target, err)
+	}
+
+	ident := func(expr ast.Expr, name string) bool {
+		id, ok := expr.(*ast.Ident)
+		return ok && id.Name == name
+	}
+
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil {
+			continue
+		}
+		// Must return a single untyped `bool`.
+		if fn.Type.Results == nil || len(fn.Type.Results.List) != 1 {
+			continue
+		}
+		resultField := fn.Type.Results.List[0]
+		if len(resultField.Names) != 0 || !ident(resultField.Type, "bool") {
+			continue
+		}
+		var (
+			stringCount int
+			hasNameS    bool
+		)
+		for _, field := range fn.Type.Params.List {
+			if !ident(field.Type, "string") {
+				continue
+			}
+			if len(field.Names) == 0 {
+				stringCount++
+				continue
+			}
+			stringCount += len(field.Names)
+			for _, name := range field.Names {
+				if name.Name == "s" {
+					hasNameS = true
+				}
+			}
+		}
+		if stringCount >= 2 && hasNameS {
+			t.Errorf("forbidden local substring helper found: func %s", fn.Name.Name)
+		}
+	}
+
+	// Sanity: strings.Contains must be referenced somewhere in the file
+	// (otherwise the file has no substring check at all).
+	if !bytes.Contains(src, []byte("strings.Contains")) {
+		t.Error("expected strings.Contains to be used in fetch_test.go")
 	}
 }

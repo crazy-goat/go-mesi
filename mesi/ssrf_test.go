@@ -191,7 +191,7 @@ func TestSSRFDialBlocksPrivateIP(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when fetching from private IP with BlockPrivateIPs=true, got nil")
 	}
-	if !contains(err.Error(), "blocked dial to private/reserved ip") {
+	if !strings.Contains(err.Error(), "blocked dial to private/reserved ip") {
 		t.Errorf("expected 'blocked dial' error, got: %v", err)
 	}
 }
