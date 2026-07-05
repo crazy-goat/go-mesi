@@ -44,6 +44,8 @@ typedef struct {
     const char *cache_redis_addr;
     const char *cache_redis_password;
     int cache_redis_db;
+    /* Memcached backend fields (#176) */
+    apr_array_header_t *cache_memcached_servers;
 } mesi_config;
 
 /* Sentinel/constant values copied from mod_mesi.c */
@@ -51,6 +53,8 @@ typedef struct {
 #define MESI_MAX_CACHE_SIZE 1000000
 #define MESI_MAX_CACHE_TTL_SECONDS (24 * 60 * 60)
 #define MESI_MAX_REDIS_DB 15
+// Cap on Memcached server entries — mirrors MESI_MAX_MEMCACHED_SERVERS.
+#define MESI_MAX_MEMCACHED_SERVERS 64
 
 /* Directive parsing functions (copied from mod_mesi.c for testing) */
 static const char *parse_allowed_hosts(mesi_config *conf, const char *arg) {
@@ -74,7 +78,8 @@ static const char *parse_block_private_ips(mesi_config *conf, int flag) {
 
 /* Parse helper copied verbatim from mod_mesi.c — verifies the
  * validator rejects malformed integers silently rather than falling
- * back to a default. */
+ * back to a default.
+ * Parses an NUL-terminated integer (TAKE1 directive shapes). */
 static const char *parse_nonneg_int(apr_pool_t *pool_arg, const char *arg,
                                     int min, int max, int *out) {
     const char *p = arg ? arg : "";
@@ -105,6 +110,51 @@ static const char *parse_nonneg_int(apr_pool_t *pool_arg, const char *arg,
     if (val < min || val > max) {
         return apr_psprintf(pool_arg,
             "MesiCache* value %s out of range [%d, %d]", arg, min, max);
+    }
+    *out = (int)val;
+    return NULL;
+}
+
+/* Bounded variant — copied verbatim from mod_mesi.c. Used for parsing
+ * a port within a multi-token line (e.g. host:port inside a RAW_ARGS
+ * Memcached server list), where the standard parse_nonneg_int would
+ * mistakenly consume digits past the colon. */
+static const char *parse_nonneg_int_bounded(apr_pool_t *pool_arg,
+                                            const char *arg, const char *end,
+                                            int min, int max, int *out) {
+    if (!arg || !end || arg >= end) {
+        return apr_psprintf(pool_arg,
+            "MesiCache* requires a non-negative integer argument");
+    }
+    const char *p = arg;
+    while (p < end && (*p == ' ' || *p == '\t')) p++;
+    if (p >= end) {
+        return apr_psprintf(pool_arg,
+            "MesiCache* requires a non-negative integer argument");
+    }
+    const char *digits = p;
+    while (p < end && *p >= '0' && *p <= '9') p++;
+    if (p != end) {
+        return apr_psprintf(pool_arg,
+            "MesiCache* must be a non-negative integer (got: %.*s)",
+            (int)(end - arg), arg);
+    }
+    if (digits == p) {
+        return apr_psprintf(pool_arg,
+            "MesiCache* must contain at least one digit");
+    }
+    size_t n = (size_t)(p - digits);
+    if (n > 9) {
+        return apr_psprintf(pool_arg,
+            "MesiCache* value exceeds maximum allowed (%d)", max);
+    }
+    long val = 0;
+    for (size_t i = 0; i < n; i++) {
+        val = val * 10 + (digits[i] - '0');
+    }
+    if (val < min || val > max) {
+        return apr_psprintf(pool_arg,
+            "MesiCache* value out of range [%d, %d]", min, max);
     }
     *out = (int)val;
     return NULL;
@@ -225,6 +275,69 @@ static const char *set_cache_redis_db(mesi_config *conf, const char *arg) {
     return NULL;
 }
 
+/* MesiCacheMemcachedServers — space-separated "host:port" entries
+ * (#176). Mirrors set_cache_memcached_servers in mod_mesi.c.
+ * Each entry must contain a ':'+port_in_[1,65535]. Tokens with
+ * embedded control chars or JSON-meta characters are rejected.
+ */
+static const char *set_cache_memcached_servers(mesi_config *conf, const char *arg) {
+    if (!arg) {
+        return "MesiCacheMemcachedServers requires space-separated host:port entries";
+    }
+    int count = 0;
+    const char *tok;
+    while (*arg) {
+        while (*arg && (*arg == ' ' || *arg == '\t')) arg++;
+        tok = arg;
+        while (*arg && *arg != ' ' && *arg != '\t') arg++;
+        if (tok == arg) {
+            continue;
+        }
+        int has_invalid = 0;
+        for (const char *p = tok; p < arg; p++) {
+            unsigned char c = (unsigned char)*p;
+            if (c == '"' || c == '\\' || c < 0x20) {
+                has_invalid = 1;
+                break;
+            }
+        }
+        if (has_invalid) {
+            return apr_psprintf(pool,
+                "MesiCacheMemcachedServers: invalid character in entry %.*s",
+                (int)(arg - tok), tok);
+        }
+        const char *colon = NULL;
+        for (const char *p = arg - 1; p >= tok; p--) {
+            if (*p == ':') { colon = p; break; }
+        }
+        if (!colon || colon == tok || colon + 1 == arg) {
+            return apr_psprintf(pool,
+                "MesiCacheMemcachedServers: entry must be host:port (got: %.*s)",
+                (int)(arg - tok), tok);
+        }
+        int port = 0;
+        const char *err = parse_nonneg_int_bounded(pool, colon + 1, arg,
+                                                    1, 65535, &port);
+        if (err) {
+            return apr_psprintf(pool,
+                "MesiCacheMemcachedServers: port invalid in %.*s",
+                (int)(arg - tok), tok);
+        }
+        if (count >= MESI_MAX_MEMCACHED_SERVERS) {
+            return apr_psprintf(pool,
+                "MesiCacheMemcachedServers: too many entries (max %d)",
+                MESI_MAX_MEMCACHED_SERVERS);
+        }
+        const char **slot = apr_array_push(conf->cache_memcached_servers);
+        *slot = apr_pstrndup(pool, tok, arg - tok);
+        count++;
+    }
+    if (count == 0) {
+        return "MesiCacheMemcachedServers requires at least one host:port entry";
+    }
+    return NULL;
+}
+
 static void init_config(mesi_config *conf) {
     memset(conf, 0, sizeof(*conf));
     conf->allowed_hosts = apr_array_make(pool, 4, sizeof(const char *));
@@ -235,6 +348,7 @@ static void init_config(mesi_config *conf) {
     conf->cache_redis_addr = NULL;
     conf->cache_redis_password = NULL;
     conf->cache_redis_db = -1;
+    conf->cache_memcached_servers = apr_array_make(pool, 2, sizeof(const char *));
 }
 
 static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merged) {
@@ -249,6 +363,9 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
     merged->cache_redis_addr = add->cache_redis_addr ? add->cache_redis_addr : base->cache_redis_addr;
     merged->cache_redis_password = add->cache_redis_password ? add->cache_redis_password : base->cache_redis_password;
     merged->cache_redis_db = (add->cache_redis_db >= 0) ? add->cache_redis_db : base->cache_redis_db;
+    merged->cache_memcached_servers = (add->cache_memcached_servers->nelts > 0)
+                                      ? add->cache_memcached_servers
+                                      : base->cache_memcached_servers;
 }
 
 /* Test cases */
@@ -1067,6 +1184,282 @@ TEST(merge_redis_password_child_overrides) {
     ASSERT_STR_EQ(merged.cache_redis_password, "secret");
 }
 
+/* --- Memcached backend directive tests (#176) --- */
+
+TEST(memcached_servers_default_unset) {
+    /* A freshly-created config has an empty server array (nelts == 0),
+     * not NULL — runtime cache init renders an empty JSON array so the
+     * libgomesi parser produces a deterministic error. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NOT_NULL(conf.cache_memcached_servers);
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, 0);
+}
+
+TEST(memcached_servers_single) {
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_cache_memcached_servers(&conf, "10.0.0.1:11211"));
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, 1);
+    ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[0],
+                  "10.0.0.1:11211");
+}
+
+TEST(memcached_servers_multiple) {
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_cache_memcached_servers(&conf,
+        "10.0.0.1:11211 10.0.0.2:11211 10.0.0.3:11211"));
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, 3);
+    ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[0],
+                  "10.0.0.1:11211");
+    ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[1],
+                  "10.0.0.2:11211");
+    ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[2],
+                  "10.0.0.3:11211");
+}
+
+TEST(memcached_servers_mixed_whitespace) {
+    mesi_config conf;
+    init_config(&conf);
+    /* Tabs and spaces between entries; leading/trailing whitespace
+     * silently trimmed (matches set_allowed_hosts behavior). */
+    ASSERT_NULL(set_cache_memcached_servers(&conf,
+        "  host1:11211\thost2:11211  \thost3:11211"));
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, 3);
+}
+
+TEST(memcached_servers_empty_list_rejected) {
+    /* Boundary: an empty value list produces no entries — must be
+     * rejected, never treated as a valid config. Operators who
+     * accidentally leave the directive empty should see an error. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "at least one");
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, 0);
+}
+
+TEST(memcached_servers_whitespace_only_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "   \t  ");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "at least one");
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, 0);
+}
+
+TEST(memcached_servers_null_arg_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, NULL);
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(memcached_servers_default_port_explicit_rejected) {
+    /* Issue example: "10.0.0.1" (no port) — fail-fast instead of
+     * accepting whatever default memcache.New might pick. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "10.0.0.1");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "host:port");
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, 0);
+}
+
+TEST(memcached_servers_only_colon_rejected) {
+    /* ":11211" — colon at start, empty host. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, ":11211");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "host:port");
+}
+
+TEST(memcached_servers_missing_port_value_rejected) {
+    /* "host:" — colon at end, empty port. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "10.0.0.1:");
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(memcached_servers_port_zero_rejected) {
+    /* Boundary: port must be >= 1. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "10.0.0.1:0");
+    ASSERT_NOT_NULL(err);
+    /* Error must NOT leak the value verbatim into a control-char
+     * path; use port-invalid phrasing instead. */
+    ASSERT_STR_CONTAINS(err, "port invalid");
+}
+
+TEST(memcached_servers_port_max_accepted) {
+    /* Boundary: port 65535 is the largest legal port. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_cache_memcached_servers(&conf, "10.0.0.1:65535"));
+    ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[0],
+                  "10.0.0.1:65535");
+}
+
+TEST(memcached_servers_port_max_plus_one_rejected) {
+    /* Boundary: port 65536 is out of range. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "10.0.0.1:65536");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "port invalid");
+}
+
+TEST(memcached_servers_negative_port_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "10.0.0.1:-1");
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(memcached_servers_decimal_port_rejected) {
+    /* parse_nonneg_int rejects decimal ports in [0,1), so 11211.5 fails
+     * before the int parser trips. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "10.0.0.1:11211.5");
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(memcached_servers_alpha_port_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "host:http");
+    ASSERT_NOT_NULL(err);
+}
+
+TEST(memcached_servers_internal_whitespace_rejected) {
+    /* Tokens were extracted on whitespace boundaries, so internal
+     * whitespace is impossible at this layer. Verify quote/control
+     * chars instead — those would corrupt the rendered JSON config. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "10.0.0.1\" :11211");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "invalid character");
+}
+
+TEST(memcached_servers_backslash_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "10.0.0.1\\:11211");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "invalid character");
+}
+
+TEST(memcached_servers_control_char_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "10.0.0.1\x01:11211");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "invalid character");
+}
+
+TEST(memcached_servers_max_count_accepted) {
+    /* Boundary: MESI_MAX_MEMCACHED_SERVERS entries are accepted in
+     * one directive. We build "n.n.n.n:nnnn" × N in a fresh pool. */
+    mesi_config conf;
+    init_config(&conf);
+    char args[4096];
+    int pos = 0;
+    for (int i = 0; i < MESI_MAX_MEMCACHED_SERVERS && pos < (int)sizeof(args) - 32; i++) {
+        int n = snprintf(args + pos, sizeof(args) - pos,
+                         "%s10.0.0.%d:11211", (i == 0 ? "" : " "), i);
+        if (n < 0 || n >= (int)sizeof(args) - pos) break;
+        pos += n;
+    }
+    ASSERT_NULL(set_cache_memcached_servers(&conf, args));
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, MESI_MAX_MEMCACHED_SERVERS);
+}
+
+TEST(memcached_servers_over_max_rejected) {
+    /* Boundary: MESI_MAX_MEMCACHED_SERVERS + 1 must be rejected. */
+    mesi_config conf;
+    init_config(&conf);
+    char args[8192];
+    int pos = 0;
+    for (int i = 0; i < MESI_MAX_MEMCACHED_SERVERS + 1 && pos < (int)sizeof(args) - 32; i++) {
+        int n = snprintf(args + pos, sizeof(args) - pos,
+                         "%s10.0.0.%d:11211", (i == 0 ? "" : " "), i);
+        if (n < 0 || n >= (int)sizeof(args) - pos) break;
+        pos += n;
+    }
+    const char *err = set_cache_memcached_servers(&conf, args);
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "too many");
+    /* Count must match the cap; we never silently truncated and stored
+     * a partial list. */
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, MESI_MAX_MEMCACHED_SERVERS);
+}
+
+TEST(memcached_servers_ipv6_accepted) {
+    /* "[::1]:11211" — IPv6 literal with brackets. The "last ':'"
+     * detection finds the trailing :port colon; the host field is
+     * otherwise unvalidated beyond char-class safety. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_cache_memcached_servers(&conf, "[::1]:11211"));
+    ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[0],
+                  "[::1]:11211");
+}
+
+TEST(memcached_servers_append_to_existing_in_field) {
+    /* Mock mirrors mod_mesi.c: each call *appends* to the array rather
+     * than replacing it, matching set_allowed_hosts. Calling the
+     * directive twice builds a longer list (operator can split a list
+     * across multiple directive lines). */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_cache_memcached_servers(&conf, "host-a:11211"));
+    ASSERT_NULL(set_cache_memcached_servers(&conf, "host-b:11211"));
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, 2);
+    ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[0],
+                  "host-a:11211");
+    ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[1],
+                  "host-b:11211");
+}
+
+TEST(merge_memcached_servers_child_overrides) {
+    /* Child directive with entries wins over parent. */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    const char **b1 = apr_array_push(base.cache_memcached_servers);
+    *b1 = apr_pstrdup(pool, "10.0.0.1:11211");
+    const char **b2 = apr_array_push(add.cache_memcached_servers);
+    *b2 = apr_pstrdup(pool, "10.0.0.99:11211");
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.cache_memcached_servers->nelts, 1);
+    ASSERT_STR_EQ(((const char **)merged.cache_memcached_servers->elts)[0],
+                  "10.0.0.99:11211");
+}
+
+TEST(merge_memcached_servers_child_inherits) {
+    /* Child has empty list → inherits parent's list verbatim. */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    const char **b1 = apr_array_push(base.cache_memcached_servers);
+    *b1 = apr_pstrdup(pool, "10.0.0.1:11211");
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.cache_memcached_servers->nelts, 1);
+    ASSERT_STR_EQ(((const char **)merged.cache_memcached_servers->elts)[0],
+                  "10.0.0.1:11211");
+}
+
 int main(int argc, char *argv[]) {
     printf("=== Apache Module Directive Unit Tests ===\n\n");
 
@@ -1178,6 +1571,35 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_redis_db_child_overrides);
     RUN_TEST(merge_redis_db_child_inherits);
     RUN_TEST(merge_redis_password_child_overrides);
+
+    printf("\nTesting set_cache_memcached_servers() (#176):\n");
+    RUN_TEST(memcached_servers_default_unset);
+    RUN_TEST(memcached_servers_single);
+    RUN_TEST(memcached_servers_multiple);
+    RUN_TEST(memcached_servers_mixed_whitespace);
+    RUN_TEST(memcached_servers_empty_list_rejected);
+    RUN_TEST(memcached_servers_whitespace_only_rejected);
+    RUN_TEST(memcached_servers_null_arg_rejected);
+    RUN_TEST(memcached_servers_default_port_explicit_rejected);
+    RUN_TEST(memcached_servers_only_colon_rejected);
+    RUN_TEST(memcached_servers_missing_port_value_rejected);
+    RUN_TEST(memcached_servers_port_zero_rejected);
+    RUN_TEST(memcached_servers_port_max_accepted);
+    RUN_TEST(memcached_servers_port_max_plus_one_rejected);
+    RUN_TEST(memcached_servers_negative_port_rejected);
+    RUN_TEST(memcached_servers_decimal_port_rejected);
+    RUN_TEST(memcached_servers_alpha_port_rejected);
+    RUN_TEST(memcached_servers_internal_whitespace_rejected);
+    RUN_TEST(memcached_servers_backslash_rejected);
+    RUN_TEST(memcached_servers_control_char_rejected);
+    RUN_TEST(memcached_servers_max_count_accepted);
+    RUN_TEST(memcached_servers_over_max_rejected);
+    RUN_TEST(memcached_servers_ipv6_accepted);
+    RUN_TEST(memcached_servers_append_to_existing_in_field);
+
+    printf("\nTesting merge_server_config() memcached fields (#176):\n");
+    RUN_TEST(merge_memcached_servers_child_overrides);
+    RUN_TEST(merge_memcached_servers_child_inherits);
 
     apr_pool_destroy(pool);
     apr_terminate();
