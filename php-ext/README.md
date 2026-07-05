@@ -71,7 +71,7 @@ echo \mesi\parse('<!--esi Hello, world!-->', 5, "http://127.0.0.1");
 
 ## Extended API: `parse_with_config()`
 
-For caching, use `parse_with_config()` with an associative `config` array. Only the `"memory"` cache backend is currently exposed to PHP; Redis and Memcached are tracked in #231 and #235.
+For caching, use `parse_with_config()` with an associative `config` array. All three cache backends (`memory`, `redis`, `memcached`) are exposed to PHP.
 
 ```php
 $html = \mesi\parse_with_config(
@@ -79,20 +79,30 @@ $html = \mesi\parse_with_config(
     5,                          // max_depth (recommended: 5)
     'http://edge.example.com/', // default URL for relative includes
     [
-        'cache_backend' => 'memory',
-        'cache_size'    => 5000,   // entries; default 10000, range [1, 1_000_000]
-        'cache_ttl'     => 60,     // seconds; default 0 (no expiry), range [0, 86_400]
+        'cache_backend' => 'memory',     // "memory" | "redis" | "memcached" | ""
+        'cache_size'    => 5000,         // entries; default 10000, range [1, 1_000_000]
+        'cache_ttl'     => 60,           // seconds; default 0 (no expiry), range [0, 86_400]
     ]
 );
 ```
 
-Validation is strict: an unknown `cache_backend`, out-of-range `cache_size` / `cache_ttl`, or non-integer value emits an `E_WARNING` and returns `false`. The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
+### Cache backends
 
-### Cache scope
+| Key | Required when | Type | Notes |
+|-----|---------------|------|-------|
+| `cache_backend` | always | string | `""`, `"memory"`, `"redis"`, or `"memcached"` (any other value is rejected) |
+| `cache_size` | optional | int | `[1, 1_000_000]`; `0` is treated as "use default 10000" on first init |
+| `cache_ttl` | optional | int | `[0, 86_400]`; `0` means "no TTL" |
+| `cache_redis_addr` | `cache_backend = "redis"` | string | `"host:port"` with port in `[1, 65535]`; no whitespace, control, `"` or `\` (the value is rendered into a JSON config blob) |
+| `cache_redis_password` | optional, `cache_backend = "redis"` | string | Optional Redis AUTH password; same character restrictions as `cache_redis_addr` |
+| `cache_redis_db` | optional, `cache_backend = "redis"` | int | `[0, 15]`; omitted means Redis DB 0 |
+| `cache_memcached_servers` | `cache_backend = "memcached"` | array of strings | Each entry is `"host:port"`; non-empty list required |
 
-The in-memory cache lives inside `libgomesi` and is **per PHP worker process**. Each worker has its own cache; entries are not shared across workers. If you need shared state, run the planned Redis or Memcached backends.
+Validation is strict: an unknown `cache_backend`, mismatched Redis-vs-Memcached key, out-of-range numeric value, non-integer value, malformed `host:port`, or a non-string memcached server entry emits an `E_WARNING` and returns `false`. The function never silently degrades to "no cache" on a typo — a wrong host:port or empty memcached list surfaces as `E_WARNING`, matching the validation pattern in `parse_with_config()` for the in-memory backend and the equivalent `MesiCache*` directives in `servers/apache`. The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
 
-### Example: cache with same TTL forever
+### Examples
+
+#### In-memory, per worker
 
 ```php
 $esi = file_get_contents('template.html');
@@ -103,3 +113,45 @@ echo \mesi\parse_with_config(
     ['cache_backend' => 'memory', 'cache_size' => 1000, 'cache_ttl' => 3600]
 );
 ```
+
+#### Redis (cross-worker / cross-host shared cache)
+
+```php
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    [
+        'cache_backend'        => 'redis',
+        'cache_size'           => 1000,
+        'cache_ttl'            => 60,
+        'cache_redis_addr'     => '10.0.0.5:6379',
+        'cache_redis_password' => 's3cret',
+        'cache_redis_db'       => 2,
+    ]
+);
+```
+
+#### Memcached (multiple servers for failover)
+
+```php
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    [
+        'cache_backend'           => 'memcached',
+        'cache_size'              => 1000,
+        'cache_ttl'               => 120,
+        'cache_memcached_servers' => ['10.0.0.1:11211', '10.0.0.2:11211'],
+    ]
+);
+```
+
+### Cache scope
+
+- **In-memory (`memory`)** – per PHP worker process. Each worker has its own cache; entries are not shared across workers.
+- **Redis (`redis`)** – shared across PHP workers and across hosts. Requires a reachable Redis server. Connection pooling is handled by the underlying `go-redis` client.
+- **Memcached (`memcached`)** – shared across PHP workers and across hosts, with consistent hashing over the configured server list. Requires at least one reachable memcached daemon.
+
+For the in-memory backend the cache lives inside `libgomesi` for the lifetime of one worker; for `redis` and `memcached` the same `libgomesi` shared cache is reused across repeated `parse_with_config()` calls within the worker (the extension tracks the last successful init so it does not call `InitCacheWithConfig` twice with the same parameters — that would otherwise drop every previously cached entry).

@@ -33,8 +33,8 @@ Support status of mESI features across all server integrations.
 | ParseOnHeader | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
 | Debug mode | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
 | Cache (in-memory) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Cache (Redis) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ |
-| Cache (Memcached) | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ |
+| Cache (Redis) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Cache (Memcached) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Custom CacheKeyFunc | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Recursive ESI processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Shared HTTPClient | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
@@ -77,3 +77,8 @@ Support status of mESI features across all server integrations.
   - The extension caches the last `(backend, size, ttl)` tuple per worker process; subsequent calls with the same parameters skip `InitCache` so the existing in-process entries survive. Calling with different parameters (e.g. pointing the same worker at a larger size) wipes the cache by design — callers that need long-lived cache state therefore keep parameters consistent.
   - Cache is **per-worker-process**: each PHP-FPM/PHP-CLI worker has its own private cache; entries are not shared across workers. For cross-process / cross-host sharing, use the planned Redis and Memcached backends (#231, #235).
   - The legacy `mesi\parse($input, $max_depth, $default_url)` entrypoint is unchanged — it never touches the cache.
+- **PHP Extension – Redis and Memcached cache backends (`parse_with_config()`)** since #231:
+  - Both backends reuse the existing in-process `parse_with_config()` config array. The extension no longer routes through the old `InitCache` entry point; it now wires a JSON config blob through `libgomesi.InitCacheWithConfig(backend, size, ttl, configJSON)`.
+  - For `cache_backend = "redis"` the extension renders `{"redisAddr":"host:port","redisPassword":"…","redisDB":N}`. `cache_redis_addr` is required, must be `"host:port"` with port in `[1, 65535]`, and rejects whitespace, control chars, `"` and `\` (so the rendered JSON cannot be broken by a hostile operator input — same restrictions as the Apache `MesiCacheRedisAddr` validator). `cache_redis_password` is optional and follows the same character rules. `cache_redis_db` accepts integers in `[0, 15]`; an explicit `0` is distinguished from "unset" so the rendered JSON omits the key in the latter case (matching libgomesi's "default 0" semantics). `cache_redis_addr` / `cache_redis_password` / `cache_redis_db` keys supplied with any other backend are rejected with `E_WARNING` (mismatched backend can never silently demote to "no cache").
+  - For `cache_backend = "memcached"` the extension renders `{"servers":["h:p",…]}`. `cache_memcached_servers` is required and must be a non-empty array of `"host:port"` strings passing the same validator as `cache_redis_addr`. A non-string entry, an entry missing the port, an out-of-range port, an entry with whitespace / control / `"` / `\`, or supplying this key with a non-memcached backend all produce `E_WARNING` + `false`.
+  - Init succeeds even when no Redis / Memcached daemon is reachable because the underlying `go-redis` and `gomemcache` clients are lazy; subsequent `<esi:include>` traffic will fall back to the origin server (degraded mode) and cache entries will simply never be observed. The same in-process `(backend, size, ttl, configJSON)` last-init state that already protects the `memory` backend now also caches the rendered JSON, so repeated `parse_with_config()` calls with identical Redis / Memcached configuration skip `InitCacheWithConfig` and never replace sharedCache with a fresh, empty instance.
