@@ -69,6 +69,15 @@ MesiCacheTTL 60
 - `MesiCacheRedisDB N` — Redis logical database number used when
   `MesiCacheBackend redis`. Must be a non-negative integer in `[0, 15]`
   (Redis `databases 16`). Default: 0.
+- `MesiCacheMemcachedServers host:port [host:port …]` — Space-separated
+  Memcached server list used when `MesiCacheBackend memcached`. Each
+  entry must be `host:port` (port in `[1, 65535]`); whitespace, control
+  chars, and JSON-meta chars are rejected so the rendered JSON config
+  is safe to pass to libgomesi. At most 64 entries per directive; calling
+  the directive multiple times appends. Configuring the backend
+  without this directive (or with an empty value) makes libgomesi
+  reject the server list with `servers required` (a deterministic
+  error rather than a silent `localhost:11211` fallback).
 
 ### Custom libgomesi path
 

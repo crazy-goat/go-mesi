@@ -58,6 +58,13 @@ typedef struct {
     const char *cache_redis_addr;     // "host:port" or NULL = unset (default localhost:6379)
     const char *cache_redis_password; // "" or NULL = unset (default no auth)
     int cache_redis_db;               // -1 = unset, >=0 = selected DB (Redis max 16)
+    // Memcached backend fields (#176). The list is an apr_array_header_t
+    // of const char * "host:port" entries. nelts > 0 means a list was
+    // configured (even one server is enough). When backend is memcached
+    // and the array is empty, InitCacheWithConfig is called without the
+    // required "servers" key and libgomesi rejects — that's the same
+    // fail-fast path the Redis directives already use for missing config.
+    apr_array_header_t *cache_memcached_servers;
 } mesi_config;
 
 // Default memory cache size when MesiCacheSize is not set.
@@ -70,6 +77,11 @@ typedef struct {
 #define MESI_MAX_CACHE_SIZE 1000000
 #define MESI_MAX_CACHE_TTL_SECONDS (24 * 60 * 60)
 #define MESI_MAX_REDIS_DB 15
+// Memcached: slots enough for a reasonable multi-cluster deployment
+// without letting a runaway directive pollute the JSON config blob.
+// 64 entries × ~30 ascii chars + JSON wrapping → ~2.5 KB, well under
+// MESI_MAX_CACHE_CONFIG_JSON (4 KB).
+#define MESI_MAX_MEMCACHED_SERVERS 64
 
 static void *create_server_config(apr_pool_t *p, server_rec *s) {
     mesi_config *conf = apr_pcalloc(p, sizeof(*conf));
@@ -82,6 +94,11 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     conf->cache_redis_addr = NULL;
     conf->cache_redis_password = NULL;
     conf->cache_redis_db = -1;  // -1 = unset, default 0 in libgomesi
+    // Memcached: empty list means "no server list configured". The
+    // set_cache_memcached_servers directive is the only path that adds
+    // entries; an empty list at request time triggers the runtime
+    // fail-fast error rather than silently picking some default server.
+    conf->cache_memcached_servers = apr_array_make(p, 2, sizeof(const char *));
     return conf;
 }
 
@@ -105,6 +122,12 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     conf->cache_redis_addr = add->cache_redis_addr ? add->cache_redis_addr : base->cache_redis_addr;
     conf->cache_redis_password = add->cache_redis_password ? add->cache_redis_password : base->cache_redis_password;
     conf->cache_redis_db = (add->cache_redis_db >= 0) ? add->cache_redis_db : base->cache_redis_db;
+    // Memcached: child wins when it parsed any servers (nelts > 0),
+    // matching the allowed_hosts "child with entries replaces parent
+    // entirely" rule. An empty child list inherits the parent's list.
+    conf->cache_memcached_servers = (add->cache_memcached_servers->nelts > 0)
+                                    ? add->cache_memcached_servers
+                                    : base->cache_memcached_servers;
     return conf;
 }
 
@@ -201,73 +224,126 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     apr_pool_cleanup_register(p, NULL, mesi_child_cleanup, apr_pool_cleanup_null);
 }
 
-// build_redis_config_json renders the mesi_config Redis fields into a
-// JSON blob compatible with libgomesi.InitCacheWithConfig. Returns
-// NULL if backend is not "redis" (caller must short-circuit).
+// build_cache_config_json renders the mesi_config cache fields into
+// a JSON blob compatible with libgomesi.InitCacheWithConfig. Returns
+// NULL when the current backend does not take a config blob (caller
+// short-circuits). Returns "{}" or "{}" with rendered keys for the
+// matching backend ("redis" / "memcached"). The exact layout mirrors
+// libgomesi's memcachedConfig / redisConfig structs; keep in sync if
+// those change.
 // Memory is allocated from the request pool (short-lived: feeds one cgo
-// call). The numeric DB field is omitted when unset (libgomesi default
-// 0). The password is omitted when NULL.
-static const char *build_redis_config_json(mesi_config *conf, apr_pool_t *pool) {
-    if (!conf->cache_backend || strcmp(conf->cache_backend, "redis") != 0) {
+// call). Redis fields: redisAddr/redisPassword/redisDB omitted when at
+// defaults. Memcached fields: servers (array of host:port strings) is
+// the only key. An empty servers array renders as `"servers":[]` so
+// libgomesi rejects the config with a "servers required" error rather
+// than silently picking a default server.
+static const char *build_cache_config_json(mesi_config *conf, apr_pool_t *pool) {
+    if (!conf->cache_backend) {
         return NULL;
     }
-    const char *addr = conf->cache_redis_addr
-                       ? conf->cache_redis_addr
-                       : "localhost:6379";
-    // Escape any embedded '"' or '\' so a misconfig password can't inject
-    // JSON keys. Use a small stack buffer; bail out via apr_psprintf
-    // for oversized strings (apr_psprintf does allocation regardless).
-    apr_size_t pwd_len = conf->cache_redis_password
-                          ? strlen(conf->cache_redis_password)
-                          : 0;
-    // Worst-case: every char is escaped (×2) + 2 quotes.
-    char *pwd_esc = NULL;
-    if (pwd_len > 0) {
-        apr_size_t esc_cap = pwd_len * 2 + 3;  // + '"' + '"' + NUL
-        pwd_esc = apr_palloc(pool, esc_cap);
-        char *w = pwd_esc;
+    if (strcmp(conf->cache_backend, "redis") == 0) {
+        const char *addr = conf->cache_redis_addr
+                           ? conf->cache_redis_addr
+                           : "localhost:6379";
+        // Escape any embedded '"' or '\' so a misconfig password can't
+        // inject JSON keys.
+        apr_size_t pwd_len = conf->cache_redis_password
+                              ? strlen(conf->cache_redis_password)
+                              : 0;
+        // Worst-case: every char is escaped (×2) + 2 quotes.
+        char *pwd_esc = NULL;
+        if (pwd_len > 0) {
+            apr_size_t esc_cap = pwd_len * 2 + 3;  // + '"' + '"' + NUL
+            pwd_esc = apr_palloc(pool, esc_cap);
+            char *w = pwd_esc;
+            *w++ = '"';
+            const char *r = conf->cache_redis_password;
+            while (*r) {
+                if (*r == '"' || *r == '\\') *w++ = '\\';
+                *w++ = *r++;
+            }
+            *w++ = '"';
+            *w = '\0';
+        }
+        // Escape addr the same way (host:port shouldn't contain JSON
+        // meta characters, but a hostile config could).
+        apr_size_t addr_len = strlen(addr);
+        apr_size_t addr_cap = addr_len * 2 + 3;
+        char *addr_esc = apr_palloc(pool, addr_cap);
+        char *w = addr_esc;
         *w++ = '"';
-        const char *r = conf->cache_redis_password;
+        const char *r = addr;
         while (*r) {
             if (*r == '"' || *r == '\\') *w++ = '\\';
             *w++ = *r++;
         }
         *w++ = '"';
         *w = '\0';
-    }
-    // Escape addr the same way (host:port shouldn't contain JSON meta
-    // characters, but a hostile config could).
-    apr_size_t addr_len = strlen(addr);
-    apr_size_t addr_cap = addr_len * 2 + 3;
-    char *addr_esc = apr_palloc(pool, addr_cap);
-    char *w = addr_esc;
-    *w++ = '"';
-    const char *r = addr;
-    while (*r) {
-        if (*r == '"' || *r == '\\') *w++ = '\\';
-        *w++ = *r++;
-    }
-    *w++ = '"';
-    *w = '\0';
 
-    if (conf->cache_redis_db >= 0) {
+        if (conf->cache_redis_db >= 0) {
+            return apr_psprintf(pool,
+                "{\"redisAddr\":%s,\"redisPassword\":%s,\"redisDB\":%d}",
+                addr_esc,
+                pwd_esc ? pwd_esc : "\"\"",
+                conf->cache_redis_db);
+        }
         return apr_psprintf(pool,
-            "{\"redisAddr\":%s,\"redisPassword\":%s,\"redisDB\":%d}",
+            "{\"redisAddr\":%s,\"redisPassword\":%s}",
             addr_esc,
-            pwd_esc ? pwd_esc : "\"\"",
-            conf->cache_redis_db);
+            pwd_esc ? pwd_esc : "\"\"");
     }
-    return apr_psprintf(pool,
-        "{\"redisAddr\":%s,\"redisPassword\":%s}",
-        addr_esc,
-        pwd_esc ? pwd_esc : "\"\"");
+    if (strcmp(conf->cache_backend, "memcached") == 0) {
+        // Render {"servers":["h:p","h:p",...]} where each host:port is
+        // JSON-escaped. The servers array is rendered even when empty
+        // so the libgomesi parser produces a deterministic error
+        // ("servers required") instead of accepting a bare "{}", which
+        // would silently default to localhost:11211.
+        apr_array_header_t *arr = conf->cache_memcached_servers;
+        const char **items = (arr && arr->nelts > 0)
+                             ? (const char **)arr->elts
+                             : NULL;
+        if (items) {
+            // Pre-size: prefix `{"servers":[` (12 bytes) + each item's
+            // worst-case `"<escaped>"` (strlen*2 + 2) + (nelts - 1)
+            // commas + `]}` (2 bytes) + NUL (1 byte).
+            apr_size_t total = 12 + 2 + 1;  // prefix + ]} + NUL
+            if (arr->nelts > 1) {
+                total += (apr_size_t)(arr->nelts - 1);  // commas
+            }
+            for (int i = 0; i < arr->nelts; i++) {
+                total += strlen(items[i]) * 2 + 2;  // worst-case escaped w/ quotes
+            }
+            char *buf = apr_palloc(pool, total);
+            char *p = buf;
+            memcpy(p, "{\"servers\":[", 12); p += 12;
+            for (int i = 0; i < arr->nelts; i++) {
+                if (i > 0) *p++ = ',';
+                *p++ = '"';
+                const char *r = items[i];
+                while (*r) {
+                    if (*r == '"' || *r == '\\') *p++ = '\\';
+                    *p++ = *r++;
+                }
+                *p++ = '"';
+            }
+            *p++ = ']';
+            *p++ = '}';
+            *p = '\0';
+            return buf;
+        }
+        // Explicit empty list — passes no servers. Failing fast at this
+        // point is intentional: a silent localhost:11211 default would
+        // mask operator misconfiguration.
+        return apr_pstrdup(pool, "{\"servers\":[]}");
+    }
+    return NULL;  // "memory" or "" — no config blob needed.
 }
 
-// build_redis_config_json_max verifies the rendered JSON is small enough
-// to safely copy into a stack-friendly buffer. libgomesi.sscanf-style
-// parsers don't artificially cap; this is a sanity check for operators.
-// 4 KB is more than enough for a host:port + a password.
-#define MESI_MAX_REDIS_CONFIG_JSON 4096
+// MESI_MAX_CACHE_CONFIG_JSON caps the rendered config blob so an
+// operator who pastes a giant password or huge server list can't OOM
+// the parser. 4 KB comfortably fits a host:port + a password, or a
+// reasonable number of Memcached server entries.
+#define MESI_MAX_CACHE_CONFIG_JSON 4096
 
 // mesi_init_cache lazily initializes the shared cache for this worker
 // process. Called once per process from mesi_response_filter when
@@ -332,23 +408,24 @@ static int mesi_init_cache(mesi_config *conf, request_rec *r) {
 
     int rc;
     if (needs_config) {
-        const char *cfg_json = build_redis_config_json(conf, r->pool);
+        const char *cfg_json = build_cache_config_json(conf, r->pool);
+        // config blobs are required for both redis and memcached;
+        // build_cache_config_json now always produces one for those
+        // backends (even `"{}"`), but kept the guard so future
+        // memory-only paths are obvious to readers.
         if (!cfg_json) {
-            // backend was "memcached" — emit a minimal sentinel that
-            // libgomesi.InitCacheWithConfig will reject. We DO NOT
-            // silently fall back to memory.
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                "mesi: cache backend %s lacks server-list configuration; "
+                "mesi: cache backend %s lacks configuration; "
                 "ESI will run without cache",
                 conf->cache_backend);
             cache_initialized = 0;  // Allow next request to retry.
             return -1;
         }
-        if (strlen(cfg_json) > MESI_MAX_REDIS_CONFIG_JSON) {
+        if (strlen(cfg_json) > MESI_MAX_CACHE_CONFIG_JSON) {
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                 "mesi: rendered cache config JSON exceeds %d bytes; "
                 "refusing to init cache",
-                MESI_MAX_REDIS_CONFIG_JSON);
+                MESI_MAX_CACHE_CONFIG_JSON);
             cache_initialized = 0;
             return -1;
         }
@@ -503,6 +580,59 @@ static const char *set_cache_ttl(cmd_parms *cmd, void *cfg, const char *arg) {
 // We use a tiny "loose" check: must contain ':' followed by digits
 // (port 1..65535). Reject hostnames containing whitespace, control
 // chars, etc. to keep the address safe to embed in JSON.
+// Parse a non-negative decimal integer from [arg, end). Bounded,
+// so the caller controls where parsing stops (e.g. for parsing a
+// port within a "host:port" token whose ':port' is mid-string, or
+// for parsing a TAKE1 arg that has no trailing NUL within the
+// interesting byte range).
+// Reject empty input, non-digit characters (including '-', '+', '.'),
+// unsigned overflow, and values outside [min, max]. Returns NULL on
+// success (parsed value stored in *out) or an Apache-pool-allocated
+// error string suitable as set_* return value.
+static const char *parse_nonneg_int_bounded(apr_pool_t *pool,
+                                            const char *arg, const char *end,
+                                            int min, int max, int *out) {
+    if (!arg || !end || arg >= end) {
+        return apr_psprintf(pool,
+            "MesiCache* requires a non-negative integer argument");
+    }
+    const char *p = arg;
+    // Skip leading spaces and tabs only.
+    while (p < end && (*p == ' ' || *p == '\t')) p++;
+    if (p >= end) {
+        return apr_psprintf(pool,
+            "MesiCache* requires a non-negative integer argument");
+    }
+    const char *digits = p;
+    while (p < end && *p >= '0' && *p <= '9') p++;
+    if (p != end) {
+        return apr_psprintf(pool,
+            "MesiCache* must be a non-negative integer (got: %.*s)",
+            (int)(end - arg), arg);
+    }
+    if (digits == p) {
+        return apr_psprintf(pool,
+            "MesiCache* must contain at least one digit");
+    }
+    // 9 digits fits in 1_000_000_000; reject anything longer to
+    // guarantee we stay inside int32 range.
+    size_t n = (size_t)(p - digits);
+    if (n > 9) {
+        return apr_psprintf(pool,
+            "MesiCache* value exceeds maximum allowed (%d)", max);
+    }
+    long val = 0;
+    for (size_t i = 0; i < n; i++) {
+        val = val * 10 + (digits[i] - '0');
+    }
+    if (val < min || val > max) {
+        return apr_psprintf(pool,
+            "MesiCache* value out of range [%d, %d]", min, max);
+    }
+    *out = (int)val;
+    return NULL;
+}
+
 static const char *set_cache_redis_addr(cmd_parms *cmd, void *cfg, const char *arg) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
     if (!arg) {
@@ -530,9 +660,15 @@ static const char *set_cache_redis_addr(cmd_parms *cmd, void *cfg, const char *a
         return apr_psprintf(cmd->pool,
             "MesiCacheRedisAddr: must be host:port (got: %s)", arg);
     }
-    // Validate port is a positive decimal in [1, 65535].
+    // Validate port is a positive decimal in [1, 65535]. We've already
+    // rejected whitespace/JSON-meta chars, so colon+1 is digits-only
+    // up to the NUL terminator.
     int port = 0;
-    const char *err = parse_nonneg_int(cmd->pool, colon + 1, 1, 65535, &port);
+    apr_size_t port_len = strlen(colon + 1);
+    const char *err = parse_nonneg_int_bounded(cmd->pool,
+                                                colon + 1,
+                                                colon + 1 + port_len,
+                                                1, 65535, &port);
     if (err) {
         return apr_psprintf(cmd->pool,
             "MesiCacheRedisAddr: port invalid: %s", arg);
@@ -579,6 +715,92 @@ static const char *set_cache_redis_db(cmd_parms *cmd, void *cfg, const char *arg
             "MesiCacheRedisDB: %s", err);
     }
     conf->cache_redis_db = v;
+    return NULL;
+}
+
+// set_cache_memcached_servers accepts a space-separated list of
+// "host:port" entries used when MesiCacheBackend is memcached (#176).
+// Each token must contain a colon followed by a port in [1, 65535];
+// hostnames/ports with embedded whitespace, control chars, or JSON
+// meta characters are rejected so the rendered JSON config is safe to
+// pass to libgomesi. No silent fallback to localhost:11211 — if the
+// directive is omitted, the empty server list is logged as a missing-
+// config error at runtime and ESI runs without cache. AP_INIT_RAW_ARGS
+// gives us the full line, so parsing is line-based (splitting on
+// space/tab) just like set_allowed_hosts.
+static const char *set_cache_memcached_servers(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    if (!arg) {
+        return "MesiCacheMemcachedServers requires space-separated host:port entries";
+    }
+    // Each child-context config starts from a fresh array (see
+    // create_server_config). We append to the array that this server
+    // config owns, mirroring set_allowed_hosts behaviour.
+    const char *tok;
+    int count = 0;
+    while (*arg) {
+        while (*arg && (*arg == ' ' || *arg == '\t')) arg++;
+        tok = arg;
+        while (*arg && *arg != ' ' && *arg != '\t') arg++;
+        if (tok == arg) {
+            continue;
+        }
+        // Reject embedded whitespace/control chars/JSON-meta chars.
+        // (The token was extracted by stopping on space/tab, so
+        // whitespace inside the token is impossible; but we recheck
+        // for control chars and JSON-meta to be safe.)
+        int has_invalid = 0;
+        for (const char *p = tok; p < arg; p++) {
+            unsigned char c = (unsigned char)*p;
+            if (c == '"' || c == '\\' || c < 0x20) {
+                has_invalid = 1;
+                break;
+            }
+        }
+        if (has_invalid) {
+            return apr_psprintf(cmd->pool,
+                "MesiCacheMemcachedServers: invalid character in entry %.*s",
+                (int)(arg - tok), tok);
+        }
+        // Find last ':' (matches redis-addr parser). IPv4/IPv6/hostname
+        // forms all end with :port.
+        const char *colon = NULL;
+        for (const char *p = arg - 1; p >= tok; p--) {
+            if (*p == ':') { colon = p; break; }
+        }
+        if (!colon || colon == tok || colon + 1 == arg) {
+            return apr_psprintf(cmd->pool,
+                "MesiCacheMemcachedServers: entry must be host:port (got: %.*s)",
+                (int)(arg - tok), tok);
+        }
+        // Validate port over [colon+1, arg) so digits inside the host
+        // (which can include '1', '0', ...) aren't accidentally
+        // consumed. parse_nonneg_int_bounded stops exactly at `arg`.
+        int port = 0;
+        const char *err = parse_nonneg_int_bounded(cmd->pool, colon + 1, arg,
+                                                    1, 65535, &port);
+        if (err) {
+            return apr_psprintf(cmd->pool,
+                "MesiCacheMemcachedServers: port invalid in %.*s",
+                (int)(arg - tok), tok);
+        }
+        if (count >= MESI_MAX_MEMCACHED_SERVERS) {
+            return apr_psprintf(cmd->pool,
+                "MesiCacheMemcachedServers: too many entries (max %d)",
+                MESI_MAX_MEMCACHED_SERVERS);
+        }
+        const char **slot = apr_array_push(conf->cache_memcached_servers);
+        // Copy into the server config's pool so it survives past the
+        // current request (raw arg pointer is request-scoped).
+        *slot = apr_pstrndup(cmd->pool, tok, arg - tok);
+        count++;
+    }
+    if (count == 0) {
+        // No tokens: explicit "MesiCacheMemcachedServers " (all whitespace)
+        // is treated as a misconfig — we don't silently keep the prior
+        // list (which would mask the operator's intent).
+        return "MesiCacheMemcachedServers requires at least one host:port entry";
+    }
     return NULL;
 }
 
@@ -813,6 +1035,7 @@ static const command_rec mesi_directives[] = {
     AP_INIT_TAKE1("MesiCacheRedisAddr", set_cache_redis_addr, NULL, RSRC_CONF, "Redis server address for ESI caching (default: localhost:6379). Used when MesiCacheBackend is redis"),
     AP_INIT_TAKE1("MesiCacheRedisPassword", set_cache_redis_password, NULL, RSRC_CONF, "Redis AUTH password (default: none). Used when MesiCacheBackend is redis"),
     AP_INIT_TAKE1("MesiCacheRedisDB", set_cache_redis_db, NULL, RSRC_CONF, "Redis database number (0..15). Default: 0. Used when MesiCacheBackend is redis"),
+    AP_INIT_RAW_ARGS("MesiCacheMemcachedServers", set_cache_memcached_servers, NULL, RSRC_CONF, "Space-separated list of Memcached servers (host:port). Used when MesiCacheBackend is memcached"),
     {NULL}
 };
 
