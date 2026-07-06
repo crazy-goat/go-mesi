@@ -10,14 +10,53 @@ Apache output filter module for mESI (Edge Side Includes) processing.
 
 ## Building
 
+The repository ships a `build.sh` that's intended for local development of
+`mod_mesi.c` against a manually-built `libgomesi.so`. The full Docker
+image (`./Dockerfile`) and CI job (`tests.yaml → Apache Integration Test`)
+do not invoke this script; they build `libgomesi.so` from source inside
+the image and install it directly into `/usr/lib/`.
+
+`build.sh` behaviour:
+
+- Auto-builds `libgomesi.so` with `go build -buildmode=c-shared` only
+  when the source `.so` is missing and `go` is on `PATH`.
+- Installs `libgomesi.so` to `$INSTALL_PREFIX` (default `/usr/lib`)
+  using `install -m 0644`. The destination directory is checked for
+  writability first; if it isn't, `sudo install …` is invoked after
+  a one-line stderr message naming the target — so the password prompt
+  the operator sees is no longer mysterious.
+- Compiles `mod_mesi.c` via `apxs` (or `apxs2`, whichever is found on
+  `PATH`). A missing toolchain produces a single stderr line that names
+  the Debian/RHEL package to install; the script does not silently fall
+  back to a half-built module.
+
 ```bash
-# Build libgomesi first
+# Build libgomesi first (or let build.sh do it for you when missing)
 cd ../../libgomesi
 go build -buildmode=c-shared -o libgomesi.so libgomesi.go
-sudo cp libgomesi.so /usr/lib/
 
-# Build Apache module
+# Build Apache module (default install prefix: /usr/lib)
 ./build.sh
+```
+
+To install into a non-default location (FreeBSD-style `/usr/local/lib`,
+a sandbox image, etc.):
+
+```bash
+INSTALL_PREFIX=/usr/local/lib ./build.sh
+```
+
+To build against a pre-existing `libgomesi.so`:
+
+```bash
+LIBGOMESI_SO=/opt/libgomesi.so ./build.sh
+```
+
+To run the standalone shell-level unit tests for `build.sh` (no Docker,
+no Apache, no root required):
+
+```bash
+make test-build-sh
 ```
 
 ## Installation
