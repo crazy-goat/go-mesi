@@ -72,6 +72,7 @@ func MESIParse(input string, config EsiParserConfig) string {
 
 	var semaphore chan struct{}
 	if config.MaxConcurrentRequests < 0 {
+		config.warn("max_concurrent_requests_invalid", "value", config.MaxConcurrentRequests)
 		config.MaxConcurrentRequests = 0
 	}
 	if config.MaxConcurrentRequests > 0 {

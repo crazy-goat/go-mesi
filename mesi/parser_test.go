@@ -1779,6 +1779,32 @@ func TestMESIParseMaxDepthRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestMESIParseNegativeMaxConcurrentRequestsProducesWarning(t *testing.T) {
+	var log recordingLogger
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = server.URL + "/"
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+	config.MaxConcurrentRequests = -5
+	config.Logger = &log
+
+	input := `<!--esi <esi:include src="` + server.URL + `/test"/>-->`
+	result := MESIParse(input, config)
+
+	if !strings.Contains(result, "ok") {
+		t.Errorf("expected include to succeed despite negative MaxConcurrentRequests, got %q", result)
+	}
+	if !log.containsMsg("max_concurrent_requests_invalid") {
+		t.Errorf("expected logger to receive max_concurrent_requests_invalid for negative MaxConcurrentRequests=-5")
+	}
+}
+
 func TestMESIParseMaxDepthValidOverridesApplied(t *testing.T) {
 	// Positive path: a well-formed max-depth override must tighten the
 	// parent's depth exactly as documented.
