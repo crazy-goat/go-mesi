@@ -202,8 +202,10 @@ else
 fi
 
 echo "=== Test 16: Memcached cache — same page, two includes, same URL ==="
-# Start fresh nginx + memcached, no memory cache location to avoid
-# the process-level cache_initialized global interfering.
+# Restart nginx to clear cache_initialized so the memcached backend is
+# re-initialised with InitCacheWithConfig.
+docker compose restart nginx
+# Wait for nginx health check to pass again.
 docker compose up -d --wait
 
 RESPONSE=$(curl -s http://localhost:8080/cache/memcached/cache_memcached.html)

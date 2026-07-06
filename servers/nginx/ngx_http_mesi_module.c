@@ -49,6 +49,7 @@ static InitCacheFunc EsiInitCache = NULL;
 static InitCacheWithConfigFunc EsiInitCacheWithConfig = NULL;
 static FreeCacheFunc EsiFreeCache = NULL;
 static ngx_flag_t cache_initialized = 0;
+static ngx_str_t cache_last_backend = ngx_null_string;
 
 static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("enable_mesi"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
@@ -330,7 +331,10 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   ngx_http_mesi_loc_conf_t *lcf =
       ngx_http_get_module_loc_conf(r, ngx_http_mesi_module);
 
-  if (!cache_initialized && lcf->cache_backend.len > 0) {
+  if (lcf->cache_backend.len > 0 &&
+      (!cache_initialized ||
+       cache_last_backend.len != lcf->cache_backend.len ||
+       ngx_strncmp(cache_last_backend.data, lcf->cache_backend.data, lcf->cache_backend.len) != 0)) {
     char *backend = ngx_str_to_cstr(&lcf->cache_backend, r->pool);
     if (strcmp(backend, "memcached") == 0) {
       // For memcached we need InitCacheWithConfig with a JSON config blob.
@@ -355,6 +359,7 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
       EsiInitCache(backend, lcf->cache_size, lcf->cache_ttl);
     }
     cache_initialized = 1;
+    cache_last_backend = lcf->cache_backend;
   }
 
   ngx_str_t scheme = r->schema;
@@ -476,6 +481,8 @@ static void ngx_http_mesi_thread_exit(ngx_cycle_t *cycle) {
     dlclose(go_module);
     go_module = NULL;
     cache_initialized = 0;
+    cache_last_backend.len = 0;
+    cache_last_backend.data = NULL;
   }
 }
 
