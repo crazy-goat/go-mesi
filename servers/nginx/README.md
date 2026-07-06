@@ -81,11 +81,11 @@ The nginx module supports in-memory caching of ESI fragment responses. When enab
 
 #### `mesi_cache_backend`
 
-- **Syntax:** `mesi_cache_backend memory | off`
+- **Syntax:** `mesi_cache_backend memory | memcached | off`
 - **Default:** `off`
 - **Context:** `location`
 
-Enables the in-memory LRU cache. Currently only `memory` is supported. Redis and Memcached backends will be added in future releases.
+Enables the LRU cache. Use `memory` for an in-process in-memory cache (per-worker, not shared across workers). Use `memcached` for a shared Memcached-backed cache — requires the `mesi_cache_memcached_servers` directive.
 
 #### `mesi_cache_size`
 
@@ -93,7 +93,7 @@ Enables the in-memory LRU cache. Currently only `memory` is supported. Redis and
 - **Default:** `10000`
 - **Context:** `location`
 
-Maximum number of cache entries. When the cache is full, the least-recently-used entry is evicted.
+Maximum number of cache entries. When the cache is full, the least-recently-used entry is evicted. Only applies to the `memory` backend.
 
 #### `mesi_cache_ttl`
 
@@ -103,6 +103,16 @@ Maximum number of cache entries. When the cache is full, the least-recently-used
 
 Time-to-live in seconds for cached entries. After TTL expiry, the next request hits the origin and refreshes the cache.
 
+#### `mesi_cache_memcached_servers`
+
+- **Syntax:** `mesi_cache_memcached_servers <servers>`
+- **Default:** `""`
+- **Context:** `location`
+
+Space-separated list of Memcached servers in `host:port` format (e.g., `"10.0.0.1:11211 10.0.0.2:11211"`). Required when `mesi_cache_backend` is `memcached`. An empty value with the memcached backend produces a deterministic error from libgomesi rather than silently defaulting to `localhost:11211`.
+
+**Important**: Memcached has a 1 MB value size limit. ESI includes larger than 1 MB cannot be cached.
+
 ### Example
 
 ```nginx
@@ -111,6 +121,18 @@ location / {
     mesi_cache_backend memory;
     mesi_cache_size 5000;
     mesi_cache_ttl 60;
+    proxy_pass http://backend;
+}
+```
+
+### Memcached Example
+
+```nginx
+location / {
+    enable_mesi on;
+    mesi_cache_backend memcached;
+    mesi_cache_ttl 60;
+    mesi_cache_memcached_servers "10.0.0.1:11211 10.0.0.2:11211";
     proxy_pass http://backend;
 }
 ```

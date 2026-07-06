@@ -8,9 +8,10 @@
 
 typedef struct {
   ngx_flag_t enable_mesi;
-  ngx_str_t  cache_backend;  // "" (off), "memory"
+  ngx_str_t  cache_backend;  // "" (off), "memory", "memcached"
   ngx_int_t  cache_size;     // max entries for memory cache
   ngx_int_t  cache_ttl;      // TTL in seconds
+  ngx_str_t  cache_memcached_servers;  // space-separated "host:port host:port"
 } ngx_http_mesi_loc_conf_t;
 
 typedef struct {
@@ -39,11 +40,13 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
 
 typedef char *(*ParseFunc)(char *, int, char *);
 typedef int (*InitCacheFunc)(char *, int, int);
+typedef int (*InitCacheWithConfigFunc)(char *, int, int, char *);
 typedef void (*FreeCacheFunc)(void);
 
 static void *go_module = NULL;
 static ParseFunc EsiParse = NULL;
 static InitCacheFunc EsiInitCache = NULL;
+static InitCacheWithConfigFunc EsiInitCacheWithConfig = NULL;
 static FreeCacheFunc EsiFreeCache = NULL;
 static ngx_flag_t cache_initialized = 0;
 
@@ -63,6 +66,10 @@ static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("mesi_cache_ttl"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_conf_set_num_slot, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, cache_ttl), NULL},
+
+    {ngx_string("mesi_cache_memcached_servers"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, cache_memcached_servers), NULL},
 
     ngx_null_command};
 
@@ -227,6 +234,86 @@ static ngx_int_t ngx_http_html_mesi_body_filter(ngx_http_request_t *r,
   return NGX_OK;
 }
 
+static char *ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool);
+static char *build_memcached_config_json(ngx_http_mesi_loc_conf_t *lcf, ngx_pool_t *pool);
+
+// build_memcached_config_json constructs a JSON blob for
+// libgomesi.InitCacheWithConfig("memcached", ...). The JSON is
+// {"servers":["host:port","host:port",...]}.
+// When no servers are configured, returns {"servers":[]} so libgomesi
+// produces a deterministic "servers required" error instead of silently
+// defaulting to localhost:11211.
+static char *build_memcached_config_json(ngx_http_mesi_loc_conf_t *lcf, ngx_pool_t *pool) {
+    if (lcf->cache_memcached_servers.len == 0) {
+        char *empty = ngx_palloc(pool, sizeof("{\"servers\":[]}"));
+        if (empty == NULL) return NULL;
+        ngx_memcpy(empty, "{\"servers\":[]}", sizeof("{\"servers\":[]}"));
+        return empty;
+    }
+
+    // Copy the string so we can tokenise it.
+    char *servers = ngx_str_to_cstr(&lcf->cache_memcached_servers, pool);
+    if (servers == NULL) return NULL;
+
+    // First pass: count tokens.
+    int ntok = 0;
+    int in_token = 0;
+    for (char *p = servers; *p; p++) {
+        if (*p == ' ') {
+            in_token = 0;
+        } else if (!in_token) {
+            in_token = 1;
+            ntok++;
+        }
+    }
+
+    // Second pass: measure total JSON size.
+    // Prefix: {"servers":[  (12 bytes)
+    // Each token: "escaped",  (worst case: tokenlen*2 + 3)
+    // Suffix: ]}  (2 bytes) + NUL (1 byte)
+    size_t total = 12 + 2 + 1;  // prefix + ]} + NUL
+    if (ntok > 1) total += (size_t)(ntok - 1);  // commas between tokens
+
+    // Restore pointer for second pass.
+    char *q = servers;
+    int ti;
+    for (ti = 0; ti < ntok; ti++) {
+        // Skip leading spaces.
+        while (*q == ' ') q++;
+        char *start = q;
+        while (*q && *q != ' ') q++;
+        // Measure worst-case escaped length.
+        size_t tlen = (size_t)(q - start);
+        total += tlen * 2 + 2;  // worst-case escaped w/ quotes
+    }
+
+    char *buf = ngx_palloc(pool, total);
+    if (buf == NULL) return NULL;
+
+    char *w = buf;
+    memcpy(w, "{\"servers\":[", 12); w += 12;
+
+    // Reset q for third pass (write).
+    q = servers;
+    for (ti = 0; ti < ntok; ti++) {
+        while (*q == ' ') q++;
+        char *start = q;
+        while (*q && *q != ' ') q++;
+        if (ti > 0) *w++ = ',';
+        *w++ = '"';
+        for (char *r = start; r < q; r++) {
+            if (*r == '"' || *r == '\\') *w++ = '\\';
+            *w++ = *r;
+        }
+        *w++ = '"';
+    }
+
+    *w++ = ']';
+    *w++ = '}';
+    *w = '\0';
+    return buf;
+}
+
 static char *ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool) {
   char *cstr = ngx_palloc(pool, input->len + 1);
   if (cstr == NULL) {
@@ -243,9 +330,30 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   ngx_http_mesi_loc_conf_t *lcf =
       ngx_http_get_module_loc_conf(r, ngx_http_mesi_module);
 
-  if (EsiInitCache && !cache_initialized && lcf->cache_backend.len > 0) {
+  if (!cache_initialized && lcf->cache_backend.len > 0) {
     char *backend = ngx_str_to_cstr(&lcf->cache_backend, r->pool);
-    EsiInitCache(backend, lcf->cache_size, lcf->cache_ttl);
+    if (strcmp(backend, "memcached") == 0) {
+      // For memcached we need InitCacheWithConfig with a JSON config blob.
+      if (!EsiInitCacheWithConfig) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "mesi: InitCacheWithConfig not available in libgomesi");
+      } else {
+        char *config_json = build_memcached_config_json(lcf, r->pool);
+        if (config_json == NULL) {
+          ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                        "mesi: failed to build memcached config JSON");
+        } else {
+          int rc = EsiInitCacheWithConfig(backend, lcf->cache_size, lcf->cache_ttl, config_json);
+          if (rc < 0) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "mesi: InitCacheWithConfig failed for backend '%s' (returned %d)",
+                          backend, rc);
+          }
+        }
+      }
+    } else if (EsiInitCache) {
+      EsiInitCache(backend, lcf->cache_size, lcf->cache_ttl);
+    }
     cache_initialized = 1;
   }
 
@@ -347,6 +455,11 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
     EsiInitCache = NULL;
   }
 
+  EsiInitCacheWithConfig = (InitCacheWithConfigFunc)dlsym(go_module, "InitCacheWithConfig");
+  if (dlerror() != NULL) {
+    EsiInitCacheWithConfig = NULL;
+  }
+
   EsiFreeCache = (FreeCacheFunc)dlsym(go_module, "FreeCache");
   if (dlerror() != NULL) {
     EsiFreeCache = NULL;
@@ -386,5 +499,6 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   ngx_conf_merge_str_value(conf->cache_backend, prev->cache_backend, "");
   ngx_conf_merge_value(conf->cache_size, prev->cache_size, 10000);
   ngx_conf_merge_value(conf->cache_ttl, prev->cache_ttl, 30);
+  ngx_conf_merge_str_value(conf->cache_memcached_servers, prev->cache_memcached_servers, "");
   return NGX_CONF_OK;
 }

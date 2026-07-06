@@ -201,6 +201,52 @@ else
     exit 1
 fi
 
+echo "=== Test 16: Memcached cache — same page, two includes, same URL ==="
+# Start fresh nginx + memcached, no memory cache location to avoid
+# the process-level cache_initialized global interfering.
+docker compose up -d --wait
+
+RESPONSE=$(curl -s http://localhost:8080/cache/memcached/cache_memcached.html)
+FIRST_NUM=$(echo "$RESPONSE" | grep -oE '[0-9]+' | head -1)
+SECOND_NUM=$(echo "$RESPONSE" | grep -oE '[0-9]+' | tail -1)
+if [ -n "$FIRST_NUM" ] && [ -n "$SECOND_NUM" ]; then
+    if [ "$FIRST_NUM" = "$SECOND_NUM" ]; then
+        echo "PASS: Memcached cache — both includes returned same value ($FIRST_NUM)"
+    else
+        echo "FAIL: Memcached cache — values differ ($FIRST_NUM vs $SECOND_NUM)"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+else
+    echo "FAIL: Could not extract counter values from memcached response"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 17: Memcached cache — cross-request hit within TTL ==="
+RESPONSE1=$(curl -s http://localhost:8080/cache/memcached/cache_ttl.html)
+NUM1=$(echo "$RESPONSE1" | grep -oE '[0-9]+')
+sleep 1
+RESPONSE2=$(curl -s http://localhost:8080/cache/memcached/cache_ttl.html)
+NUM2=$(echo "$RESPONSE2" | grep -oE '[0-9]+')
+if [ -n "$NUM1" ] && [ -n "$NUM2" ]; then
+    if [ "$NUM1" = "$NUM2" ]; then
+        echo "PASS: Memcached cache — second request served from cache (both $NUM1)"
+    else
+        echo "FAIL: Memcached cache — cache miss across requests ($NUM1 vs $NUM2)"
+        echo "Response1: $RESPONSE1"
+        echo "Response2: $RESPONSE2"
+        exit 1
+    fi
+else
+    echo "FAIL: Could not extract counter values from memcached cache"
+    echo "Response1: $RESPONSE1"
+    echo "Response2: $RESPONSE2"
+    exit 1
+fi
+
+docker compose down
+
 docker compose down
 
 echo ""
