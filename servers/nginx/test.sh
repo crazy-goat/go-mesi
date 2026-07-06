@@ -153,8 +153,10 @@ fi
 
 echo "=== Test 13: Cache hit in same page (two includes, same URL) ==="
 RESPONSE=$(curl -s http://localhost:8080/cache/cache.html)
-FIRST_NUM=$(echo "$RESPONSE" | grep -oE '[0-9]+' | head -1)
-SECOND_NUM=$(echo "$RESPONSE" | grep -oE '[0-9]+' | tail -1)
+# Extract counter values (bare digits on their own line, possibly indented).
+COUNTERS=$(echo "$RESPONSE" | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ')
+FIRST_NUM=$(echo "$COUNTERS" | head -1)
+SECOND_NUM=$(echo "$COUNTERS" | tail -1)
 if [ -n "$FIRST_NUM" ] && [ -n "$SECOND_NUM" ]; then
     if [ "$FIRST_NUM" = "$SECOND_NUM" ]; then
         echo "PASS: Both includes returned same value ($FIRST_NUM) — cache serving same entry"
@@ -171,10 +173,10 @@ fi
 
 echo "=== Test 14: Cache hit across requests (within TTL) ==="
 RESPONSE1=$(curl -s http://localhost:8080/cache/cache_ttl.html)
-NUM1=$(echo "$RESPONSE1" | grep -oE '[0-9]+')
+NUM1=$(echo "$RESPONSE1" | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
 sleep 1
 RESPONSE2=$(curl -s http://localhost:8080/cache/cache_ttl.html)
-NUM2=$(echo "$RESPONSE2" | grep -oE '[0-9]+')
+NUM2=$(echo "$RESPONSE2" | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
 if [ -n "$NUM1" ] && [ -n "$NUM2" ]; then
     if [ "$NUM1" = "$NUM2" ]; then
         echo "PASS: Second request served from cache (both $NUM1)"
@@ -209,8 +211,9 @@ docker compose restart nginx
 docker compose up -d --wait
 
 RESPONSE=$(curl -s http://localhost:8080/cache/memcached/cache_memcached.html)
-FIRST_NUM=$(echo "$RESPONSE" | grep -oE '[0-9]+' | head -1)
-SECOND_NUM=$(echo "$RESPONSE" | grep -oE '[0-9]+' | tail -1)
+COUNTERS=$(echo "$RESPONSE" | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ')
+FIRST_NUM=$(echo "$COUNTERS" | head -1)
+SECOND_NUM=$(echo "$COUNTERS" | tail -1)
 if [ -n "$FIRST_NUM" ] && [ -n "$SECOND_NUM" ]; then
     if [ "$FIRST_NUM" = "$SECOND_NUM" ]; then
         echo "PASS: Memcached cache — both includes returned same value ($FIRST_NUM)"
@@ -227,10 +230,10 @@ fi
 
 echo "=== Test 17: Memcached cache — cross-request hit within TTL ==="
 RESPONSE1=$(curl -s http://localhost:8080/cache/memcached/cache_ttl.html)
-NUM1=$(echo "$RESPONSE1" | grep -oE '[0-9]+')
+NUM1=$(echo "$RESPONSE1" | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
 sleep 1
 RESPONSE2=$(curl -s http://localhost:8080/cache/memcached/cache_ttl.html)
-NUM2=$(echo "$RESPONSE2" | grep -oE '[0-9]+')
+NUM2=$(echo "$RESPONSE2" | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
 if [ -n "$NUM1" ] && [ -n "$NUM2" ]; then
     if [ "$NUM1" = "$NUM2" ]; then
         echo "PASS: Memcached cache — second request served from cache (both $NUM1)"
