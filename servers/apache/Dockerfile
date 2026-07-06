@@ -11,9 +11,17 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-RUN wget https://go.dev/dl/go1.23.0.linux-amd64.tar.gz && \
-    tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz && \
-    rm go1.23.0.linux-amd64.tar.gz
+ARG GO_VERSION=1.23.0
+ARG GO_SHA256=905a297f19ead44780548933e0ff1a1b86e8327bb459e92f9c0012569f76f5e3
+ARG TARGETARCH
+
+RUN set -eux; \
+    arch="${TARGETARCH:-amd64}"; \
+    url="https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz"; \
+    curl -fsSL -o /tmp/go.tgz "$url"; \
+    echo "${GO_SHA256}  /tmp/go.tgz" | sha256sum -c -; \
+    tar -C /usr/local -xzf /tmp/go.tgz; \
+    rm /tmp/go.tgz
 
 ENV PATH="/usr/local/go/bin:${PATH}"
 ENV GOPATH="/root/go"
