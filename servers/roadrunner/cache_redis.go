@@ -15,13 +15,18 @@ func initCache(p *Plugin) error {
 	case "":
 		return nil
 	case "memory":
-		size := p.config.CacheSize
-		if size <= 0 {
-			size = 10000
+		size, err := normalizeCacheSize(p.config.CacheSize)
+		if err != nil {
+			return err
 		}
 		p.cache = mesi.NewMemoryCache(size, p.cacheTTL)
 		return nil
 	case "redis":
+		size, err := normalizeCacheSize(p.config.CacheSize)
+		if err != nil {
+			return err
+		}
+		_ = size // cache_size is documented but unused for redis backend
 		addr := p.config.CacheRedisAddr
 		if addr == "" {
 			addr = "localhost:6379"

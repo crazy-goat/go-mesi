@@ -1,0 +1,35 @@
+# RoadRunner Memory Cache Configuration Example
+#
+# Enables in-memory LRU caching for ESI fragments in the RoadRunner
+# mesi middleware. Duplicate <esi:include> URLs inside the configured
+# TTL are served from cache, reducing backend load.
+#
+# cache_backend == "memory" is the default fallback path; it needs no
+# build tags and is available with the stock plugin binary.
+#
+# Schema constraints (validated at plugin Init, see mesi.go:
+# parseCacheTTL + normalizeCacheSize):
+#   cache_size: integer in [1, 1000000]. Values <= 0 fall back to the
+#               documented default of 10000 entries (matching the
+#               existing caddy / nginx / apache behaviour). Values
+#               above 1000000 are rejected at startup so a stray
+#               "5_000_000" no longer silently feeds the memcache.
+#   cache_ttl:  Go duration string in [0, 24h]. Empty string means
+#               "no explicit TTL" (entries stay until evicted). Negative
+#               values and strings the Go duration parser rejects
+#               fail at Init() — a typo no longer silently degrades
+#               to "no expiry".
+
+http:
+  address: "0.0.0.0:8080"
+  middleware:
+    mesi:
+      max_depth: 5
+      cache_backend: memory
+      cache_size: 5000
+      cache_ttl: "60s"
+      # Per-worker-pool scope: each worker goroutine owns its own
+      # MemoryCache instance, so the same <esi:include> URL is only
+      # deduped within a worker's cache. Cross-worker dedup requires
+      # the "redis" or "memcached" backend.
+      shared_http_client: true
