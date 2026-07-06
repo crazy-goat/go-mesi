@@ -36,6 +36,13 @@ mesi-proxy --backend http://localhost:8081 --listen :8080
 | `--parse-on-header` | `false` | Only parse when `Edge-control: dca=esi` header is present |
 | `--block-private-ips` | `true` | Block private IP addresses in included URLs |
 | `--debug` | `false` | Enable debug logging |
+| `--cache-backend` | `""` | Cache backend: `memory`, `redis`, `memcached` (default: off) |
+| `--cache-size` | `10000` | Max cache entries for memory backend |
+| `--cache-ttl` | `0` | Cache TTL (e.g. `30s`, `5m`); `0` = no expiry |
+| `--cache-redis-addr` | `localhost:6379` | Redis server address (host:port) |
+| `--cache-redis-password` | `""` | Redis password |
+| `--cache-redis-db` | `0` | Redis database number |
+| `--cache-memcached-servers` | `""` | Comma-separated Memcached servers (host:port) |
 
 ## Docker
 
