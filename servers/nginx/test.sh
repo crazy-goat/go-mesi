@@ -206,9 +206,6 @@ echo "=== Test 16: Memcached cache — same page, two includes, same URL ==="
 # the process-level cache_initialized global interfering.
 docker compose up -d --wait
 
-# Capture nginx logs for debugging
-docker compose logs nginx 2>&1 | grep -i 'mesi\|cache\|InitCache\|error' | head -20 || true
-
 RESPONSE=$(curl -s http://localhost:8080/cache/memcached/cache_memcached.html)
 FIRST_NUM=$(echo "$RESPONSE" | grep -oE '[0-9]+' | head -1)
 SECOND_NUM=$(echo "$RESPONSE" | grep -oE '[0-9]+' | tail -1)
@@ -218,7 +215,8 @@ if [ -n "$FIRST_NUM" ] && [ -n "$SECOND_NUM" ]; then
     else
         echo "FAIL: Memcached cache — values differ ($FIRST_NUM vs $SECOND_NUM)"
         echo "Response: $RESPONSE"
-        docker compose logs nginx 2>&1 | tail -30
+        # Show nginx logs for debugging
+        docker compose logs nginx 2>&1 | grep -i 'mesi\|InitCache\|config_json\|cache.*backend\|memcached' | head -20 || true
         exit 1
     fi
 else
@@ -240,7 +238,6 @@ if [ -n "$NUM1" ] && [ -n "$NUM2" ]; then
         echo "FAIL: Memcached cache — cache miss across requests ($NUM1 vs $NUM2)"
         echo "Response1: $RESPONSE1"
         echo "Response2: $RESPONSE2"
-        docker compose logs nginx 2>&1 | tail -30
         exit 1
     fi
 else
