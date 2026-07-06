@@ -13,6 +13,20 @@ import (
 
 const PluginName = "mesi"
 
+// MaxCacheSize bounds RoadRunner's cache_size config. Matches
+// servers/apache/mod_mesi.c MESI_MAX_CACHE_SIZE so all server
+// integrations reject the same overflow class.
+const MaxCacheSize = 1_000_000
+
+// MaxCacheTTL bounds RoadRunner's cache_ttl config. Matches
+// servers/apache/mod_mesi.c MESI_MAX_CACHE_TTL_SECONDS (24h).
+const MaxCacheTTL = 24 * time.Hour
+
+// DefaultCacheSize is applied when cache_size is unset (<=0). Mirrors
+// servers/apache/mod_mesi.c MESI_DEFAULT_CACHE_SIZE and the existing
+// nginx / CLI / libgomesi defaults.
+const DefaultCacheSize = 10000
+
 type Config struct {
 	MaxDepth              int      `mapstructure:"max_depth"`
 	SharedHTTPClient      bool     `mapstructure:"shared_http_client"`
@@ -57,12 +71,12 @@ func (p *Plugin) Init() error {
 		})
 	}
 
-	if p.config.CacheBackend != "" && p.config.CacheTTL != "" {
-		d, err := time.ParseDuration(p.config.CacheTTL)
+	if p.config.CacheBackend != "" {
+		ttl, err := parseCacheTTL(p.config.CacheTTL)
 		if err != nil {
-			return fmt.Errorf("invalid cache_ttl %q: %w", p.config.CacheTTL, err)
+			return err
 		}
-		p.cacheTTL = d
+		p.cacheTTL = ttl
 	}
 
 	if err := initCache(p); err != nil {
@@ -70,6 +84,34 @@ func (p *Plugin) Init() error {
 	}
 
 	return nil
+}
+
+// parseCacheTTL converts the cache_ttl string to a Duration while
+// rejecting values that would silently degrade cache behaviour:
+//
+//   - empty string is treated as "no TTL" (Duration 0) so callers can
+//     configure a backend without expiry.
+//   - any other value must be a non-negative Go duration and must not
+//     exceed MaxCacheTTL (24h). Negative values would flow into
+//     mesi.NewMemoryCache as defaultTTL and silently translate to
+//     "no expiry" (cache_memory.Set treats <0 as 0); out-of-range
+//     values point to operator typos and we fail loud instead of
+//     accepting surprising cache lifetimes.
+func parseCacheTTL(raw string) (time.Duration, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid cache_ttl %q: %w", raw, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("invalid cache_ttl %q: must be non-negative", raw)
+	}
+	if d > MaxCacheTTL {
+		return 0, fmt.Errorf("invalid cache_ttl %q: exceeds max %s", raw, MaxCacheTTL)
+	}
+	return d, nil
 }
 
 func (p *Plugin) Middleware(next http.Handler) http.Handler {
