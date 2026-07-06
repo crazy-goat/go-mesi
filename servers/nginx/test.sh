@@ -215,8 +215,6 @@ if [ -n "$FIRST_NUM" ] && [ -n "$SECOND_NUM" ]; then
     else
         echo "FAIL: Memcached cache — values differ ($FIRST_NUM vs $SECOND_NUM)"
         echo "Response: $RESPONSE"
-        # Show nginx logs for debugging
-        docker compose logs nginx 2>&1 | grep -i 'mesi\|InitCache\|config_json\|cache.*backend\|memcached' | head -20 || true
         exit 1
     fi
 else
