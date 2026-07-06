@@ -8,10 +8,13 @@
 
 typedef struct {
   ngx_flag_t enable_mesi;
-  ngx_str_t  cache_backend;  // "" (off), "memory", "memcached"
+  ngx_str_t  cache_backend;  // "" (off), "memory", "redis", "memcached"
   ngx_int_t  cache_size;     // max entries for memory cache
   ngx_int_t  cache_ttl;      // TTL in seconds
   ngx_str_t  cache_memcached_servers;  // space-separated "host:port host:port"
+  ngx_str_t  cache_redis_addr;         // e.g. "localhost:6379"
+  ngx_str_t  cache_redis_password;
+  ngx_int_t  cache_redis_db;           // Redis database number (0-15)
 } ngx_http_mesi_loc_conf_t;
 
 typedef struct {
@@ -71,6 +74,18 @@ static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("mesi_cache_memcached_servers"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, cache_memcached_servers), NULL},
+
+    {ngx_string("mesi_cache_redis_addr"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, cache_redis_addr), NULL},
+
+    {ngx_string("mesi_cache_redis_password"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, cache_redis_password), NULL},
+
+    {ngx_string("mesi_cache_redis_db"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_num_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, cache_redis_db), NULL},
 
     ngx_null_command};
 
@@ -237,6 +252,7 @@ static ngx_int_t ngx_http_html_mesi_body_filter(ngx_http_request_t *r,
 
 static char *ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool);
 static char *build_memcached_config_json(ngx_http_mesi_loc_conf_t *lcf, ngx_pool_t *pool);
+static char *build_redis_config_json(ngx_http_mesi_loc_conf_t *lcf, ngx_pool_t *pool);
 
 // build_memcached_config_json constructs a JSON blob for
 // libgomesi.InitCacheWithConfig("memcached", ...). The JSON is
@@ -315,6 +331,66 @@ static char *build_memcached_config_json(ngx_http_mesi_loc_conf_t *lcf, ngx_pool
     return buf;
 }
 
+// build_redis_config_json constructs a JSON blob for
+// libgomesi.InitCacheWithConfig("redis", ...). The JSON is
+// {"redisAddr":"host:port","redisPassword":"…","redisDB":N}.
+// When addr is empty, defaults to "localhost:6379" (libgomesi default).
+static char *build_redis_config_json(ngx_http_mesi_loc_conf_t *lcf, ngx_pool_t *pool) {
+    char *addr = lcf->cache_redis_addr.len > 0
+        ? ngx_str_to_cstr(&lcf->cache_redis_addr, pool)
+        : "localhost:6379";
+    char *password = lcf->cache_redis_password.len > 0
+        ? ngx_str_to_cstr(&lcf->cache_redis_password, pool)
+        : "";
+
+    // Measure: {"redisAddr":"...","redisPassword":"...","redisDB":N}
+    // addr and password are escaped (worst case: double the length).
+    size_t addr_len = ngx_strlen(addr);
+    size_t pwd_len = ngx_strlen(password);
+    size_t escaped_addr_len = addr_len * 2;
+    size_t escaped_pwd_len = pwd_len * 2;
+
+    // Fixed overhead (excluding escaped addr/pwd):
+    //   {"redisAddr":"  = 14
+    //   ","redisPassword":" = 19
+    //   ","redisDB":  = 12
+    //   <max 2 digits for 0..15> = 2
+    //   } = 1
+    //   NUL = 1
+    // Total = 14 + 19 + 12 + 2 + 1 + 1 = 49
+    size_t total = 49 + escaped_addr_len + escaped_pwd_len;
+
+    char *buf = ngx_palloc(pool, total);
+    if (buf == NULL) return NULL;
+
+    char *w = buf;
+    memcpy(w, "{\"redisAddr\":\"", 14); w += 14;
+
+    // Escape addr
+    for (char *r = addr; *r; r++) {
+        if (*r == '"' || *r == '\\') *w++ = '\\';
+        *w++ = *r;
+    }
+
+    memcpy(w, "\",\"redisPassword\":\"", 19); w += 19;
+
+    // Escape password
+    for (char *r = password; *r; r++) {
+        if (*r == '"' || *r == '\\') *w++ = '\\';
+        *w++ = *r;
+    }
+
+    // Append redisDB
+    ngx_int_t db = lcf->cache_redis_db;
+    if (db < 0) db = 0;
+    int len = snprintf(w, total - (size_t)(w - buf), "\",\"redisDB\":%d}", (int)db);
+    if (len < 0) return NULL;
+    w += len;
+    *w = '\0';
+
+    return buf;
+}
+
 static char *ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool) {
   char *cstr = ngx_palloc(pool, input->len + 1);
   if (cstr == NULL) {
@@ -346,6 +422,25 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
         if (config_json == NULL) {
           ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                         "mesi: failed to build memcached config JSON");
+        } else {
+          int rc = EsiInitCacheWithConfig(backend, lcf->cache_size, lcf->cache_ttl, config_json);
+          if (rc < 0) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "mesi: InitCacheWithConfig failed for backend '%s' (returned %d)",
+                          backend, rc);
+          }
+        }
+      }
+    } else if (strcmp(backend, "redis") == 0) {
+      // For redis we need InitCacheWithConfig with a JSON config blob.
+      if (!EsiInitCacheWithConfig) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "mesi: InitCacheWithConfig not available in libgomesi");
+      } else {
+        char *config_json = build_redis_config_json(lcf, r->pool);
+        if (config_json == NULL) {
+          ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                        "mesi: failed to build redis config JSON");
         } else {
           int rc = EsiInitCacheWithConfig(backend, lcf->cache_size, lcf->cache_ttl, config_json);
           if (rc < 0) {
@@ -495,6 +590,7 @@ static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
   conf->enable_mesi = NGX_CONF_UNSET;
   conf->cache_size = NGX_CONF_UNSET;
   conf->cache_ttl = NGX_CONF_UNSET;
+  conf->cache_redis_db = NGX_CONF_UNSET;
   return conf;
 }
 
@@ -507,5 +603,8 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   ngx_conf_merge_value(conf->cache_size, prev->cache_size, 10000);
   ngx_conf_merge_value(conf->cache_ttl, prev->cache_ttl, 30);
   ngx_conf_merge_str_value(conf->cache_memcached_servers, prev->cache_memcached_servers, "");
+  ngx_conf_merge_str_value(conf->cache_redis_addr, prev->cache_redis_addr, "");
+  ngx_conf_merge_str_value(conf->cache_redis_password, prev->cache_redis_password, "");
+  ngx_conf_merge_value(conf->cache_redis_db, prev->cache_redis_db, 0);
   return NGX_CONF_OK;
 }

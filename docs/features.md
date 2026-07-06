@@ -33,7 +33,7 @@ Support status of mESI features across all server integrations.
 | ParseOnHeader | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
 | Debug mode | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
 | Cache (in-memory) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Cache (Redis) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Cache (Redis) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Cache (Memcached) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Custom CacheKeyFunc | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Recursive ESI processing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -54,7 +54,7 @@ Support status of mESI features across all server integrations.
 - **`<esi:choose>`, `<esi:when>`, `<esi:otherwise>`** – Fully supported. Boolean `test` attributes (`true`/`false`/`0`/`1`) select the first matching `<esi:when>` branch. If no branch matches, `<esi:otherwise>` is rendered (if present). `$(...)` variables in `test` are resolved before evaluation. Supports nested `<esi:choose>`, `<esi:include>`, `<esi:try>`, and `<esi:vars>` inside branch bodies.
 - **`<esi:try>`, `<esi:attempt>`, `<esi:except>`** – Fully supported. Unhandled include errors within `<esi:attempt>` trigger `<esi:except>` rendering. `onerror="continue"` and fallback body do NOT trigger `<esi:except>`. Supports nested `<esi:try>` blocks.
 - **`<esi:vars>` / `$(...)` variable substitution** – Fully supported. Variables are defined via `<esi:variable>` in `<esi:vars>` blocks and resolved via `$(NAME)` syntax in include URLs, text content, and test expressions. Supports `$(HTTP_HEADER{Name})`, `$(HTTP_COOKIE{name})`, and `$(QUERY_STRING{param})` via config fields.
-- **Nginx** – Uses the `Parse` function from `libgomesi`. Supports `mesi_shared_http_client` for connection pooling. Shared client has SSRF protection (private IPs blocked by default).
+- **Nginx** – Uses the `Parse` function from `libgomesi`. Supports `mesi_shared_http_client` for connection pooling. Shared client has SSRF protection (private IPs blocked by default). Cache backends: in-memory, Redis (`mesi_cache_redis_addr`, `mesi_cache_redis_password`, `mesi_cache_redis_db`), and Memcached (`mesi_cache_memcached_servers`).
 - **PHP Extension** – Exposes only `\mesi\parse(input, max_depth, default_url)`. No security configuration.
 - **Caddy / FrankenPHP** – FrankenPHP uses the Caddy plugin, identical functionality.
 - **Proxy** – Accepts full `EsiParserConfig`; all features available when provided by calling code.

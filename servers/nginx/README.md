@@ -81,11 +81,11 @@ The nginx module supports in-memory caching of ESI fragment responses. When enab
 
 #### `mesi_cache_backend`
 
-- **Syntax:** `mesi_cache_backend memory | memcached | off`
+- **Syntax:** `mesi_cache_backend memory | redis | memcached | off`
 - **Default:** `off`
 - **Context:** `location`
 
-Enables the LRU cache. Use `memory` for an in-process in-memory cache (per-worker, not shared across workers). Use `memcached` for a shared Memcached-backed cache — requires the `mesi_cache_memcached_servers` directive.
+Enables the LRU cache. Use `memory` for an in-process in-memory cache (per-worker, not shared across workers). Use `redis` or `memcached` for a shared external cache — requires the corresponding `mesi_cache_redis_*` or `mesi_cache_memcached_servers` directive.
 
 #### `mesi_cache_size`
 
@@ -93,7 +93,7 @@ Enables the LRU cache. Use `memory` for an in-process in-memory cache (per-worke
 - **Default:** `10000`
 - **Context:** `location`
 
-Maximum number of cache entries. When the cache is full, the least-recently-used entry is evicted. Only applies to the `memory` backend.
+Maximum number of cache entries. When the cache is full, the least-recently-used entry is evicted. Only applies to the `memory` backend, Redis and Memcached backends ignore this setting.
 
 #### `mesi_cache_ttl`
 
@@ -112,6 +112,30 @@ Time-to-live in seconds for cached entries. After TTL expiry, the next request h
 Space-separated list of Memcached servers in `host:port` format (e.g., `"10.0.0.1:11211 10.0.0.2:11211"`). Required when `mesi_cache_backend` is `memcached`. An empty value with the memcached backend produces a deterministic error from libgomesi rather than silently defaulting to `localhost:11211`.
 
 **Important**: Memcached has a 1 MB value size limit. ESI includes larger than 1 MB cannot be cached.
+
+#### `mesi_cache_redis_addr`
+
+- **Syntax:** `mesi_cache_redis_addr <address>`
+- **Default:** `"localhost:6379"`
+- **Context:** `location`
+
+Redis server address in `host:port` format. Required when `mesi_cache_backend` is `redis`. If unset, defaults to `localhost:6379`.
+
+#### `mesi_cache_redis_password`
+
+- **Syntax:** `mesi_cache_redis_password <password>`
+- **Default:** `""` (no password)
+- **Context:** `location`
+
+Redis server password. If unset, no password is sent.
+
+#### `mesi_cache_redis_db`
+
+- **Syntax:** `mesi_cache_redis_db <number>`
+- **Default:** `0`
+- **Context:** `location`
+
+Redis database number (0–15). Defaults to 0 if not set.
 
 ### Example
 
@@ -133,6 +157,33 @@ location / {
     mesi_cache_backend memcached;
     mesi_cache_ttl 60;
     mesi_cache_memcached_servers "10.0.0.1:11211 10.0.0.2:11211";
+    proxy_pass http://backend;
+}
+```
+
+### Redis Example
+
+```nginx
+location / {
+    enable_mesi on;
+    mesi_cache_backend redis;
+    mesi_cache_ttl 60;
+    mesi_cache_redis_addr "10.0.0.5:6379";
+    mesi_cache_redis_db 2;
+    proxy_pass http://backend;
+}
+```
+
+### Redis with Password Example
+
+```nginx
+location / {
+    enable_mesi on;
+    mesi_cache_backend redis;
+    mesi_cache_ttl 60;
+    mesi_cache_redis_addr "10.0.0.5:6379";
+    mesi_cache_redis_password "your-redis-password";
+    mesi_cache_redis_db 0;
     proxy_pass http://backend;
 }
 ```
