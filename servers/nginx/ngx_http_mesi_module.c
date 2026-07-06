@@ -344,6 +344,9 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
                         "mesi: failed to build memcached config JSON");
         } else {
           int rc = EsiInitCacheWithConfig(backend, lcf->cache_size, lcf->cache_ttl, config_json);
+          ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                        "mesi: InitCacheWithConfig(%s, %d, %d, %s) = %d",
+                        backend, lcf->cache_size, lcf->cache_ttl, config_json, rc);
           if (rc < 0) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                           "mesi: InitCacheWithConfig failed for backend '%s' (returned %d)",
