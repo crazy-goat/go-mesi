@@ -8,13 +8,33 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
 var (
 	ErrUpstreamStatus     = errors.New("upstream bad status")
 	ErrTimeBudgetExceeded = errors.New("exceeded time budget")
+
+	inflightMu    sync.Mutex
+	inflightLocks = map[string]*sync.Mutex{}
 )
+
+// getInflightLock returns a per-key mutex used to serialise concurrent
+// fetches targeting the same cache key. When two ESI include workers both
+// miss the cache for an identical URL, only one worker is allowed to
+// perform the upstream fetch; the other blocks until the first worker has
+// populated the cache and then serves from it.
+func getInflightLock(cacheKey string) *sync.Mutex {
+	inflightMu.Lock()
+	defer inflightMu.Unlock()
+	if mu, ok := inflightLocks[cacheKey]; ok {
+		return mu
+	}
+	mu := &sync.Mutex{}
+	inflightLocks[cacheKey] = mu
+	return mu
+}
 
 func IsEsiResponse(response *http.Response) bool {
 	header := strings.ToLower(response.Header.Get("Edge-control"))
@@ -109,6 +129,23 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		} else if ok {
 			return val, false, nil
 		}
+	}
+
+	// Serialise concurrent fetches for the same cache key. Without this
+	// guard two workers processing identical <esi:include> URLs both
+	// miss the cache, both perform an upstream round-trip, and return
+	// different responses — breaking the same-page dedup guarantee that
+	// memory-backed and external caches are expected to provide.
+	if cacheKey != "" {
+		mu := getInflightLock(cacheKey)
+		mu.Lock()
+		// Double-check: another goroutine may have populated the
+		// cache while we were waiting for the lock.
+		if val, ok, _ := config.Cache.Get(ctx, cacheKey); ok {
+			mu.Unlock()
+			return val, false, nil
+		}
+		defer mu.Unlock()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", urlToFetch, nil)
