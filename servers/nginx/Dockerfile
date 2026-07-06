@@ -1,5 +1,8 @@
 FROM --platform=linux/amd64 ubuntu:22.04
 
+# Cache-busting layer: increment when C source changes
+ARG CACHE_BUST=1
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
