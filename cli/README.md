@@ -55,6 +55,7 @@ mesi-cli [options] path/url
 - **cache-ttl <duration>** (duration): Cache TTL (e.g. `30s`, `5m`); `0` = no expiry. Default: 0
 - **max-workers <count>** (int): Max concurrent ESI include goroutines. `0` = `NumCPU*4`. Useful for forcing sequential processing to make caching deterministic. Default: 0
 - **allow-private-ips** (bool): Allow ESI includes to private/reserved IP ranges. Required when testing against a local ESI origin. Default: false
+- **shared-http-client** (bool): Share a single HTTP client (with connection pooling) across all ESI includes within a single invocation. When false (default), each include creates a fresh `http.Client`. Use this flag when processing a page with many includes to the same origin for measurable latency improvement. Default: false
 
 ### Caching
 

@@ -45,6 +45,8 @@ func main() {
 		"Allow ESI includes to private/reserved IP ranges (for local testing)")
 	maxWorkers := flag.Int("max-workers", 0,
 		"Max concurrent ESI include goroutines (0 = NumCPU*4)")
+	sharedHTTPClient := flag.Bool("shared-http-client", false,
+		"Share HTTP client across ESI includes for connection pooling")
 
 	flag.Parse()
 	args := flag.Args()
@@ -63,6 +65,13 @@ func main() {
 	config.Debug = *debug
 	config.BlockPrivateIPs = !*allowPrivateIPs
 	config.MaxWorkers = *maxWorkers
+
+	if *sharedHTTPClient {
+		config.HTTPClient = &http.Client{
+			Transport: mesi.NewSSRFSafeTransport(config),
+			Timeout:   config.Timeout,
+		}
+	}
 
 	switch *cacheBackend {
 	case "":
@@ -101,8 +110,15 @@ func main() {
 
 		config.DefaultUrl = parsedURL.String()
 
-		client := http.Client{
-			Timeout: config.Timeout,
+		// Use the shared client if available (set via -shared-http-client),
+		// otherwise create a temporary one with SSRF-safe transport.
+		client := config.HTTPClient
+		if client == nil {
+			transport := mesi.NewSSRFSafeTransport(config)
+			client = &http.Client{
+				Timeout:   config.Timeout,
+				Transport: transport,
+			}
 		}
 		req, err := http.NewRequest("GET", pathOrUrl, nil)
 		if err != nil {

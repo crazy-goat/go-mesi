@@ -318,3 +318,49 @@ func TestCLI_cacheFlagsInHelp(t *testing.T) {
 		}
 	}
 }
+
+func TestCLI_sharedHTTPClientFlagInHelp(t *testing.T) {
+	stdout, stderr, _ := runCLI(t, "-h")
+	output := stdout + stderr
+	if !strings.Contains(output, "-shared-http-client") {
+		t.Errorf("expected -shared-http-client in help output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestCLI_sharedHTTPClientFlagPassthrough(t *testing.T) {
+	// With -shared-http-client, the CLI should still process a simple
+	// file-mode ESI comment correctly (the flag does not change the
+	// parsing behaviour for file-based input where no includes are
+	// fetched — it only affects HTTP client creation for remote
+	// includes).
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello World-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, exitCode := runCLI(t, "-shared-http-client", inputFile)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Hello World") {
+		t.Errorf("expected 'Hello World' in output, got %q", stdout)
+	}
+}
+
+func TestCLI_sharedHTTPClientFlagFalseByDefault(t *testing.T) {
+	// When -shared-http-client is not provided, config.HTTPClient is nil
+	// (per-request clients). This test verifies that the CLI works
+	// correctly without the flag.
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, exitCode := runCLI(t, inputFile)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Hello") {
+		t.Errorf("expected 'Hello' in output, got %q", stdout)
+	}
+}
