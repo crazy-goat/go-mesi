@@ -24,7 +24,7 @@ Support status of mESI features across all server integrations.
 | `IncludeErrorMarker` | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ⚠️ | ✅ |
 | Global MaxDepth | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
 | Global Timeout | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ |
-| SSRF (BlockPrivateIPs) | ✅ | ⚠️ | 🔒 | ✅ | ✅ | ✅ | ❌ | 🔒 | ✅ |
+| SSRF (BlockPrivateIPs) | ✅ | ⚠️ | 🔒 | ✅ | ✅ | ✅ | ✅ | 🔒 | ✅ |
 | AllowedHosts | ✅ | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ |
 | AllowPrivateIPsForAllowedHosts | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | MaxResponseSize | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
@@ -55,7 +55,7 @@ Support status of mESI features across all server integrations.
 - **`<esi:try>`, `<esi:attempt>`, `<esi:except>`** – Fully supported. Unhandled include errors within `<esi:attempt>` trigger `<esi:except>` rendering. `onerror="continue"` and fallback body do NOT trigger `<esi:except>`. Supports nested `<esi:try>` blocks.
 - **`<esi:vars>` / `$(...)` variable substitution** – Fully supported. Variables are defined via `<esi:variable>` in `<esi:vars>` blocks and resolved via `$(NAME)` syntax in include URLs, text content, and test expressions. Supports `$(HTTP_HEADER{Name})`, `$(HTTP_COOKIE{name})`, and `$(QUERY_STRING{param})` via config fields.
 - **Nginx** – Uses `ParseWithConfig` from `libgomesi` (migrated from `Parse`). SSRF blocking is configurable via `mesi_block_private_ips` (default `on` — see BREAKING CHANGE in CHANGELOG). Supports `mesi_shared_http_client` for connection pooling. Cache backends: in-memory, Redis (`mesi_cache_redis_addr`, `mesi_cache_redis_password`, `mesi_cache_redis_db`), and Memcached (`mesi_cache_memcached_servers`).
-- **PHP Extension** – Exposes only `\mesi\parse(input, max_depth, default_url)`. No security configuration.
+- **PHP Extension** – Exposes `\mesi\parse(input, max_depth, default_url)` (legacy, no security configuration) and `\mesi\parse_with_config(input, max_depth, default_url, config)` which supports `block_private_ips` (defaults to `true` — SSRF dial-time blocking of private/reserved IP ranges). The legacy `parse()` entrypoint keeps the module-init behaviour (no blocking) until a `parse_with_config()` call opts in.
 - **Caddy / FrankenPHP** – FrankenPHP uses the Caddy plugin, identical functionality.
 - **Proxy** – Accepts full `EsiParserConfig`; all features available when provided by calling code.
 - **IncludeErrorMarker (CLI)** – Can only be set programmatically (no CLI flag).
