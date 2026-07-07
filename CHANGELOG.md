@@ -3,6 +3,7 @@
 ## [0.13.0] - Unreleased
 
 ### Added
+- CLI `-include-error-marker` flag: custom marker string rendered for failed ESI includes. When set, failed `<esi:include>` tags (without `onerror="continue"` or fallback body) render the marker in the HTML output instead of producing empty output. Useful for debugging — e.g. `-include-error-marker='<!-- esi error -->'`. Default: "" (silent) (#202)
 - CLI `-shared-http-client` flag: when set, creates a shared `http.Client` with connection pooling and SSRF-safe transport for all ESI includes within a single invocation. Reduces latency for pages with many includes to the same origin (#227)
 - CLI `-cache-key-template` flag: custom cache key template with `${url}` placeholder substitution. Example: `-cache-key-template='myapp:${url}'` (#222)
 

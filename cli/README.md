@@ -57,6 +57,7 @@ mesi-cli [options] path/url
 - **allow-private-ips** (bool): Allow ESI includes to private/reserved IP ranges. Required when testing against a local ESI origin. Default: false
 - **shared-http-client** (bool): Share a single HTTP client (with connection pooling) across all ESI includes within a single invocation. When false (default), each include creates a fresh `http.Client`. Use this flag when processing a page with many includes to the same origin for measurable latency improvement. Default: false
 - **cache-key-template <template>** (string): Custom cache key template with placeholders. Supported placeholders: `${url}` (the include URL). Example: `mesi:${url}:${header:Accept-Language}`. Note: header and cookie placeholders require an HTTP request context and are not supported in CLI mode (only `${url}` is substituted). Default: URL-only cache key.
+- **include-error-marker <marker>** (string): Marker string rendered in place of a failed `<esi:include>` when no `onerror="continue"` and no fallback body is present. Useful for debugging — set to something like `"<!-- esi error -->"` to make failed includes visible in the rendered HTML. Security warning: never include the original error message as it may leak internal details. Default: "" (silent — failed includes produce empty output).
 
 ### Caching
 

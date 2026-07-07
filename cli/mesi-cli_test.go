@@ -435,6 +435,76 @@ func TestCLI_sharedHTTPClientFlagPassthrough(t *testing.T) {
 	}
 }
 
+func TestCLI_includeErrorMarkerFlagInHelp(t *testing.T) {
+	stdout, stderr, _ := runCLI(t, "-h")
+	output := stdout + stderr
+	if !strings.Contains(output, "-include-error-marker") {
+		t.Errorf("expected -include-error-marker in help output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestCLI_includeErrorMarkerFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, exitCode := runCLI(t, "-include-error-marker", "<!-- esi error -->", inputFile)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Hello") {
+		t.Errorf("expected 'Hello' in output, got %q", stdout)
+	}
+}
+
+func TestCLI_includeErrorMarkerFlagDefaultEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Default should be empty string - no marker rendered
+	stdout, _, exitCode := runCLI(t, inputFile)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Hello") {
+		t.Errorf("expected 'Hello' in output, got %q", stdout)
+	}
+}
+
+func TestCLI_includeErrorMarkerFlagEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Explicit empty string should also work
+	stdout, _, exitCode := runCLI(t, "-include-error-marker=", inputFile)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Hello") {
+		t.Errorf("expected 'Hello' in output, got %q", stdout)
+	}
+}
+
+func TestCLI_includeErrorMarkerFlagSpecialChars(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Test with special characters in the marker
+	stdout, _, exitCode := runCLI(t, "-include-error-marker", "[ESI ERROR]", inputFile)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Hello") {
+		t.Errorf("expected 'Hello' in output, got %q", stdout)
+	}
+}
 func TestCLI_sharedHTTPClientFlagFalseByDefault(t *testing.T) {
 	// When -shared-http-client is not provided, config.HTTPClient is nil
 	// (per-request clients). This test verifies that the CLI works

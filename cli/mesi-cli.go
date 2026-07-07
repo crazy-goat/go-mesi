@@ -49,6 +49,8 @@ func main() {
 		"Max concurrent ESI include goroutines (0 = NumCPU*4)")
 	sharedHTTPClient := flag.Bool("shared-http-client", false,
 		"Share HTTP client across ESI includes for connection pooling")
+	includeErrorMarker := flag.String("include-error-marker", "",
+		"Marker string rendered for failed ESI includes (e.g. '<!-- esi error -->')")
 
 	flag.Parse()
 	args := flag.Args()
@@ -67,6 +69,7 @@ func main() {
 	config.Debug = *debug
 	config.BlockPrivateIPs = !*allowPrivateIPs
 	config.MaxWorkers = *maxWorkers
+	config.IncludeErrorMarker = *includeErrorMarker
 
 	if *sharedHTTPClient {
 		config.HTTPClient = &http.Client{
