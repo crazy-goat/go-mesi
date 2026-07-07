@@ -47,6 +47,19 @@ typedef struct {
 
 static mesi_cache_state_t g_cache_state = {"", -1, -1, {0}};
 
+/*
+ * Track the last blockPrivateIPs value we passed to InitHTTPClient so we
+ * only re-create the shared HTTP client (and its SSRF-safe transport)
+ * when the requested value actually changes. libgomesi's applySharedConfig
+ * always wires the shared client into the parse config, so the dial-time
+ * private-IP blocking is governed entirely by the transport created here —
+ * ParseWithConfig's own blockPrivateIPs flag is only honoured when the
+ * shared client carries the matching transport. The state starts at 0,
+ * mirroring MINIT's InitHTTPClient(0) (blocking OFF until the first
+ * parse_with_config call opts in).
+ */
+static int g_http_block_private_ips = 0;
+
 static int mesi_cache_state_matches(const char *backend, long size, long ttl,
                                     const char *cfg_json) {
     if (backend[0] == '\0' && g_cache_state.backend[0] == '\0') {
@@ -289,6 +302,12 @@ PHP_FUNCTION(parse) {
  *   cache_memcached_servers: array of "host:port" strings. Required for
  *                            backend=memcached (non-empty); rejected for
  *                            others.
+ *   block_private_ips:       bool. When true (the default when the key is
+ *                            absent — secure by default), the shared HTTP
+ *                            client is (re)built with a dial-time transport
+ *                            that blocks connections to private/reserved IP
+ *                            ranges, preventing SSRF via DNS rebinding. A
+ *                            non-boolean value is rejected with E_WARNING.
  *
  * Validation strictly mirrors libgomesi's InitCacheWithConfig contract —
  * we detect the same bad inputs libgomesi would silently ignore or silently
@@ -316,6 +335,9 @@ PHP_FUNCTION(parse_with_config) {
     long cache_redis_db = 0;
     long cache_redis_db_set = 0;  /* distinguish explicit 0 from "unset" */
     zval *cache_memcached_servers = NULL;
+
+    /* block_private_ips: secure by default. Absent => true. */
+    int block_private_ips = 1;
 
     if (config != NULL && Z_TYPE_P(config) == IS_ARRAY) {
         zval *val;
@@ -481,6 +503,24 @@ PHP_FUNCTION(parse_with_config) {
             cache_memcached_servers = val;
         }
 
+        /* block_private_ips: SSRF dial-time private-IP blocking.
+         * Accepted as a bool or int (0/1); any other type is rejected so a
+         * typo never silently disables SSRF protection. Absent => keep the
+         * secure default (true). */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "block_private_ips", sizeof("block_private_ips") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) == IS_TRUE || Z_TYPE_P(val) == IS_FALSE) {
+                block_private_ips = (Z_TYPE_P(val) == IS_TRUE);
+            } else if (Z_TYPE_P(val) == IS_LONG) {
+                block_private_ips = (Z_LVAL_P(val) != 0);
+            } else {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): block_private_ips must be a boolean "
+                    "(true/false) or integer (non-zero = block)");
+                RETURN_FALSE;
+            }
+        }
+
         /* Backend-specific requirements: redis requires addr; memcached
          * requires servers. Detected after per-key parsing so a stray
          * key doesn't by itself trigger the error. */
@@ -539,7 +579,16 @@ PHP_FUNCTION(parse_with_config) {
         mesi_cache_state_record(cache_backend, cache_size, cache_ttl, config_json);
     }
 
-    char* result = Parse(input, max_depth, default_url);
+    /* (Re)build the shared HTTP client's SSRF-safe transport only when the
+     * requested block_private_ips value differs from the one currently in
+     * effect. InitHTTPClient swaps in a fresh transport, so we avoid doing
+     * it on every call — mirroring the cache-state tracking above. */
+    if (block_private_ips != g_http_block_private_ips) {
+        InitHTTPClient(block_private_ips ? 1 : 0);
+        g_http_block_private_ips = block_private_ips;
+    }
+
+    char* result = ParseWithConfig(input, max_depth, default_url, "", block_private_ips ? 1 : 0);
     RETVAL_STRING(result);
     FreeString(result);
 }

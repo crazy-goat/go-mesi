@@ -97,6 +97,7 @@ $html = \mesi\parse_with_config(
 | `cache_redis_password` | optional, `cache_backend = "redis"` | string | Optional Redis AUTH password; same character restrictions as `cache_redis_addr` |
 | `cache_redis_db` | optional, `cache_backend = "redis"` | int | `[0, 15]`; omitted means Redis DB 0 |
 | `cache_memcached_servers` | `cache_backend = "memcached"` | array of strings | Each entry is `"host:port"`; non-empty list required |
+| `block_private_ips` | optional | bool | SSRF dial-time blocking of private/reserved IP ranges. Defaults to `true` (secure by default); pass `false` to allow includes from private IPs (e.g. loopback, RFC1918). A non-boolean value is rejected with `E_WARNING` |
 
 Validation is strict: an unknown `cache_backend`, mismatched Redis-vs-Memcached key, out-of-range numeric value, non-integer value, malformed `host:port`, or a non-string memcached server entry emits an `E_WARNING` and returns `false`. The function never silently degrades to "no cache" on a typo — a wrong host:port or empty memcached list surfaces as `E_WARNING`, matching the validation pattern in `parse_with_config()` for the in-memory backend and the equivalent `MesiCache*` directives in `servers/apache`. The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
 
@@ -147,6 +148,35 @@ echo \mesi\parse_with_config(
     ]
 );
 ```
+
+#### SSRF protection (block private IPs)
+
+By default `parse_with_config()` blocks includes that resolve to private or
+reserved IP ranges (loopback, RFC1918, CGNAT, link-local, etc.) at dial time,
+preventing Server-Side Request Forgery via DNS rebinding. This is **secure by
+default** — you must explicitly opt out:
+
+```php
+// Secure default: private IPs are blocked.
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    ['block_private_ips' => true]
+);
+
+// Opt out (e.g. your origin lives on an internal/RFC1918 address):
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    ['block_private_ips' => false]
+);
+```
+
+The shared HTTP client's transport is rebuilt only when the requested
+`block_private_ips` value changes between calls, so repeated calls with the
+same setting incur no extra setup cost.
 
 ### Cache scope
 

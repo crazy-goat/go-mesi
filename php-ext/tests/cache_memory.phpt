@@ -101,14 +101,14 @@ $input = '<esi:include src="' . $esiUrl . '"/>';
 
 $out1 = \mesi\parse_with_config(
     $input, 5, $backend,
-    ['cache_backend' => 'memory', 'cache_size' => 100, 'cache_ttl' => 60]
+    ['cache_backend' => 'memory', 'cache_size' => 100, 'cache_ttl' => 60, 'block_private_ips' => false]
 );
 usleep(300000);
 $hits1 = (int)trim(file_get_contents($countFile));
 
 $out2 = \mesi\parse_with_config(
     $input, 5, $backend,
-    ['cache_backend' => 'memory', 'cache_size' => 100, 'cache_ttl' => 60]
+    ['cache_backend' => 'memory', 'cache_size' => 100, 'cache_ttl' => 60, 'block_private_ips' => false]
 );
 usleep(300000);
 $hits2 = (int)trim(file_get_contents($countFile));
