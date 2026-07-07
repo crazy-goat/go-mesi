@@ -110,15 +110,8 @@ func main() {
 
 		config.DefaultUrl = parsedURL.String()
 
-		// Use the shared client if available (set via -shared-http-client),
-		// otherwise create a temporary one with SSRF-safe transport.
-		client := config.HTTPClient
-		if client == nil {
-			transport := mesi.NewSSRFSafeTransport(config)
-			client = &http.Client{
-				Timeout:   config.Timeout,
-				Transport: transport,
-			}
+		client := http.Client{
+			Timeout: config.Timeout,
 		}
 		req, err := http.NewRequest("GET", pathOrUrl, nil)
 		if err != nil {
