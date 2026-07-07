@@ -15,21 +15,23 @@ import (
 const PluginName = "mesi"
 
 type Config struct {
-	MaxDepth               int      `json:"maxDepth" yaml:"maxDepth"`
-	SharedHTTPClient       bool     `json:"sharedHTTPClient" yaml:"sharedHTTPClient"`
-	IncludeErrorMarker     string   `json:"includeErrorMarker" yaml:"includeErrorMarker"`
-	CacheBackend           string   `json:"cacheBackend" yaml:"cacheBackend"`
-	CacheTTL               string   `json:"cacheTTL" yaml:"cacheTTL"`
-	CacheSize              int      `json:"cacheSize" yaml:"cacheSize"`
-	CacheRedisAddr         string   `json:"cacheRedisAddr" yaml:"cacheRedisAddr"`
-	CacheRedisPassword     string   `json:"cacheRedisPassword" yaml:"cacheRedisPassword"`
-	CacheRedisDB           int      `json:"cacheRedisDb" yaml:"cacheRedisDb"`
-	CacheMemcachedServers  []string `json:"cacheMemcachedServers" yaml:"cacheMemcachedServers"`
+	MaxDepth              int      `json:"maxDepth" yaml:"maxDepth"`
+	SharedHTTPClient      bool     `json:"sharedHTTPClient" yaml:"sharedHTTPClient"`
+	IncludeErrorMarker    string   `json:"includeErrorMarker" yaml:"includeErrorMarker"`
+	CacheBackend          string   `json:"cacheBackend" yaml:"cacheBackend"`
+	CacheTTL              string   `json:"cacheTTL" yaml:"cacheTTL"`
+	CacheSize             int      `json:"cacheSize" yaml:"cacheSize"`
+	CacheRedisAddr        string   `json:"cacheRedisAddr" yaml:"cacheRedisAddr"`
+	CacheRedisPassword    string   `json:"cacheRedisPassword" yaml:"cacheRedisPassword"`
+	CacheRedisDB          int      `json:"cacheRedisDb" yaml:"cacheRedisDb"`
+	CacheMemcachedServers []string `json:"cacheMemcachedServers" yaml:"cacheMemcachedServers"`
+	BlockPrivateIPs       bool     `json:"blockPrivateIPs" yaml:"blockPrivateIPs"`
 }
 
 func CreateConfig() *Config {
 	return &Config{
-		MaxDepth: 5,
+		MaxDepth:        5,
+		BlockPrivateIPs: true,
 	}
 }
 
@@ -60,7 +62,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	if config.SharedHTTPClient {
 		p.sharedTransport = mesi.NewSSRFSafeTransport(mesi.EsiParserConfig{
-			BlockPrivateIPs: true,
+			BlockPrivateIPs: config.BlockPrivateIPs,
 		})
 	}
 
@@ -93,12 +95,12 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	if strings.HasPrefix(contentType, "text/html") {
 		config := mesi.EsiParserConfig{
-			Context:             req.Context(),
-			MaxDepth:            uint(p.config.MaxDepth),
-			DefaultUrl:          middleware.GetDefaultUrl(req),
-			Timeout:             10 * time.Second,
-			BlockPrivateIPs:     true,
-			IncludeErrorMarker:  p.config.IncludeErrorMarker,
+			Context:            req.Context(),
+			MaxDepth:           uint(p.config.MaxDepth),
+			DefaultUrl:         middleware.GetDefaultUrl(req),
+			Timeout:            10 * time.Second,
+			BlockPrivateIPs:    p.config.BlockPrivateIPs,
+			IncludeErrorMarker: p.config.IncludeErrorMarker,
 		}
 
 		if p.cache != nil {
