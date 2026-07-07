@@ -4,8 +4,8 @@ Apache output filter module for mESI (Edge Side Includes) processing.
 
 ## Requirements
 
-- Apache HTTP Server 2.4+ (MPM `prefork` recommended; `worker` and `event`
-  require a mutex around `Parse()`)
+- Apache HTTP Server 2.4+ (MPM `prefork` recommended for isolation;
+  `worker` and `event` are supported — see [MPM Compatibility](#mpm-compatibility))
 - libgomesi.so (built from `libgomesi/`)
 
 ## Building
@@ -137,9 +137,18 @@ docker compose up --build
 
 | MPM | Status | Notes |
 |-----|--------|-------|
-| Prefork | ✅ Recommended | dlopen / libgomesi state per worker |
-| Worker | ⚠️ Supported | Each thread holds its own libgomesi |
+| Prefork | ✅ Recommended | No threading; dlopen/libgomesi state isolated per worker process |
+| Worker | ⚠️ Supported | dlopen/dlsym in `child_init` (before threads start). Multiple threads share the same libgomesi function pointers; libgomesi must be goroutine-safe (see note below) |
 | Event | ⚠️ Supported | Same as Worker |
+
+> **Thread safety note:** libgomesi is built with Go and is designed to be
+> called from multiple goroutines concurrently. The Apache module loads
+> `libgomesi.so` once per child process in `child_init`, before any request
+> threads are spawned. Function pointers are obtained once and shared
+> across threads. If you encounter crashes under MPM Worker/Event, ensure
+> you are running a recent version of libgomesi with the goroutine-safe
+> code paths. See [#94](https://github.com/crazy-goat/go-mesi/issues/94)
+> for the full discussion.
 
 ## How It Works
 
