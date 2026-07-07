@@ -1,6 +1,9 @@
 # Changelog
 
-## [0.9.0] - Unreleased
+## [0.13.0] - Unreleased
+
+### Fixed
+- Apache README: remove incorrect "Mutex around Parse()" claim for MPM Worker/Event. The mutex was never implemented; `dlopen`/`dlsym` already runs in `child_init` (before threads start), and libgomesi is built with Go's goroutine-safe runtime. The MPM Compatibility table now accurately describes the actual thread-safety model (#94).
 
 ### Added
 - Traefik memory cache backend: `cacheBackend: memory`, `cacheSize`, and `cacheTTL` config options wire the in-memory LRU cache into Traefik ESI processing. Duplicate `<esi:include>` URLs within TTL are served from cache, reducing backend load (#234)
