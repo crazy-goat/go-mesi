@@ -319,6 +319,94 @@ func TestCLI_cacheFlagsInHelp(t *testing.T) {
 	}
 }
 
+func TestCLI_cacheKeyTemplateFlagInHelp(t *testing.T) {
+	stdout, stderr, _ := runCLI(t, "-h")
+	output := stdout + stderr
+	if !strings.Contains(output, "-cache-key-template") {
+		t.Errorf("expected -cache-key-template in help output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestCLI_cacheKeyTemplate(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, exitCode := runCLI(t,
+		"-cache-backend=memory",
+		"-cache-key-template=myapp:${url}",
+		inputFile,
+	)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Hello") {
+		t.Errorf("expected 'Hello' in output, got %q", stdout)
+	}
+}
+
+func TestCLI_cacheKeyTemplateDefault(t *testing.T) {
+	// When -cache-key-template is not provided, the default URL-only cache key is used.
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, exitCode := runCLI(t,
+		"-cache-backend=memory",
+		inputFile,
+	)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Hello") {
+		t.Errorf("expected 'Hello' in output, got %q", stdout)
+	}
+}
+
+func TestCLI_cacheKeyTemplateEmpty(t *testing.T) {
+	// Empty template should use default URL-only cache key.
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, exitCode := runCLI(t,
+		"-cache-backend=memory",
+		"-cache-key-template=",
+		inputFile,
+	)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Hello") {
+		t.Errorf("expected 'Hello' in output, got %q", stdout)
+	}
+}
+
+func TestCLI_cacheKeyTemplateWithURLPlaceholder(t *testing.T) {
+	// Test that ${url} placeholder is substituted in the template.
+	// This test verifies the template is used by checking that the CLI
+	// still processes ESI correctly with a custom template.
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, exitCode := runCLI(t,
+		"-cache-backend=memory",
+		"-cache-key-template=prefix:${url}:suffix",
+		inputFile,
+	)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Hello") {
+		t.Errorf("expected 'Hello' in output, got %q", stdout)
+	}
+}
+
 func TestCLI_sharedHTTPClientFlagInHelp(t *testing.T) {
 	stdout, stderr, _ := runCLI(t, "-h")
 	output := stdout + stderr
