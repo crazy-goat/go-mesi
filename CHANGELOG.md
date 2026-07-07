@@ -2,6 +2,9 @@
 
 ## [0.13.0] - Unreleased
 
+### Added
+- CLI `-shared-http-client` flag: when set, creates a shared `http.Client` with connection pooling and SSRF-safe transport for all ESI includes within a single invocation. Reduces latency for pages with many includes to the same origin (#227)
+
 ### Fixed
 - Apache README: remove incorrect "Mutex around Parse()" claim for MPM Worker/Event. The mutex was never implemented; `dlopen`/`dlsym` already runs in `child_init` (before threads start), and libgomesi is built with Go's goroutine-safe runtime. The MPM Compatibility table now accurately describes the actual thread-safety model (#94).
 
