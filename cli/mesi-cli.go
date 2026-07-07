@@ -41,6 +41,8 @@ func main() {
 		"Redis database number")
 	cacheMemcachedServers := flag.String("cache-memcached-servers", "",
 		"Comma-separated Memcached servers (host:port)")
+	cacheKeyTemplate := flag.String("cache-key-template", "",
+		"Custom cache key template with placeholders: ${url}, ${header:Name}, ${cookie:Name}")
 	allowPrivateIPs := flag.Bool("allow-private-ips", false,
 		"Allow ESI includes to private/reserved IP ranges (for local testing)")
 	maxWorkers := flag.Int("max-workers", 0,
@@ -97,6 +99,15 @@ func main() {
 		config.CacheTTL = *cacheTTL
 	default:
 		log.Fatalf("unknown cache backend: %s", *cacheBackend)
+	}
+
+	if *cacheKeyTemplate != "" {
+		tmpl := *cacheKeyTemplate
+		config.CacheKeyFunc = func(url string) string {
+			// CLI mode: only ${url} is supported since there is no HTTP request context.
+			// For full header/cookie support, use the Caddy or nginx integration.
+			return strings.ReplaceAll(tmpl, "${url}", url)
+		}
 	}
 
 	pathOrUrl := args[0]

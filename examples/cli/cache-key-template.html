@@ -1,0 +1,9 @@
+<!-- Example: ESI with custom cache key template -->
+<!-- Run: mesi-cli -cache-backend=memory -cache-key-template='myapp:${url}' examples/cli/cache-key-template.html -->
+<html>
+<body>
+  <h1>Cache Key Template Example</h1>
+  <esi:include src="http://backend/fragment.html" />
+  <!-- This include will use cache key: myapp:http://backend/fragment.html -->
+</body>
+</html>

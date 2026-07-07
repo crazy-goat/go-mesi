@@ -56,6 +56,7 @@ mesi-cli [options] path/url
 - **max-workers <count>** (int): Max concurrent ESI include goroutines. `0` = `NumCPU*4`. Useful for forcing sequential processing to make caching deterministic. Default: 0
 - **allow-private-ips** (bool): Allow ESI includes to private/reserved IP ranges. Required when testing against a local ESI origin. Default: false
 - **shared-http-client** (bool): Share a single HTTP client (with connection pooling) across all ESI includes within a single invocation. When false (default), each include creates a fresh `http.Client`. Use this flag when processing a page with many includes to the same origin for measurable latency improvement. Default: false
+- **cache-key-template <template>** (string): Custom cache key template with placeholders. Supported placeholders: `${url}` (the include URL). Example: `mesi:${url}:${header:Accept-Language}`. Note: header and cookie placeholders require an HTTP request context and are not supported in CLI mode (only `${url}` is substituted). Default: URL-only cache key.
 
 ### Caching
 
@@ -73,6 +74,11 @@ mesi-cli -cache-backend=memcached -cache-ttl=60s -cache-memcached-servers=localh
 ```
 
 The memory cache is **per-invocation** — it lives for the duration of a single `mesi-cli` run. Redis and Memcached caches are persistent and can be shared across invocations.
+
+```shell
+# Custom cache key template (URL-only placeholder supported in CLI mode)
+mesi-cli -cache-backend=memory -cache-key-template='myapp:${url}' ./input.html
+```
 
 ## Example Usage
 Render an ESI-enabled HTML from a file:
