@@ -250,6 +250,44 @@ else
     exit 1
 fi
 
+echo "=== Test 18: SSRF default (unset) blocks private IP ==="
+RESPONSE=$(curl -s http://localhost:8080/ssrf-default/ssrf.html)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "FAIL: SSRF default did not block private IP include"
+    echo "Response: $RESPONSE"
+    exit 1
+elif echo "$RESPONSE" | grep -q "After include"; then
+    echo "PASS: SSRF default (unset) blocks private IP include"
+else
+    echo "FAIL: SSRF default test page not rendered as expected"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 19: SSRF on blocks private IP ==="
+RESPONSE=$(curl -s http://localhost:8080/ssrf-on/ssrf.html)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "FAIL: mesi_block_private_ips on did not block private IP include"
+    echo "Response: $RESPONSE"
+    exit 1
+elif echo "$RESPONSE" | grep -q "After include"; then
+    echo "PASS: mesi_block_private_ips on blocks private IP include"
+else
+    echo "FAIL: SSRF on test page not rendered as expected"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 20: SSRF off allows private IP ==="
+RESPONSE=$(curl -s http://localhost:8080/ssrf-off/ssrf.html)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: mesi_block_private_ips off allows private IP include"
+else
+    echo "FAIL: mesi_block_private_ips off blocked a private IP include"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
 docker compose down
 
 docker compose down

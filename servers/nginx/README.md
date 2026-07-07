@@ -71,6 +71,32 @@ A shared HTTP client is automatically created once per worker process and reused
 
 The shared client includes SSRF protection — connections to private/reserved IP addresses are blocked at dial time.
 
+## SSRF Protection
+
+The `mesi_block_private_ips` directive controls whether ESI includes to private/reserved IP addresses (RFC 1918, CGNAT, link-local, loopback, benchmark and documentation ranges) are blocked at dial time. When enabled, an `<esi:include>` targeting e.g. `http://127.0.0.1/`, `http://169.254.169.254/` (cloud metadata) or any internal network address is rejected and rendered through the include-error path.
+
+> **BREAKING CHANGE**: The default is now `on`. Previously nginx had **no** SSRF protection (implicit `off`), so any `<esi:include>` to a private IP succeeded. After upgrading, deployments that intentionally include from internal/private backends must explicitly set `mesi_block_private_ips off;`.
+
+### Directive
+
+#### `mesi_block_private_ips`
+
+- **Syntax:** `mesi_block_private_ips on | off`
+- **Default:** `on`
+- **Context:** `location`
+
+Enable (`on`, default) or disable (`off`) blocking of ESI includes to private/reserved IP addresses.
+
+### Example
+
+```nginx
+location / {
+    enable_mesi on;
+    mesi_block_private_ips on;   # secure default; set off only for trusted internal includes
+    proxy_pass http://backend;
+}
+```
+
 ## Cache Backend
 
 The nginx module supports in-memory caching of ESI fragment responses. When enabled, duplicate `<esi:include>` URLs within the configured TTL are served from cache instead of fetching from the origin backend.

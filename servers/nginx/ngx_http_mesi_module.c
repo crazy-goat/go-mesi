@@ -15,6 +15,7 @@ typedef struct {
   ngx_str_t  cache_redis_addr;         // e.g. "localhost:6379"
   ngx_str_t  cache_redis_password;
   ngx_int_t  cache_redis_db;           // Redis database number (0-15)
+  ngx_flag_t block_private_ips;        // SSRF: block private/reserved IPs (default ON)
 } ngx_http_mesi_loc_conf_t;
 
 typedef struct {
@@ -42,12 +43,14 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
                                           void *child);
 
 typedef char *(*ParseFunc)(char *, int, char *);
+typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
 typedef int (*InitCacheFunc)(char *, int, int);
 typedef int (*InitCacheWithConfigFunc)(char *, int, int, char *);
 typedef void (*FreeCacheFunc)(void);
 
 static void *go_module = NULL;
 static ParseFunc EsiParse = NULL;
+static ParseWithConfigFunc EsiParseWithConfig = NULL;
 static InitCacheFunc EsiInitCache = NULL;
 static InitCacheWithConfigFunc EsiInitCacheWithConfig = NULL;
 static FreeCacheFunc EsiFreeCache = NULL;
@@ -84,8 +87,12 @@ static ngx_command_t ngx_http_mesi_commands[] = {
      offsetof(ngx_http_mesi_loc_conf_t, cache_redis_password), NULL},
 
     {ngx_string("mesi_cache_redis_db"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
-     ngx_conf_set_num_slot, NGX_HTTP_LOC_CONF_OFFSET,
-     offsetof(ngx_http_mesi_loc_conf_t, cache_redis_db), NULL},
+      ngx_conf_set_num_slot, NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_mesi_loc_conf_t, cache_redis_db), NULL},
+
+    {ngx_string("mesi_block_private_ips"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
+     ngx_conf_set_flag_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, block_private_ips), NULL},
 
     ngx_null_command};
 
@@ -470,8 +477,22 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
 
   ngx_snprintf(base_url.data, len + 1, "%V://%V/", &scheme, &host);
 
-  char *message = EsiParse(ngx_str_to_cstr(&input, r->pool), 5,
-                           ngx_str_to_cstr(&base_url, r->pool));
+  char *input_cstr = ngx_str_to_cstr(&input, r->pool);
+  char *base_url_cstr = ngx_str_to_cstr(&base_url, r->pool);
+
+  char *message;
+  if (EsiParseWithConfig != NULL) {
+    // ParseWithConfig enables SSRF protection (blockPrivateIPs) and an
+    // optional allowed-hosts whitelist (empty string = no restriction,
+    // handled separately in issue #199).
+    message = EsiParseWithConfig(input_cstr, 5, base_url_cstr, "",
+                                 lcf->block_private_ips);
+  } else {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "mesi: ParseWithConfig unavailable in libgomesi — "
+                  "SSRF protection DISABLED, falling back to Parse");
+    message = EsiParse(input_cstr, 5, base_url_cstr);
+  }
 
   output.len = ngx_strlen(message);
   output.data = ngx_palloc(r->pool, output.len);
@@ -550,6 +571,14 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
     return NGX_ERROR;
   }
 
+  EsiParseWithConfig = (ParseWithConfigFunc)dlsym(go_module, "ParseWithConfig");
+  if (dlerror() != NULL) {
+    EsiParseWithConfig = NULL;
+    ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
+                  "mesi: ParseWithConfig not available in libgomesi — "
+                  "SSRF protection via mesi_block_private_ips will be disabled");
+  }
+
   EsiInitCache = (InitCacheFunc)dlsym(go_module, "InitCache");
   if (dlerror() != NULL) {
     EsiInitCache = NULL;
@@ -591,6 +620,7 @@ static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
   conf->cache_size = NGX_CONF_UNSET;
   conf->cache_ttl = NGX_CONF_UNSET;
   conf->cache_redis_db = NGX_CONF_UNSET;
+  conf->block_private_ips = NGX_CONF_UNSET;
   return conf;
 }
 
@@ -606,5 +636,9 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   ngx_conf_merge_str_value(conf->cache_redis_addr, prev->cache_redis_addr, "");
   ngx_conf_merge_str_value(conf->cache_redis_password, prev->cache_redis_password, "");
   ngx_conf_merge_value(conf->cache_redis_db, prev->cache_redis_db, 0);
+  // Default ON: nginx previously had no SSRF protection (implicit off).
+  // Enabling by default is a BREAKING CHANGE — operators with intentional
+  // private-IP includes must set `mesi_block_private_ips off;`.
+  ngx_conf_merge_value(conf->block_private_ips, prev->block_private_ips, 1);
   return NGX_CONF_OK;
 }
