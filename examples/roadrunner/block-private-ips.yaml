@@ -1,0 +1,26 @@
+# RoadRunner mESI — block_private_ips example
+
+This `.rr.yaml` snippet enables mESI with SSRF protection (blocking ESI
+includes to private/reserved IP ranges) explicitly turned on. This is the
+secure default; the option is shown for completeness.
+
+```yaml
+http:
+  address: "0.0.0.0:8080"
+  middleware:
+    mesi:
+      block_private_ips: true   # default; set false only for trusted internal backends
+      shared_http_client: true  # optional: connection pooling for includes
+```
+
+## Disabling SSRF protection (internal service meshes)
+
+Only do this when every `<esi:include>` target is a trusted internal
+backend and you accept the SSRF exposure:
+
+```yaml
+http:
+  middleware:
+    mesi:
+      block_private_ips: false
+```

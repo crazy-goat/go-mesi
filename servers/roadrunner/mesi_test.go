@@ -1,8 +1,10 @@
 package roadrunner
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -238,5 +240,99 @@ func TestInitCacheKeyTemplateDefaultEmpty(t *testing.T) {
 	}
 	if p.config.CacheKeyTemplate != "" {
 		t.Errorf("Expected empty cache_key_template, got %s", p.config.CacheKeyTemplate)
+	}
+}
+
+// newBlockPrivateIPsTestServers spins up a private-IP (127.0.0.1) fragment
+// server and an upstream server that emits an <esi:include> pointing at it.
+// 127.0.0.1 is a loopback/reserved address, so it is blocked by the SSRF
+// dial-time check whenever BlockPrivateIPs is enabled.
+func newBlockPrivateIPsTestServers(t *testing.T) (fragmentURL string, upstream http.Handler) {
+	t.Helper()
+
+	fragment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte("FRAGMENT_OK"))
+	}))
+	t.Cleanup(fragment.Close)
+
+	upstream = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(fmt.Sprintf("<html><body><esi:include src=\"%s/fragment\" /></body></html>", fragment.URL)))
+	})
+
+	return fragment.URL, upstream
+}
+
+func TestBlockPrivateIPsDefaultBlocks(t *testing.T) {
+	_, upstream := newBlockPrivateIPsTestServers(t)
+
+	config := CreateConfig()
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	middleware := p.Middleware(upstream)
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected private-IP include to be blocked by default, got body: %s", rec.Body.String())
+	}
+}
+
+func TestBlockPrivateIPsTrueBlocks(t *testing.T) {
+	_, upstream := newBlockPrivateIPsTestServers(t)
+
+	block := true
+	config := CreateConfig()
+	config.BlockPrivateIPs = &block
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	middleware := p.Middleware(upstream)
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected private-IP include to be blocked when block_private_ips=true, got body: %s", rec.Body.String())
+	}
+}
+
+func TestBlockPrivateIPsFalseAllows(t *testing.T) {
+	_, upstream := newBlockPrivateIPsTestServers(t)
+
+	block := false
+	config := CreateConfig()
+	config.BlockPrivateIPs = &block
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	middleware := p.Middleware(upstream)
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected private-IP include to be allowed when block_private_ips=false, got body: %s", rec.Body.String())
 	}
 }
