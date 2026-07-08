@@ -85,6 +85,17 @@ MesiCacheTTL 60
   allowed in `<esi:include src=…>`. Matches `isURLSafe` from libgomesi.
 - `MesiBlockPrivateIPs on|off` — Enable/disable SSRF dial-time private-IP
   blocking. Default: On.
+- `MesiAllowPrivateIPsForAllowedHosts on|off` — When `On` together with
+  `MesiBlockPrivateIPs On` and a non-empty `MesiAllowedHosts`, hosts listed
+  in `MesiAllowedHosts` are permitted to resolve to private/reserved IP
+  addresses (the dial-time SSRF block is bypassed for them). Only effective
+  when BOTH `MesiBlockPrivateIPs On` AND `MesiAllowedHosts` are set;
+  otherwise a no-op. Default: Off (private IPs always blocked regardless of
+  `MesiAllowedHosts` membership). **Security warning:** this trusts DNS for
+  hosts in `MesiAllowedHosts` — only use with internal DNS (Consul,
+  Kubernetes DNS, `/etc/hosts`). Requires a `libgomesi.so` built with the
+  `ParseWithConfigEx` entry point (#168); older builds fall back to
+  `ParseWithConfig` and log a warning that the bypass is disabled.
 - `MesiCacheBackend memory|redis|memcached` — Cache backend. Accepts
   only `memory`, `redis`, `memcached`, or empty (disable); any other
   value (including a typo) is rejected at startup so a misconfig never
@@ -159,6 +170,8 @@ docker compose up --build
 5. Calls `InitCache(...)` from libgomesi once per worker process when
    `MesiCacheBackend memory` is configured (TTL/size from
    `MesiCacheTTL`/`MesiCacheSize`).
-6. Processes the buffered body through `libgomesi.ParseWithConfig()`.
-   Repeated `<esi:include>` URLs within TTL are served from the cache.
+6. Processes the buffered body through `libgomesi.ParseWithConfigEx()`
+   (or `ParseWithConfig()` on older `libgomesi.so` builds without the
+   extended entry point). Repeated `<esi:include>` URLs within TTL are
+   served from the cache.
 7. Returns processed HTML to client.

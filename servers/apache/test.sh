@@ -67,6 +67,43 @@ else
     echo "PASS: Include from non-allowed host blocked"
 fi
 
+echo "=== Test 6b: AllowPrivateIPsForAllowedHosts On - allowed private host succeeds (#168) ==="
+RESPONSE=$(curl -s http://localhost:8081/ssrf-allow-private-on.html)
+if echo "$RESPONSE" | grep -q "allowed content from backend"; then
+    echo "PASS: Include from allowed private host (backend) succeeded with bypass On"
+else
+    echo "FAIL: Include from allowed private host blocked despite MesiAllowPrivateIPsForAllowedHosts On"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+if echo "$RESPONSE" | grep -q "blocked.txt"; then
+    echo "FAIL: Include from non-allowed host (evil.com) was NOT blocked"
+    echo "Response: $RESPONSE"
+    exit 1
+else
+    echo "PASS: Include from non-allowed host still blocked with bypass On"
+fi
+
+echo "=== Test 6c: AllowPrivateIPsForAllowedHosts Off (default) - allowed private host blocked (#168) ==="
+RESPONSE=$(curl -s http://localhost:8082/ssrf-allow-private-off.html)
+if echo "$RESPONSE" | grep -q "allowed content from backend"; then
+    echo "FAIL: Include from private host succeeded despite bypass Off"
+    echo "Response: $RESPONSE"
+    exit 1
+else
+    echo "PASS: Include from private host blocked with bypass Off (default)"
+fi
+
+echo "=== Test 6d: AllowPrivateIPsForAllowedHosts On but host NOT in AllowedHosts - still blocked (#168) ==="
+RESPONSE=$(curl -s http://localhost:8081/ssrf-allow-private-notallowed.html)
+if echo "$RESPONSE" | grep -q "allowed content from backend"; then
+    echo "FAIL: Include from private host outside AllowedHosts succeeded"
+    echo "Response: $RESPONSE"
+    exit 1
+else
+    echo "PASS: Include from private host outside AllowedHosts blocked even with bypass On"
+fi
+
 echo "=== Test 7: Large response (multi-brigade) - direct ==="
 RESPONSE=$(curl -s http://localhost:8080/large.html)
 if echo "$RESPONSE" | grep -q "After include"; then
