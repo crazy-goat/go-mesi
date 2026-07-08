@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Shared HTTP Client Test</title>
+</head>
+<body>
+    <h1>Shared HTTP Client Test</h1>
+    <!-- Two includes of the same backend URL. With MesiSharedHTTPClient On
+         (#178) both must resolve using the shared, pooled http.Client. -->
+    <esi:include src="http://backend:8000/shared-fragment.txt" />
+    <esi:include src="http://backend:8000/shared-fragment.txt" />
+    <p>After shared client includes</p>
+</body>
+</html>

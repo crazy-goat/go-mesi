@@ -20,3 +20,5 @@
 !ssrf-allow-private-on.html
 !ssrf-allow-private-off.html
 !ssrf-allow-private-notallowed.html
+!shared-http-client.html
+!shared-fragment.txt
