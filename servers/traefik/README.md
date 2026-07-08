@@ -72,6 +72,38 @@ http:
           sharedHTTPClient: true
 ```
 
+## Allowed Hosts (SSRF whitelist)
+
+When `allowedHosts` is set, only ESI include destinations whose host is listed
+(or is a subdomain of a listed host) are fetched. This is the **effective SSRF
+control** for the Traefik plugin: because the plugin runs under Yaegi, the
+dial-time private-IP blocking transport is stubbed, so URL-level host
+restriction is what actually prevents includes to arbitrary/internal hosts.
+
+Matching rules:
+
+- **Exact match** — `backend.internal` matches `backend.internal`.
+- **Subdomain suffix** — `example.com` matches `sub.example.com` (and any
+  deeper subdomain). The `.` boundary prevents suffix injection: `evil.com`
+  does **not** match `example.com`, and `notexample.com` does **not** match
+  `example.com`.
+- **Empty list** (default) allows all hosts, subject to `blockPrivateIPs`
+  (backward compatible).
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          allowedHosts:
+            - backend.internal
+            - cdn.trusted.com
+```
+
+**SECURITY**: Always set `allowedHosts` in untrusted environments. Without it,
+any `<esi:include src>` URL is fetched unconditionally.
+
 ## Cache Backend
 
 The plugin supports multiple cache backends for ESI fragment caching:
@@ -139,6 +171,7 @@ http:
 | `cacheRedisPassword` | string | `""` | Redis AUTH password |
 | `cacheRedisDb` | int | `0` | Redis database number |
 | `cacheMemcachedServers` | []string | `[]` | Memcached server addresses (host:port) |
+| `allowedHosts` | []string | `[]` | ESI include host whitelist (exact or subdomain-suffix match); empty = allow all |
 
 #### Redis Features
 

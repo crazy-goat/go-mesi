@@ -26,6 +26,7 @@ type Config struct {
 	CacheRedisDB          int      `json:"cacheRedisDb" yaml:"cacheRedisDb"`
 	CacheMemcachedServers []string `json:"cacheMemcachedServers" yaml:"cacheMemcachedServers"`
 	BlockPrivateIPs       bool     `json:"blockPrivateIPs" yaml:"blockPrivateIPs"`
+	AllowedHosts          []string `json:"allowedHosts" yaml:"allowedHosts"`
 }
 
 func CreateConfig() *Config {
@@ -101,6 +102,7 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			Timeout:            10 * time.Second,
 			BlockPrivateIPs:    p.config.BlockPrivateIPs,
 			IncludeErrorMarker: p.config.IncludeErrorMarker,
+			AllowedHosts:       p.config.AllowedHosts,
 		}
 
 		if p.cache != nil {
