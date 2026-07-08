@@ -36,6 +36,7 @@ typedef struct {
     int enable_mesi;
     apr_array_header_t *allowed_hosts;
     int block_private_ips;
+    int allow_private_ips_for_allowed;
     /* Cache backend (parity with mod_mesi.c mesi_config) */
     const char *cache_backend;
     int cache_size;
@@ -73,6 +74,11 @@ static const char *parse_allowed_hosts(mesi_config *conf, const char *arg) {
 
 static const char *parse_block_private_ips(mesi_config *conf, int flag) {
     conf->block_private_ips = flag;
+    return NULL;
+}
+
+static const char *parse_allow_private_for_allowed(mesi_config *conf, int flag) {
+    conf->allow_private_ips_for_allowed = flag;
     return NULL;
 }
 
@@ -342,6 +348,7 @@ static void init_config(mesi_config *conf) {
     memset(conf, 0, sizeof(*conf));
     conf->allowed_hosts = apr_array_make(pool, 4, sizeof(const char *));
     conf->block_private_ips = -1;
+    conf->allow_private_ips_for_allowed = -1;
     conf->cache_backend = "";
     conf->cache_size = 0;
     conf->cache_ttl = -1;
@@ -355,6 +362,8 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
     merged->enable_mesi = (add->enable_mesi != 0) ? add->enable_mesi : base->enable_mesi;
     merged->allowed_hosts = (add->allowed_hosts->nelts > 0) ? add->allowed_hosts : base->allowed_hosts;
     merged->block_private_ips = (add->block_private_ips != -1) ? add->block_private_ips : base->block_private_ips;
+    merged->allow_private_ips_for_allowed = (add->allow_private_ips_for_allowed != -1)
+        ? add->allow_private_ips_for_allowed : base->allow_private_ips_for_allowed;
     merged->cache_backend = (add->cache_backend && add->cache_backend[0] != '\0')
                            ? add->cache_backend
                            : base->cache_backend;
@@ -500,6 +509,57 @@ TEST(merge_allowed_hosts_child_set) {
 
     ASSERT_EQ(merged.allowed_hosts->nelts, 1);
     ASSERT_STR_EQ(((const char **)merged.allowed_hosts->elts)[0], "add.com");
+}
+
+/* --- MesiAllowPrivateIPsForAllowedHosts directive tests (#168) --- */
+
+TEST(allow_private_for_allowed_default_unset) {
+    /* A freshly-created config has the sentinel -1 (unset → off). */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_EQ(conf.allow_private_ips_for_allowed, -1);
+}
+
+TEST(allow_private_for_allowed_on) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = parse_allow_private_for_allowed(&conf, 1);
+    ASSERT_NULL(err);
+    ASSERT_EQ(conf.allow_private_ips_for_allowed, 1);
+}
+
+TEST(allow_private_for_allowed_off) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = parse_allow_private_for_allowed(&conf, 0);
+    ASSERT_NULL(err);
+    ASSERT_EQ(conf.allow_private_ips_for_allowed, 0);
+}
+
+TEST(merge_allow_private_for_allowed_child_overrides) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.allow_private_ips_for_allowed = 0;
+    add.allow_private_ips_for_allowed = 1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.allow_private_ips_for_allowed, 1);
+}
+
+TEST(merge_allow_private_for_allowed_child_inherits) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.allow_private_ips_for_allowed = 1;
+    add.allow_private_ips_for_allowed = -1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.allow_private_ips_for_allowed, 1);
 }
 
 /* --- Cache backend directive tests (#174) --- */
@@ -1482,6 +1542,13 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_child_overrides);
     RUN_TEST(merge_child_inherits);
     RUN_TEST(merge_allowed_hosts_child_set);
+
+    printf("\nTesting set_allow_private_for_allowed() (#168):\n");
+    RUN_TEST(allow_private_for_allowed_default_unset);
+    RUN_TEST(allow_private_for_allowed_on);
+    RUN_TEST(allow_private_for_allowed_off);
+    RUN_TEST(merge_allow_private_for_allowed_child_overrides);
+    RUN_TEST(merge_allow_private_for_allowed_child_inherits);
 
     printf("\nTesting set_cache_backend() (#174):\n");
     RUN_TEST(cache_backend_memory);

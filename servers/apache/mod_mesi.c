@@ -17,6 +17,7 @@
 
 typedef char *(*ParseFunc)(char *, int, char *);
 typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
+typedef char *(*ParseWithConfigExFunc)(char *, int, char *, char *, int, int);
 typedef void (*FreeFunc)(char *);
 typedef int (*InitCacheFunc)(char *, int, int);
 typedef int (*InitCacheWithConfigFunc)(char *, int, int, char *);
@@ -25,6 +26,7 @@ typedef void (*FreeCacheFunc)(void);
 static void *go_module = NULL;
 static ParseFunc EsiParse = NULL;
 static ParseWithConfigFunc EsiParseWithConfig = NULL;
+static ParseWithConfigExFunc EsiParseWithConfigEx = NULL;
 static FreeFunc EsiFreeString = NULL;
 static InitCacheFunc EsiInitCache = NULL;
 static InitCacheWithConfigFunc EsiInitCacheWithConfig = NULL;
@@ -49,6 +51,12 @@ typedef struct {
     int enable_mesi;
     apr_array_header_t *allowed_hosts;
     int block_private_ips;  // -1=unset, 0=off, 1=on
+    // Allow hosts in allowed_hosts to bypass BlockPrivateIPs (SSRF dial
+    // block) when they resolve to private/reserved IPs. -1=unset,
+    // 0=off, 1=on. Only effective when BOTH block_private_ips is on AND
+    // allowed_hosts is set. Default (unset → off) keeps private IPs
+    // always blocked regardless of allowed_hosts membership.
+    int allow_private_ips_for_allowed;  // -1=unset, 0=off, 1=on
     // Cached URI of the merged server config that owns the active
     // cache settings. Each child process uses this to lazy-init
     // InitCache once per cache_backend on first request, then skips.
@@ -88,6 +96,7 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     conf->enable_mesi = 0;
     conf->allowed_hosts = apr_array_make(p, 4, sizeof(const char *));
     conf->block_private_ips = -1;  // -1 = unset, default will be applied in filter
+    conf->allow_private_ips_for_allowed = -1;  // -1 = unset, default off
     conf->cache_backend = "";
     conf->cache_size = 0;
     conf->cache_ttl = -1;  // -1 = unset (no expiry)
@@ -109,6 +118,9 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     conf->enable_mesi = (add->enable_mesi != 0) ? add->enable_mesi : base->enable_mesi;
     conf->allowed_hosts = (add->allowed_hosts->nelts > 0) ? add->allowed_hosts : base->allowed_hosts;
     conf->block_private_ips = (add->block_private_ips != -1) ? add->block_private_ips : base->block_private_ips;
+    conf->allow_private_ips_for_allowed = (add->allow_private_ips_for_allowed != -1)
+        ? add->allow_private_ips_for_allowed
+        : base->allow_private_ips_for_allowed;
     // Cache config: child overrides parent when child explicitly sets a
     // backend ("" means "inherit from base"); size/ttl use 0 (unconfigured)
     // sentinel so add's explicit value wins over base's explicit value.
@@ -141,6 +153,7 @@ static apr_status_t mesi_child_cleanup(void *data) {
     }
     EsiParse = NULL;
     EsiParseWithConfig = NULL;
+    EsiParseWithConfigEx = NULL;
     EsiFreeString = NULL;
     EsiInitCache = NULL;
     EsiInitCacheWithConfig = NULL;
@@ -184,6 +197,16 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
         EsiParseWithConfig = NULL;
         (void) dlerror();
     }
+    // ParseWithConfigEx is optional: it adds the allowPrivateIPsForAllowedHosts
+    // parameter. When present, the filter uses it so the
+    // MesiAllowPrivateIPsForAllowedHosts directive takes effect. Older
+    // libgomesi builds without it fall back to ParseWithConfig (bypass
+    // disabled) — the directive is then a no-op with a logged warning.
+    EsiParseWithConfigEx = (ParseWithConfigExFunc)dlsym(go_module, "ParseWithConfigEx");
+    if (dlerror() != NULL) {
+        EsiParseWithConfigEx = NULL;
+        (void) dlerror();
+    }
     EsiFreeString = (FreeFunc)dlsym(go_module, "FreeString");
     if (dlerror() != NULL) {
         EsiFreeString = NULL;
@@ -214,6 +237,7 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
         go_module = NULL;
         EsiParse = NULL;
         EsiParseWithConfig = NULL;
+        EsiParseWithConfigEx = NULL;
         EsiFreeString = NULL;
         EsiInitCache = NULL;
         EsiInitCacheWithConfig = NULL;
@@ -474,6 +498,12 @@ static const char *set_allowed_hosts(cmd_parms *cmd, void *cfg, const char *arg)
 static const char *set_block_private_ips(cmd_parms *cmd, void *cfg, int flag) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
     conf->block_private_ips = flag;
+    return NULL;
+}
+
+static const char *set_allow_private_for_allowed(cmd_parms *cmd, void *cfg, int flag) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    conf->allow_private_ips_for_allowed = flag;
     return NULL;
 }
 
@@ -960,6 +990,8 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     }
 
     int block_private = (conf->block_private_ips != -1) ? conf->block_private_ips : 1;
+    int allow_private_for_allowed = (conf->allow_private_ips_for_allowed != -1)
+        ? conf->allow_private_ips_for_allowed : 0;
 
     if (!EsiParse && !EsiParseWithConfig) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r, "mesi: libgomesi not loaded");
@@ -973,7 +1005,19 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     char *base_url = build_base_url(f->r, f->r->pool);
     char *esi = NULL;
 
-    if (EsiParseWithConfig) {
+    if (EsiParseWithConfigEx) {
+        // Extended entry point: honours MesiAllowPrivateIPsForAllowedHosts.
+        esi = EsiParseWithConfigEx(html, 5, base_url, allowed_hosts_str,
+                                   block_private, allow_private_for_allowed);
+    } else if (EsiParseWithConfig) {
+        if (allow_private_for_allowed) {
+            // Directive set but libgomesi lacks ParseWithConfigEx — the
+            // bypass cannot be honoured, so warn loudly instead of
+            // silently ignoring the operator's intent.
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+                "mesi: MesiAllowPrivateIPsForAllowedHosts set but libgomesi "
+                "lacks ParseWithConfigEx; bypass disabled. Upgrade libgomesi.so.");
+        }
         esi = EsiParseWithConfig(html, 5, base_url, allowed_hosts_str, block_private);
     } else {
         // ParseWithConfig not available - check if security features are configured
@@ -1029,6 +1073,7 @@ static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("EnableMesi", set_enable_mesi, NULL, RSRC_CONF, "Enable or disable the Mesi module"),
     AP_INIT_RAW_ARGS("MesiAllowedHosts", set_allowed_hosts, NULL, RSRC_CONF, "Space-separated list of allowed hostnames for ESI includes"),
     AP_INIT_FLAG("MesiBlockPrivateIPs", set_block_private_ips, NULL, RSRC_CONF, "Enable or disable private IP blocking (default: On)"),
+    AP_INIT_FLAG("MesiAllowPrivateIPsForAllowedHosts", set_allow_private_for_allowed, NULL, RSRC_CONF, "Allow private IP access for hosts in MesiAllowedHosts when MesiBlockPrivateIPs is On (default: Off)"),
     AP_INIT_TAKE1("MesiCacheBackend", set_cache_backend, NULL, RSRC_CONF, "Cache backend: \"memory\", \"redis\", \"memcached\" (off when empty). Default: off"),
     AP_INIT_TAKE1("MesiCacheSize", set_cache_size, NULL, RSRC_CONF, "Memory cache max entries (1..1000000). Default: 10000"),
     AP_INIT_TAKE1("MesiCacheTTL", set_cache_ttl, NULL, RSRC_CONF, "Memory cache entry TTL in seconds (0..86400). Default: 0 (no expiry)"),

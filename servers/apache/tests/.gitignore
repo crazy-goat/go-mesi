@@ -17,3 +17,6 @@
 !ssrf-allowed.html
 !ssrf-blocked.html
 !ssrf-localhost.html
+!ssrf-allow-private-on.html
+!ssrf-allow-private-off.html
+!ssrf-allow-private-notallowed.html

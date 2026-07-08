@@ -191,6 +191,23 @@ func Parse(input *C.char, maxDepth C.int, defaultUrl *C.char) *C.char {
 //
 //export ParseWithConfig
 func ParseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int) *C.char {
+	return parseWithConfig(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, 0)
+}
+
+// ParseWithConfigEx is an extended variant of ParseWithConfig that also
+// accepts allowPrivateIPsForAllowedHosts. When set to 1, hosts present in
+// allowedHosts are permitted to resolve to private/reserved IP addresses
+// even when blockPrivateIPs is enabled (see EsiParserConfig.
+// AllowPrivateIPsForAllowedHosts). This is the ABI-safe path for server
+// integrations that need the bypass; ParseWithConfig keeps its original
+// 5-argument signature so existing callers (nginx, php-ext) are unaffected.
+//
+//export ParseWithConfigEx
+func ParseWithConfigEx(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int) *C.char {
+	return parseWithConfig(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts)
+}
+
+func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int) *C.char {
 	goInput := C.GoString(input)
 	goMaxDepth := int(maxDepth)
 	goDefaultUrl := C.GoString(defaultUrl)
@@ -202,11 +219,12 @@ func ParseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedH
 	}
 
 	config := mesi.EsiParserConfig{
-		DefaultUrl:      goDefaultUrl,
-		MaxDepth:        uint(goMaxDepth),
-		Timeout:         30 * time.Second,
-		AllowedHosts:    hosts,
-		BlockPrivateIPs: blockPrivateIPs != 0,
+		DefaultUrl:                    goDefaultUrl,
+		MaxDepth:                      uint(goMaxDepth),
+		Timeout:                       30 * time.Second,
+		AllowedHosts:                  hosts,
+		BlockPrivateIPs:               blockPrivateIPs != 0,
+		AllowPrivateIPsForAllowedHosts: allowPrivateIPsForAllowedHosts != 0,
 	}
 	applySharedConfig(&config)
 	result := mesi.MESIParse(goInput, config)
