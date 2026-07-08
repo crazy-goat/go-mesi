@@ -1,0 +1,44 @@
+# Traefik Allowed Hosts (SSRF whitelist) Configuration Example
+#
+# This example shows how to restrict ESI include destinations to a host
+# whitelist using the `allowedHosts` option. This is the effective SSRF
+# control for the Traefik plugin, because the dial-time private-IP blocking
+# transport is stubbed under Yaegi.
+#
+# Matching is exact or subdomain-suffix: `example.com` matches
+# `sub.example.com`. The `.` boundary prevents suffix injection
+# (`evil.com` does NOT match `example.com`).
+#
+# Usage:
+#   Include this in your Traefik dynamic configuration (esi-configuration.yml)
+#   or in your Docker/Kubernetes Traefik config.
+
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          maxDepth: 5
+          # Only fetch ESI includes to these hosts (and their subdomains).
+          # Empty list (default) allows all hosts — always set this in
+          # untrusted environments.
+          allowedHosts:
+            - backend.internal
+            - cdn.trusted.com
+          # Keep dial-time private-IP blocking on (default true) for the
+          # platforms where it is active; under Yaegi it is stubbed, so
+          # allowedHosts is what actually restricts destinations.
+          blockPrivateIPs: true
+
+  routers:
+    my-app:
+      middlewares:
+        - mesi
+      service: my-app
+      rule: Host(`example.com`)
+
+  services:
+    my-app:
+      loadBalancer:
+        servers:
+          - url: http://backend:8080
