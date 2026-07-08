@@ -399,6 +399,29 @@ else
 fi
 
 docker compose down
+docker compose up -d --wait
+
+echo "=== Test 25: Shared HTTP client enabled (#178) ==="
+RESPONSE=$(curl -s http://localhost:8083/shared-http-client.html)
+OCCURRENCES=$(echo "$RESPONSE" | grep -o "shared fragment from backend" | wc -l | tr -d ' ')
+if [ "$OCCURRENCES" -ne 2 ]; then
+    echo "FAIL: Expected exactly 2 fragment occurrences with MesiSharedHTTPClient On, got $OCCURRENCES"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+# The NOTICE log proves libgomesi InitHTTPClient was wired in child_init.
+INIT_LOG=$(docker exec apache-apache-1 grep -c "mesi: shared HTTP client initialized" /var/log/apache2/error.log 2>/dev/null || echo 0)
+if [ "$INIT_LOG" -gt 0 ]; then
+    echo "PASS: Shared HTTP client initialized by libgomesi ($INIT_LOG log line(s) in apache error.log)"
+    docker exec apache-apache-1 grep "mesi: shared HTTP client initialized" /var/log/apache2/error.log | head -1
+else
+    echo "FAIL: No 'mesi: shared HTTP client initialized' log line found — MesiSharedHTTPClient wiring broken"
+    docker compose down
+    exit 1
+fi
+
+docker compose down
 
 echo ""
 echo "=== All tests passed ==="

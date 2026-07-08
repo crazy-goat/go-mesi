@@ -22,6 +22,8 @@ typedef void (*FreeFunc)(char *);
 typedef int (*InitCacheFunc)(char *, int, int);
 typedef int (*InitCacheWithConfigFunc)(char *, int, int, char *);
 typedef void (*FreeCacheFunc)(void);
+typedef void (*InitHTTPClientFunc)(int);
+typedef void (*FreeHTTPClientFunc)(void);
 
 static void *go_module = NULL;
 static ParseFunc EsiParse = NULL;
@@ -31,11 +33,18 @@ static FreeFunc EsiFreeString = NULL;
 static InitCacheFunc EsiInitCache = NULL;
 static InitCacheWithConfigFunc EsiInitCacheWithConfig = NULL;
 static FreeCacheFunc EsiFreeCache = NULL;
+static InitHTTPClientFunc EsiInitHTTPClient = NULL;
+static FreeHTTPClientFunc EsiFreeHTTPClient = NULL;
 // Tracks whether EsiInitCache has already been called for this worker
 // process. libgomesi keeps cache state in package-level vars; calling
 // InitCache() multiple times resets it, so we only invoke it once and
 // guard subsequent requests. Reset to 0 in mesi_child_cleanup().
 static int cache_initialized = 0;
+// Tracks whether EsiInitHTTPClient has already been called for this worker
+// process. libgomesi keeps the shared client in a package-level var; calling
+// InitHTTPClient() multiple times resets it, so we only invoke it once and
+// guard subsequent requests. Reset to 0 in mesi_child_cleanup().
+static int http_client_initialized = 0;
 
 // Test-only: set MESI_FORCE_FLATTEN_ERROR=1 in the environment to force
 // flatten_brigade() to return 0, simulating a brigade flatten failure.
@@ -57,6 +66,13 @@ typedef struct {
     // allowed_hosts is set. Default (unset → off) keeps private IPs
     // always blocked regardless of allowed_hosts membership.
     int allow_private_ips_for_allowed;  // -1=unset, 0=off, 1=on
+    // Share a single http.Client across all <esi:include> fetches in this
+    // worker process for TCP/TLS connection pooling. -1=unset, 0=off, 1=on.
+    // Default (unset → off) keeps the original per-include client creation
+    // so behaviour is unchanged unless an operator opts in. The shared
+    // client is created in mesi_child_init via libgomesi InitHTTPClient and
+    // honours the effective MesiBlockPrivateIPs setting at startup.
+    int shared_http_client;  // -1=unset, 0=off, 1=on
     // Cached URI of the merged server config that owns the active
     // cache settings. Each child process uses this to lazy-init
     // InitCache once per cache_backend on first request, then skips.
@@ -97,6 +113,7 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     conf->allowed_hosts = apr_array_make(p, 4, sizeof(const char *));
     conf->block_private_ips = -1;  // -1 = unset, default will be applied in filter
     conf->allow_private_ips_for_allowed = -1;  // -1 = unset, default off
+    conf->shared_http_client = -1;  // -1 = unset, default off
     conf->cache_backend = "";
     conf->cache_size = 0;
     conf->cache_ttl = -1;  // -1 = unset (no expiry)
@@ -121,6 +138,9 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     conf->allow_private_ips_for_allowed = (add->allow_private_ips_for_allowed != -1)
         ? add->allow_private_ips_for_allowed
         : base->allow_private_ips_for_allowed;
+    conf->shared_http_client = (add->shared_http_client != -1)
+        ? add->shared_http_client
+        : base->shared_http_client;
     // Cache config: child overrides parent when child explicitly sets a
     // backend ("" means "inherit from base"); size/ttl use 0 (unconfigured)
     // sentinel so add's explicit value wins over base's explicit value.
@@ -144,6 +164,10 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
 }
 
 static apr_status_t mesi_child_cleanup(void *data) {
+    if (EsiFreeHTTPClient) {
+        EsiFreeHTTPClient();
+    }
+    http_client_initialized = 0;
     if (EsiFreeCache) {
         EsiFreeCache();
     }
@@ -225,6 +249,16 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     EsiFreeCache = (FreeCacheFunc)dlsym(go_module, "FreeCache");
     if (dlerror() != NULL) {
         EsiFreeCache = NULL;
+        (void) dlerror();
+    }
+    EsiInitHTTPClient = (InitHTTPClientFunc)dlsym(go_module, "InitHTTPClient");
+    if (dlerror() != NULL) {
+        EsiInitHTTPClient = NULL;
+        (void) dlerror();
+    }
+    EsiFreeHTTPClient = (FreeHTTPClientFunc)dlsym(go_module, "FreeHTTPClient");
+    if (dlerror() != NULL) {
+        EsiFreeHTTPClient = NULL;
         (void) dlerror();
     }
 
@@ -472,6 +506,49 @@ static int mesi_init_cache(mesi_config *conf, request_rec *r) {
     return 0;
 }
 
+// mesi_init_http_client lazily initializes the shared, SSRF-safe HTTP
+// client for this worker process when MesiSharedHTTPClient is On. Called
+// once per process from mesi_response_filter on the first request that
+// touches a config with the directive set. Returns 0 on success or
+// "no shared client configured"; -1 if InitHTTPClient rejected the
+// configuration (already logged). The effective MesiBlockPrivateIPs
+// setting (default On) is baked into the transport at startup; changing
+// it later requires a restart (documented). Guarded by
+// http_client_initialized so repeated requests are no-ops.
+static int mesi_init_http_client(mesi_config *conf, request_rec *r) {
+    if (http_client_initialized) {
+        return 0;
+    }
+    if (conf->shared_http_client != 1) {
+        return 0;  // Directive off / unset — nothing to do.
+    }
+    http_client_initialized = 1;  // Mark before probing so a failing dlsym is not retried.
+
+    if (!EsiInitHTTPClient) {
+        if (go_module) {
+            (void) dlerror();
+            EsiInitHTTPClient = (InitHTTPClientFunc)
+                dlsym(go_module, "InitHTTPClient");
+            if (dlerror() != NULL) {
+                EsiInitHTTPClient = NULL;
+            }
+        }
+    }
+    if (!EsiInitHTTPClient) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+            "mesi: MesiSharedHTTPClient set but libgomesi lacks "
+            "InitHTTPClient; shared client disabled. Upgrade libgomesi.so.");
+        http_client_initialized = 0;  // Allow next request to retry.
+        return -1;
+    }
+
+    int bp = (conf->block_private_ips != -1) ? conf->block_private_ips : 1;
+    EsiInitHTTPClient(bp);
+    ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r,
+        "mesi: shared HTTP client initialized (blockPrivateIPs=%d)", bp);
+    return 0;
+}
+
 static const char *set_enable_mesi(cmd_parms *cmd, void *cfg, int flag) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
     conf->enable_mesi = flag;
@@ -504,6 +581,12 @@ static const char *set_block_private_ips(cmd_parms *cmd, void *cfg, int flag) {
 static const char *set_allow_private_for_allowed(cmd_parms *cmd, void *cfg, int flag) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
     conf->allow_private_ips_for_allowed = flag;
+    return NULL;
+}
+
+static const char *set_shared_http_client(cmd_parms *cmd, void *cfg, int flag) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    conf->shared_http_client = flag;
     return NULL;
 }
 
@@ -967,6 +1050,15 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         (void) mesi_init_cache(conf, f->r);
     }
 
+    // Initialize the shared HTTP client on first request when
+    // MesiSharedHTTPClient is On. The client lives across requests in this
+    // worker process; once initialized, repeated calls are no-ops (guarded
+    // by http_client_initialized). Errors are logged; on -1 we proceed with
+    // per-include clients.
+    if (conf->shared_http_client == 1) {
+        (void) mesi_init_http_client(conf, f->r);
+    }
+
     // Build allowed_hosts string from config (O(n) time, single allocation)
     char *allowed_hosts_str = "";
     if (conf->allowed_hosts && conf->allowed_hosts->nelts > 0) {
@@ -1074,6 +1166,7 @@ static const command_rec mesi_directives[] = {
     AP_INIT_RAW_ARGS("MesiAllowedHosts", set_allowed_hosts, NULL, RSRC_CONF, "Space-separated list of allowed hostnames for ESI includes"),
     AP_INIT_FLAG("MesiBlockPrivateIPs", set_block_private_ips, NULL, RSRC_CONF, "Enable or disable private IP blocking (default: On)"),
     AP_INIT_FLAG("MesiAllowPrivateIPsForAllowedHosts", set_allow_private_for_allowed, NULL, RSRC_CONF, "Allow private IP access for hosts in MesiAllowedHosts when MesiBlockPrivateIPs is On (default: Off)"),
+    AP_INIT_FLAG("MesiSharedHTTPClient", set_shared_http_client, NULL, RSRC_CONF, "Share HTTP client across ESI includes for connection pooling (default: Off)"),
     AP_INIT_TAKE1("MesiCacheBackend", set_cache_backend, NULL, RSRC_CONF, "Cache backend: \"memory\", \"redis\", \"memcached\" (off when empty). Default: off"),
     AP_INIT_TAKE1("MesiCacheSize", set_cache_size, NULL, RSRC_CONF, "Memory cache max entries (1..1000000). Default: 10000"),
     AP_INIT_TAKE1("MesiCacheTTL", set_cache_ttl, NULL, RSRC_CONF, "Memory cache entry TTL in seconds (0..86400). Default: 0 (no expiry)"),
