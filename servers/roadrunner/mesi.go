@@ -40,6 +40,7 @@ type Config struct {
 	CacheMemcachedServers []string `mapstructure:"cache_memcached_servers"`
 	Timeout               string   `mapstructure:"timeout"`
 	IncludeErrorMarker    string   `mapstructure:"include_error_marker"`
+	BlockPrivateIPs       *bool    `mapstructure:"block_private_ips"`
 }
 
 func CreateConfig() *Config {
@@ -53,6 +54,7 @@ type Plugin struct {
 	cache           mesi.Cache
 	cacheTTL        time.Duration
 	sharedTransport *http.Transport
+	blockPrivateIPs bool
 	closeFn         func() error
 }
 
@@ -65,9 +67,17 @@ func (p *Plugin) Init() error {
 		p.config.MaxDepth = 5
 	}
 
+	// BlockPrivateIPs defaults to true (secure by default). A nil pointer
+	// means "unset" and keeps the safe default; an explicit false opts out
+	// of dial-time SSRF protection (e.g. for internal service meshes).
+	p.blockPrivateIPs = true
+	if p.config.BlockPrivateIPs != nil {
+		p.blockPrivateIPs = *p.config.BlockPrivateIPs
+	}
+
 	if p.config.SharedHTTPClient {
 		p.sharedTransport = mesi.NewSSRFSafeTransport(mesi.EsiParserConfig{
-			BlockPrivateIPs: true,
+			BlockPrivateIPs: p.blockPrivateIPs,
 		})
 	}
 
@@ -128,9 +138,9 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 				Context:            r.Context(),
 				MaxDepth:           uint(p.config.MaxDepth),
 				DefaultUrl:         middleware.GetDefaultUrl(r),
-				Timeout:            10 * time.Second,
-				BlockPrivateIPs:    true,
-				IncludeErrorMarker: p.config.IncludeErrorMarker,
+			Timeout:            10 * time.Second,
+			BlockPrivateIPs:    p.blockPrivateIPs,
+			IncludeErrorMarker: p.config.IncludeErrorMarker,
 			}
 
 			if p.cache != nil {

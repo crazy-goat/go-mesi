@@ -39,6 +39,7 @@ http:
 |--------|------|---------|-------------|
 | `max_depth` | int | `5` | Maximum ESI nesting depth. Set to `0` to disable ESI processing. |
 | `shared_http_client` | bool | `false` | Reuse a single HTTP client for all ESI includes (SSRF-safe, connection pooling). |
+| `block_private_ips` | bool | `true` | Block ESI includes to private/reserved IPs (loopback, RFC 1918, CGNAT, link-local, cloud metadata `169.254.169.254`, benchmark/documentation ranges) at dial time. Set `false` to allow internal includes (e.g. service meshes). |
 | `timeout` | string | `"10s"` | Maximum time for ESI processing (Go duration format). |
 | `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
 | `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`, `"memcached"`. |
@@ -58,6 +59,16 @@ http:
   middleware:
     mesi:
       shared_http_client: true
+```
+
+#### Block Private IPs (SSRF protection)
+By default, ESI includes to private/reserved IP ranges (loopback, RFC 1918, CGNAT, link-local, cloud metadata `169.254.169.254`, benchmark/documentation ranges) are blocked at dial time. Set `block_private_ips: false` only when you intentionally include from internal/private backends (e.g. an internal service mesh) and accept the SSRF exposure.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      block_private_ips: true
 ```
 
 ### Cache backends
