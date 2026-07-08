@@ -40,6 +40,11 @@ static FreeHTTPClientFunc EsiFreeHTTPClient = NULL;
 // InitCache() multiple times resets it, so we only invoke it once and
 // guard subsequent requests. Reset to 0 in mesi_child_cleanup().
 static int cache_initialized = 0;
+// Tracks whether EsiInitHTTPClient has already been called for this worker
+// process. libgomesi keeps the shared client in a package-level var; calling
+// InitHTTPClient() multiple times resets it, so we only invoke it once and
+// guard subsequent requests. Reset to 0 in mesi_child_cleanup().
+static int http_client_initialized = 0;
 
 // Test-only: set MESI_FORCE_FLATTEN_ERROR=1 in the environment to force
 // flatten_brigade() to return 0, simulating a brigade flatten failure.
@@ -162,6 +167,7 @@ static apr_status_t mesi_child_cleanup(void *data) {
     if (EsiFreeHTTPClient) {
         EsiFreeHTTPClient();
     }
+    http_client_initialized = 0;
     if (EsiFreeCache) {
         EsiFreeCache();
     }
@@ -254,28 +260,6 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     if (dlerror() != NULL) {
         EsiFreeHTTPClient = NULL;
         (void) dlerror();
-    }
-
-    // When MesiSharedHTTPClient is On, create the shared, SSRF-safe HTTP
-    // client once per worker process so repeated <esi:include> fetches to
-    // the same backend reuse TCP/TLS connections. The effective
-    // MesiBlockPrivateIPs setting (default On) is baked into the transport
-    // at startup; changing it later requires a restart (documented).
-    mesi_config *child_conf = (mesi_config *) ap_get_module_config(
-        s->module_config, &mesi_module);
-    if (child_conf && child_conf->shared_http_client == 1) {
-        if (EsiInitHTTPClient) {
-            int bp = (child_conf->block_private_ips != -1)
-                         ? child_conf->block_private_ips
-                         : 1;
-            EsiInitHTTPClient(bp);
-            ap_log_error(APLOG_MARK, APLOG_NOTICE, 0, s,
-                "mesi: shared HTTP client initialized (blockPrivateIPs=%d)", bp);
-        } else {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                "mesi: MesiSharedHTTPClient set but libgomesi lacks "
-                "InitHTTPClient; shared client disabled. Upgrade libgomesi.so.");
-        }
     }
 
     // Require at least one parse function and FreeString to avoid memory leaks
@@ -519,6 +503,49 @@ static int mesi_init_cache(mesi_config *conf, request_rec *r) {
     ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r,
         "mesi: cache initialized (backend=%s, size=%d, ttl=%ds)",
         conf->cache_backend, size, ttl);
+    return 0;
+}
+
+// mesi_init_http_client lazily initializes the shared, SSRF-safe HTTP
+// client for this worker process when MesiSharedHTTPClient is On. Called
+// once per process from mesi_response_filter on the first request that
+// touches a config with the directive set. Returns 0 on success or
+// "no shared client configured"; -1 if InitHTTPClient rejected the
+// configuration (already logged). The effective MesiBlockPrivateIPs
+// setting (default On) is baked into the transport at startup; changing
+// it later requires a restart (documented). Guarded by
+// http_client_initialized so repeated requests are no-ops.
+static int mesi_init_http_client(mesi_config *conf, request_rec *r) {
+    if (http_client_initialized) {
+        return 0;
+    }
+    if (conf->shared_http_client != 1) {
+        return 0;  // Directive off / unset — nothing to do.
+    }
+    http_client_initialized = 1;  // Mark before probing so a failing dlsym is not retried.
+
+    if (!EsiInitHTTPClient) {
+        if (go_module) {
+            (void) dlerror();
+            EsiInitHTTPClient = (InitHTTPClientFunc)
+                dlsym(go_module, "InitHTTPClient");
+            if (dlerror() != NULL) {
+                EsiInitHTTPClient = NULL;
+            }
+        }
+    }
+    if (!EsiInitHTTPClient) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+            "mesi: MesiSharedHTTPClient set but libgomesi lacks "
+            "InitHTTPClient; shared client disabled. Upgrade libgomesi.so.");
+        http_client_initialized = 0;  // Allow next request to retry.
+        return -1;
+    }
+
+    int bp = (conf->block_private_ips != -1) ? conf->block_private_ips : 1;
+    EsiInitHTTPClient(bp);
+    ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r,
+        "mesi: shared HTTP client initialized (blockPrivateIPs=%d)", bp);
     return 0;
 }
 
@@ -1021,6 +1048,15 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     if (conf->cache_backend && conf->cache_backend[0] != '\0') {
         /* Errors here are logged; on -1 we proceed without cache. */
         (void) mesi_init_cache(conf, f->r);
+    }
+
+    // Initialize the shared HTTP client on first request when
+    // MesiSharedHTTPClient is On. The client lives across requests in this
+    // worker process; once initialized, repeated calls are no-ops (guarded
+    // by http_client_initialized). Errors are logged; on -1 we proceed with
+    // per-include clients.
+    if (conf->shared_http_client == 1) {
+        (void) mesi_init_http_client(conf, f->r);
     }
 
     // Build allowed_hosts string from config (O(n) time, single allocation)

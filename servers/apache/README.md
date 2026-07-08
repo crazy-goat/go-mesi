@@ -99,12 +99,13 @@ MesiCacheTTL 60
 - `MesiSharedHTTPClient on|off` — Share a single SSRF-safe `http.Client`
    across all `<esi:include>` fetches in the worker process for TCP/TLS
    connection pooling (reuses keep-alive connections to the same backend).
-   Default: Off (each include creates its own client — the historical
-   behaviour). The effective `MesiBlockPrivateIPs` setting (default On) is
-   baked into the shared transport at startup; changing it later requires a
-   restart. Requires a `libgomesi.so` built with the `InitHTTPClient`
-   entry point (#178); older builds log an error and fall back to
-   per-include clients.
+   The shared client is created lazily on the first request that uses this
+   directive (once per worker process). Default: Off (each include creates
+   its own client — the historical behaviour). The effective
+   `MesiBlockPrivateIPs` setting (default On) is baked into the shared
+   transport at startup; changing it later requires a restart. Requires a
+   `libgomesi.so` built with the `InitHTTPClient` entry point (#178); older
+   builds log an error and fall back to per-include clients.
 - `MesiCacheBackend memory|redis|memcached` — Cache backend. Accepts
   only `memory`, `redis`, `memcached`, or empty (disable); any other
   value (including a typo) is rejected at startup so a misconfig never
