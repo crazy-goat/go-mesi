@@ -9,7 +9,7 @@ docker compose up -d
 
 echo "Waiting for services to be ready..."
 for i in $(seq 1 30); do
-    if curl -sf -H "Host: domain.com" http://localhost:8080/ >/dev/null 2>&1; then
+    if curl -sf -H "Host: domain.com" http://localhost:18080/ >/dev/null 2>&1; then
         echo "Services ready"
         break
     fi
@@ -23,7 +23,7 @@ for i in $(seq 1 30); do
 done
 
 echo "=== Test 1: Traefik starts with mesi plugin ==="
-RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: domain.com" http://localhost:8080/)
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: domain.com" http://localhost:18080/)
 if [ "$RESPONSE" = "200" ]; then
     echo "PASS: Traefik responds with 200"
 else
@@ -33,7 +33,7 @@ else
 fi
 
 echo "=== Test 2: ESI remove ==="
-RESPONSE=$(curl -s -H "Host: domain.com" http://localhost:8080/)
+RESPONSE=$(curl -s -H "Host: domain.com" http://localhost:18080/)
 if echo "$RESPONSE" | grep -q "Failed to include ESI"; then
     echo "FAIL: ESI remove content still present"
     echo "Response: $RESPONSE"
@@ -44,7 +44,7 @@ else
 fi
 
 echo "=== Test 3: HTML content served through mesi plugin ==="
-RESPONSE=$(curl -s -H "Host: domain.com" http://localhost:8080/)
+RESPONSE=$(curl -s -H "Host: domain.com" http://localhost:18080/)
 if echo "$RESPONSE" | grep -q "Welcome to ESI Test"; then
     echo "PASS: HTML content served through mesi plugin"
 else
@@ -55,7 +55,7 @@ else
 fi
 
 echo "=== Test 4: Content-Length correctness ==="
-HEADERS=$(curl -s -D - -H "Host: domain.com" http://localhost:8080/ -o /tmp/mesi-traefik-body.txt 2>/dev/null)
+HEADERS=$(curl -s -D - -H "Host: domain.com" http://localhost:18080/ -o /tmp/mesi-traefik-body.txt 2>/dev/null)
 ACTUAL_BODY_SIZE=$(wc -c < /tmp/mesi-traefik-body.txt)
 HEADER_CL=$(echo "$HEADERS" | grep -i "Content-Length" | awk '{print $2}' | tr -d '\r')
 if [ -n "$HEADER_CL" ]; then
@@ -74,7 +74,7 @@ fi
 rm -f /tmp/mesi-traefik-body.txt
 
 echo "=== Test 5: ESI raw include tag removed from response ==="
-RESPONSE=$(curl -s -H "Host: domain.com" http://localhost:8080/)
+RESPONSE=$(curl -s -H "Host: domain.com" http://localhost:18080/)
 if echo "$RESPONSE" | grep -q "<esi:include"; then
     echo "FAIL: Raw <esi:include> tag still present in response"
     echo "Response: $RESPONSE"
@@ -85,7 +85,7 @@ else
 fi
 
 echo "=== Test 6: Non-HTML content passthrough ==="
-HEADERS=$(curl -sI -H "Host: domain.com" http://localhost:8080/esi)
+HEADERS=$(curl -sI -H "Host: domain.com" http://localhost:18080/esi)
 CT=$(echo "$HEADERS" | grep -i "Content-Type" || true)
 if echo "$CT" | grep -qi "text/html"; then
     echo "PASS: /esi endpoint returns text/html (processed by mesi)"

@@ -5,7 +5,7 @@ services:
       context: ../..
       dockerfile: servers/apache/Dockerfile
     ports:
-      - "8080:80"
+      - "18080:80"
       - "8081:8081"
       - "8082:8082"
       - "8083:8083"

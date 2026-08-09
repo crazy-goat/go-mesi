@@ -8,7 +8,7 @@ if [ "${CI:-}" != "true" ]; then
 
   echo "Waiting for PHP extension server to be ready..."
   for i in $(seq 1 60); do
-      if curl -s -o /dev/null http://localhost:8080/health 2>/dev/null; then
+      if curl -s -o /dev/null http://localhost:18080/health 2>/dev/null; then
           echo "PHP extension server ready after $((i * 2))s"
           break
       fi
@@ -24,7 +24,7 @@ fi
 
 echo ""
 echo "=== Test 1: ESI comment unwrapping ==="
-RESPONSE=$(curl -s http://localhost:8080/)
+RESPONSE=$(curl -s http://localhost:18080/)
 if echo "$RESPONSE" | grep -q "Unwrapped content"; then
     echo "PASS: ESI comment unwrapped correctly"
 else
@@ -36,7 +36,7 @@ fi
 
 echo ""
 echo "=== Test 2: ESI include ==="
-RESPONSE=$(curl -s http://localhost:8080/)
+RESPONSE=$(curl -s http://localhost:18080/)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "PASS: ESI include processed correctly"
 else
@@ -48,7 +48,7 @@ fi
 
 echo ""
 echo "=== Test 3: ESI remove ==="
-RESPONSE=$(curl -s http://localhost:8080/)
+RESPONSE=$(curl -s http://localhost:18080/)
 if echo "$RESPONSE" | grep -q "Failed to include ESI"; then
     echo "FAIL: ESI remove content still present"
     echo "Response: $RESPONSE"
@@ -60,7 +60,7 @@ fi
 
 echo ""
 echo "=== Test 4: ESI remove (dedicated route) ==="
-RESPONSE=$(curl -s http://localhost:8080/remove)
+RESPONSE=$(curl -s http://localhost:18080/remove)
 if echo "$RESPONSE" | grep -q "remove this"; then
     echo "FAIL: ESI remove content still present in dedicated route"
     echo "Response: $RESPONSE"
@@ -78,7 +78,7 @@ fi
 
 echo ""
 echo "=== Test 5: Non-HTML content (text/plain) - ESI tags are processed ==="
-RESPONSE=$(curl -s http://localhost:8080/plain)
+RESPONSE=$(curl -s http://localhost:18080/plain)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "PASS: text/plain content had ESI include resolved"
 else
@@ -87,7 +87,7 @@ fi
 
 echo ""
 echo "=== Test 6: JSON content - ESI tags are processed ==="
-RESPONSE=$(curl -s http://localhost:8080/json)
+RESPONSE=$(curl -s http://localhost:18080/json)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "PASS: JSON content had ESI include resolved"
 else
@@ -96,7 +96,7 @@ fi
 
 echo ""
 echo "=== Test 7: Content-Type preserved ==="
-HEADERS=$(curl -sI http://localhost:8080/)
+HEADERS=$(curl -sI http://localhost:18080/)
 if echo "$HEADERS" | grep -qi "text/html"; then
     echo "PASS: Content-Type is text/html"
 else
@@ -109,7 +109,7 @@ fi
 echo ""
 echo "=== Test 8: Content-Length correctness ==="
 TMPFILE=$(mktemp)
-HEADERS=$(curl -sD - http://localhost:8080/remove -o "$TMPFILE" 2>/dev/null)
+HEADERS=$(curl -sD - http://localhost:18080/remove -o "$TMPFILE" 2>/dev/null)
 ACTUAL_BODY_SIZE=$(wc -c < "$TMPFILE")
 HEADER_CL=$(echo "$HEADERS" | grep -i "Content-Length" | awk '{print $2}' | tr -d '\r')
 if [ -n "$HEADER_CL" ]; then

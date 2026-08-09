@@ -30,8 +30,8 @@ start_proxy() {
 
 trap cleanup EXIT
 
-TEST_SERVER_PORT=8080
-PROXY_PORT=9090
+TEST_SERVER_PORT=18080
+PROXY_PORT=19090
 
 echo "=== Building binaries ==="
 go build -o "$PROXY_BINARY" "$SCRIPT_DIR"
