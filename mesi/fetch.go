@@ -17,23 +17,24 @@ var (
 	ErrTimeBudgetExceeded = errors.New("exceeded time budget")
 
 	inflightMu    sync.Mutex
-	inflightLocks = map[string]*sync.Mutex{}
+	inflightLocks = map[string]chan struct{}{}
 )
 
-// getInflightLock returns a per-key mutex used to serialise concurrent
-// fetches targeting the same cache key. When two ESI include workers both
-// miss the cache for an identical URL, only one worker is allowed to
-// perform the upstream fetch; the other blocks until the first worker has
-// populated the cache and then serves from it.
-func getInflightLock(cacheKey string) *sync.Mutex {
+// getInflightLock returns a per-key buffered channel (capacity 1) used to
+// serialise concurrent fetches targeting the same cache key. When two ESI
+// include workers both miss the cache for an identical URL, only one worker
+// is allowed to perform the upstream fetch; the other blocks until the first
+// worker has populated the cache and then serves from it. Acquiring the lock
+// is a send, releasing it a receive.
+func getInflightLock(cacheKey string) chan struct{} {
 	inflightMu.Lock()
 	defer inflightMu.Unlock()
-	if mu, ok := inflightLocks[cacheKey]; ok {
-		return mu
+	if ch, ok := inflightLocks[cacheKey]; ok {
+		return ch
 	}
-	mu := &sync.Mutex{}
-	inflightLocks[cacheKey] = mu
-	return mu
+	ch := make(chan struct{}, 1)
+	inflightLocks[cacheKey] = ch
+	return ch
 }
 
 func IsEsiResponse(response *http.Response) bool {
@@ -126,11 +127,6 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		ctx = context.Background()
 	}
 
-	if semaphore := config.getSemaphore(); semaphore != nil {
-		semaphore <- struct{}{}
-		defer func() { <-semaphore }()
-	}
-
 	if config.Timeout <= 0 {
 		logger.Debug("fetch_timeout", "url", requestedURL, "error", "exceeded time budget")
 		return "", false, fmt.Errorf("%w", ErrTimeBudgetExceeded)
@@ -140,9 +136,22 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	// final response-body read share the same budget, so a chain of redirects
 	// cannot restart the timeout per hop (previously each hop got a fresh
 	// client.Timeout, allowing roughly 11x the configured budget). The
-	// per-hop client Timeout below remains as a secondary per-hop bound.
+	// deadline is established before the admission-control waits below, so
+	// the semaphore acquisition and the same-key dedup wait are also bounded
+	// by the budget: a queued include can never wait longer than the timeout
+	// behind a slow earlier fetch. The per-hop client Timeout below remains
+	// as a secondary per-hop bound.
 	fetchCtx, cancel := context.WithTimeout(ctx, config.Timeout)
 	defer cancel()
+
+	if semaphore := config.getSemaphore(); semaphore != nil {
+		select {
+		case semaphore <- struct{}{}:
+		case <-fetchCtx.Done():
+			return "", false, errors.Join(ErrTimeBudgetExceeded, fetchCtx.Err())
+		}
+		defer func() { <-semaphore }()
+	}
 
 	parsed, err := url.Parse(requestedURL)
 	if err != nil {
@@ -201,15 +210,24 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	// different responses — breaking the same-page dedup guarantee that
 	// memory-backed and external caches are expected to provide.
 	if cacheKey != "" {
-		mu := getInflightLock(cacheKey)
-		mu.Lock()
+		lock := getInflightLock(cacheKey)
+		select {
+		case lock <- struct{}{}:
+			// Slot acquired: this goroutine performs the fetch.
+		case <-fetchCtx.Done():
+			return "", false, errors.Join(ErrTimeBudgetExceeded, fetchCtx.Err())
+		}
+		if fetchCtx.Err() != nil {
+			<-lock
+			return "", false, errors.Join(ErrTimeBudgetExceeded, fetchCtx.Err())
+		}
 		// Double-check: another goroutine may have populated the
-		// cache while we were waiting for the lock.
+		// cache while we were waiting for the slot.
 		if val, ok, _ := config.Cache.Get(ctx, cacheKey); ok {
-			mu.Unlock()
+			<-lock
 			return val, false, nil
 		}
-		defer mu.Unlock()
+		defer func() { <-lock }()
 	}
 
 	// Redirects are followed manually: every client below is built with

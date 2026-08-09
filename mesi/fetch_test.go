@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -705,6 +706,184 @@ func TestSingleFetchUrlExceedsTimeBudget(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFetchSemaphoreWaitBoundedByTimeout(t *testing.T) {
+	upstreamStarted := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseUpstream) }) }
+	defer release()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(upstreamStarted)
+		<-releaseUpstream
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("DONE"))
+	}))
+	defer server.Close()
+
+	sem := make(chan struct{}, 1)
+	newConfig := func(timeout time.Duration) EsiParserConfig {
+		return (EsiParserConfig{
+			DefaultUrl:      server.URL,
+			MaxDepth:        1,
+			Timeout:         timeout,
+			BlockPrivateIPs: false,
+			Logger:          DiscardLogger{},
+		}).setSemaphore(sem)
+	}
+
+	// First include occupies the only slot and blocks on the slow upstream
+	// long past the queued call's budget.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _, _ = singleFetchUrlWithContext(server.URL+"/slow", newConfig(time.Minute), context.Background())
+	}()
+	<-upstreamStarted
+
+	// The queued include must be aborted by its own deadline: it errors at
+	// ~budget instead of waiting for the slow upstream to free the slot.
+	const budget = 300 * time.Millisecond
+	start := time.Now()
+	_, _, err := singleFetchUrlWithContext(server.URL+"/slow", newConfig(budget), context.Background())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Error("queued include: expected timeout error, got nil")
+	} else if !errors.Is(err, ErrTimeBudgetExceeded) {
+		t.Errorf("queued include: expected ErrTimeBudgetExceeded, got %v", err)
+	}
+	if elapsed > 2*budget {
+		t.Errorf("queued include waited %v — semaphore wait not bounded by the timeout", elapsed)
+	}
+
+	release()
+	wg.Wait()
+}
+
+func TestFetchSameKeyDedupSingleUpstreamHit(t *testing.T) {
+	var hitCount atomic.Int32
+	slowStart := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	defer closeRelease()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitCount.Add(1)
+		close(slowStart)
+		<-release
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("DEDUP"))
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL,
+		MaxDepth:        1,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+		Cache:           NewMemoryCache(100, time.Hour),
+		CacheKeyFunc:    func(url string) string { return "dedup:" + url },
+		Logger:          DiscardLogger{},
+	}
+	url := server.URL + "/dedup"
+
+	type result struct {
+		out string
+		err error
+	}
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		out, _, err := singleFetchUrlWithContext(url, config, context.Background())
+		results <- result{out, err}
+	}()
+	<-slowStart
+
+	// Give the first goroutine time to hold the inflight slot and block on
+	// the upstream before the second goroutine queues behind it.
+	time.Sleep(50 * time.Millisecond)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		out, _, err := singleFetchUrlWithContext(url, config, context.Background())
+		results <- result{out, err}
+	}()
+
+	// Free the upstream: the owner caches the body, then the queued goroutine
+	// acquires the slot, double-checks the cache and serves from it.
+	closeRelease()
+	wg.Wait()
+	close(results)
+
+	for res := range results {
+		if res.err != nil {
+			t.Errorf("unexpected error: %v", res.err)
+		}
+		if res.out != "DEDUP" {
+			t.Errorf("unexpected output %q", res.out)
+		}
+	}
+	if got := hitCount.Load(); got != 1 {
+		t.Fatalf("expected exactly one upstream hit, got %d", got)
+	}
+}
+
+func TestFetchSemaphoreWaiterUnblockedByCancel(t *testing.T) {
+	upstreamStarted := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(upstreamStarted)
+		<-release
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("DONE"))
+	}))
+	defer server.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL,
+		MaxDepth:        1,
+		Timeout:         30 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+	// One slot only, held by the first include.
+	config = config.setSemaphore(make(chan struct{}, 1))
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_, _, _ = singleFetchUrlWithContext(server.URL+"/slow", config, ctx)
+	}()
+	<-upstreamStarted
+
+	waiterDone := make(chan struct{})
+	var waiterErr error
+	go func() {
+		defer close(waiterDone)
+		_, _, waiterErr = singleFetchUrlWithContext(server.URL+"/slow", config, ctx)
+	}()
+	time.Sleep(100 * time.Millisecond) // let the waiter queue on the semaphore
+
+	start := time.Now()
+	cancel()
+	<-waiterDone
+	elapsed := time.Since(start)
+
+	if waiterErr == nil {
+		t.Error("waiter: expected error after context cancellation, got nil")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("waiter took %v to unblock — semaphore wait is not context-aware", elapsed)
+	}
+	<-firstDone
 }
 
 func TestParseWithConfigAllowedHostsAndBlockPrivateIPs(t *testing.T) {

@@ -10,6 +10,46 @@ import (
 	"time"
 )
 
+func TestSecurityPolicyFingerprintCollisionSafety(t *testing.T) {
+	fp := func(hosts []string) string {
+		return securityPolicyFingerprint(EsiParserConfig{AllowedHosts: hosts})
+	}
+
+	// A single host entry containing a comma must not collide with two
+	// separate entries: the list is JSON-encoded, so the delimiter cannot
+	// be confused with a hostname character.
+	if fp([]string{"a,b"}) == fp([]string{"a", "b"}) {
+		t.Error(`fingerprint(["a,b"]) must differ from fingerprint(["a","b"])`)
+	}
+
+	// Order-invariance: the list is sorted before encoding.
+	if fp([]string{"b", "a"}) != fp([]string{"a", "b"}) {
+		t.Error(`fingerprint must be invariant to allowlist order`)
+	}
+
+	// Duplicate-host invariance: duplicates collapse after sorting.
+	if fp([]string{"a", "a"}) != fp([]string{"a"}) {
+		t.Error(`fingerprint must be invariant to duplicate hosts`)
+	}
+
+	// Per-host normalization still applies before encoding.
+	if fp([]string{"Backend."}) != fp([]string{"backend"}) {
+		t.Error(`fingerprint must normalize hosts (lowercase + trailing dot)`)
+	}
+
+	// IPv6 hosts contain colons; distinct addresses must stay distinct.
+	if fp([]string{"2001:db8::1"}) == fp([]string{"2001:db8::2"}) {
+		t.Error(`fingerprints of distinct IPv6 hosts must differ`)
+	}
+
+	// Distinct policies with identical host lists but different flags must
+	// produce different fingerprints.
+	if securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}, BlockPrivateIPs: true}) ==
+		securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}}) {
+		t.Error(`fingerprint must encode the BlockPrivateIPs flag`)
+	}
+}
+
 func TestHostMatches(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -32,6 +72,8 @@ func TestHostMatches(t *testing.T) {
 		{"suffix injection hyphen", "attacker-example.com", "example.com", false},
 		{"suffix injection prefix", "notexample.com", "example.com", false},
 		{"suffix injection domain", "example.com.evil.com", "example.com", false},
+		{"ipv6 exact", "::1", "::1", true},
+		{"ipv6 case-insensitive", "2001:DB8::1", "2001:db8::1", true},
 		{"empty host", "", "example.com", false},
 		{"empty allowed host", "example.com", "", false},
 	}

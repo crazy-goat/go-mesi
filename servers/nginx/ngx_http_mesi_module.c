@@ -414,7 +414,7 @@ static char *ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool) {
 }
 
 static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
-  ngx_str_t output;
+  ngx_str_t output = {0, NULL};
 
   ngx_http_mesi_loc_conf_t *lcf =
       ngx_http_get_module_loc_conf(r, ngx_http_mesi_module);
@@ -502,6 +502,16 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
     // optional allowed-hosts whitelist (empty string = no restriction).
     message = EsiParseWithConfig(input_cstr, 5, base_url_cstr, hosts_cstr,
                                  lcf->block_private_ips);
+  } else if (lcf->allowed_hosts.len > 0) {
+    // Fail closed: a libgomesi build without ParseWithConfig cannot
+    // enforce mesi_allowed_hosts. Serving the include anyway would
+    // silently disable the configured whitelist, so the request is
+    // refused through the module's error-output path (empty output).
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "mesi: ParseWithConfig unavailable in libgomesi — "
+                  "mesi_allowed_hosts cannot be enforced; failing request "
+                  "(fail closed)");
+    return output;
   } else {
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                   "mesi: ParseWithConfig unavailable in libgomesi — "
@@ -591,8 +601,9 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
     EsiParseWithConfig = NULL;
     ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
                   "mesi: ParseWithConfig not available in libgomesi — "
-                  "SSRF protection via mesi_block_private_ips and "
-                  "mesi_allowed_hosts will be disabled");
+                  "mesi_block_private_ips will not be enforced and a "
+                  "configured mesi_allowed_hosts will fail requests "
+                  "(fail closed) instead of being silently ignored");
   }
 
   EsiInitCache = (InitCacheFunc)dlsym(go_module, "InitCache");
@@ -659,5 +670,21 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   // Empty (unset) = no hostname restriction (backward compatible). A child
   // that sets its own hosts always overrides the parent's list.
   ngx_conf_merge_str_value(conf->allowed_hosts, prev->allowed_hosts, "");
+  if (conf->allowed_hosts.len > 0) {
+    // Reject whitespace-only allowlists: they would silently disable the
+    // hostname restriction the operator intended to configure.
+    size_t i;
+    for (i = 0; i < conf->allowed_hosts.len; i++) {
+      if (conf->allowed_hosts.data[i] != ' ' && conf->allowed_hosts.data[i] != '\t') {
+        break;
+      }
+    }
+    if (i == conf->allowed_hosts.len) {
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "\"mesi_allowed_hosts\" must contain at least "
+                         "one hostname");
+      return NGX_CONF_ERROR;
+    }
+  }
   return NGX_CONF_OK;
 }

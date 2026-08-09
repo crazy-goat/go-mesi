@@ -9,6 +9,7 @@
 package mesi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -77,15 +78,25 @@ func hostMatches(host, allowedHost string) bool {
 // BlockPrivateIPs and AllowPrivateIPsForAllowedHosts flags. It is appended to
 // every cache key (after the URL-derived key part) so content cached under one
 // policy can never be served under a different one — a policy change in either
-// direction (stricter or looser) invalidates previously cached entries.
+// direction (stricter or looser) invalidates previously cached entries. The
+// host list is JSON-encoded rather than joined with a delimiter so entries
+// containing delimiter characters (e.g. "a,b") cannot collide with separate
+// entries; duplicates are collapsed so the fingerprint is canonical.
 func securityPolicyFingerprint(config EsiParserConfig) string {
-	hosts := make([]string, len(config.AllowedHosts))
-	for i, h := range config.AllowedHosts {
-		hosts[i] = strings.ToLower(strings.TrimSuffix(h, "."))
+	hosts := make([]string, 0, len(config.AllowedHosts))
+	seen := make(map[string]struct{}, len(config.AllowedHosts))
+	for _, h := range config.AllowedHosts {
+		h = strings.ToLower(strings.TrimSuffix(h, "."))
+		if _, ok := seen[h]; ok {
+			continue
+		}
+		seen[h] = struct{}{}
+		hosts = append(hosts, h)
 	}
 	sort.Strings(hosts)
+	hostsJSON, _ := json.Marshal(hosts)
 	return fmt.Sprintf("|ssrf=ah:%s,bpi:%t,api4ah:%t",
-		strings.Join(hosts, ","), config.BlockPrivateIPs, config.AllowPrivateIPsForAllowedHosts)
+		string(hostsJSON), config.BlockPrivateIPs, config.AllowPrivateIPsForAllowedHosts)
 }
 
 func isPrivateOrReservedIP(ip net.IP) bool {
