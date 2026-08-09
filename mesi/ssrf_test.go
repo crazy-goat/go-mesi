@@ -10,6 +10,73 @@ import (
 	"time"
 )
 
+func TestHostMatches(t *testing.T) {
+	tests := []struct {
+		name        string
+		host        string
+		allowedHost string
+		want        bool
+	}{
+		{"exact", "example.com", "example.com", true},
+		{"host case-insensitive", "Backend", "backend", true},
+		{"allowed case-insensitive", "backend", "Backend", true},
+		{"subdomain", "sub.backend", "backend", true},
+		{"subdomain case-insensitive", "SUB.Backend", "backend", true},
+		{"trailing root dot on host", "backend.", "backend", true},
+		{"trailing root dot on allowed", "backend", "backend.", true},
+		{"trailing root dot on both", "backend.", "backend.", true},
+		{"subdomain with trailing dot", "sub.backend.", "backend", true},
+		{"suffix injection hyphen", "attacker-example.com", "example.com", false},
+		{"suffix injection prefix", "notexample.com", "example.com", false},
+		{"suffix injection domain", "example.com.evil.com", "example.com", false},
+		{"empty host", "", "example.com", false},
+		{"empty allowed host", "example.com", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hostMatches(tt.host, tt.allowedHost); got != tt.want {
+				t.Errorf("hostMatches(%q, %q) = %v, want %v", tt.host, tt.allowedHost, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsURLSafe_AllowedHostsNormalized(t *testing.T) {
+	tests := []struct {
+		name         string
+		url          string
+		allowedHosts []string
+		wantErr      bool
+	}{
+		{"host name case differs", "http://BACKEND:8000/x", []string{"backend"}, false},
+		{"allowlist case differs", "http://backend:8000/x", []string{"BACKEND"}, false},
+		{"subdomain case differs", "http://SUB.BACKEND:8000/x", []string{"backend"}, false},
+		{"host trailing root dot", "http://backend.:8000/x", []string{"backend"}, false},
+		{"allowlist trailing root dot", "http://backend:8000/x", []string{"backend."}, false},
+		{"case and trailing dot combined", "http://BACKEND.:8000/x", []string{"backend"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := EsiParserConfig{
+				BlockPrivateIPs: true,
+				AllowedHosts:    tt.allowedHosts,
+			}
+			err := isURLSafe(tt.url, config)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestIsURLSafe_DoesNotBlockPrivateIPs(t *testing.T) {
 	tests := []struct {
 		name string

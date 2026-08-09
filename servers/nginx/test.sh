@@ -389,6 +389,31 @@ else
     exit 1
 fi
 
+echo "=== Test 27: AllowedHosts — redirect to non-listed host NOT followed ==="
+RESPONSE=$(curl -s http://localhost:8080/allowed-redirect/)
+if echo "$RESPONSE" | grep -q "FALLBACK-REDIRECT"; then
+    if echo "$RESPONSE" | grep -q "included content from redirect target"; then
+        echo "FAIL: redirect target outside whitelist was fetched"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+    echo "PASS: redirect from allowed backend to cdn.example.net blocked (fallback rendered)"
+else
+    echo "FAIL: redirect target include did not fall back (was it followed?)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 28: AllowedHosts — redirect to listed host IS followed ==="
+RESPONSE=$(curl -s http://localhost:8080/allowed-redirect-cdn/)
+if echo "$RESPONSE" | grep -q "included content from redirect target"; then
+    echo "PASS: redirect to allowlisted cdn.example.net followed"
+else
+    echo "FAIL: redirect to allowlisted cdn.example.net did not resolve or was blocked"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
 docker compose down
 
 echo ""

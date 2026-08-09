@@ -135,6 +135,21 @@ A host matches if it is **exact** or a **subdomain suffix** of an entry:
 
 Multiple hosts are space-separated; extra whitespace between entries is fine.
 
+### Redirects and relative includes
+
+Redirect responses (301/302/303/307/308) are **not** followed automatically.
+The shared core follows up to 10 redirects manually and re-validates every
+hop target against `mesi_allowed_hosts` (plus the http/https scheme check)
+before dialing it — an allowlisted backend can therefore never redirect to a
+host outside the whitelist; the include fails and renders through the
+include-error / fallback path.
+
+Relative `<esi:include src="…">` paths resolve against the request's `Host`
+header (via `DefaultUrl`, built as `scheme://Host/` by this module). When
+`mesi_allowed_hosts` is set, the **resolved** host is subject to the whitelist
+in the shared core: a relative include only works when the host the request
+was made to is allowlisted.
+
 ### Example
 
 ```nginx

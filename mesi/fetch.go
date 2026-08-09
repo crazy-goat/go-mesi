@@ -47,6 +47,68 @@ func IsEsiResponse(response *http.Response) bool {
 	return false
 }
 
+// noRedirectFunc prevents automatic redirect following; redirects are
+// handled manually in singleFetchUrlWithContext so every hop target is
+// re-validated against the AllowedHosts whitelist before it is dialed.
+func noRedirectFunc(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
+// isRedirectStatus reports whether status is one of the redirect statuses
+// Go's http.Client follows automatically (301, 302, 303, 307, 308).
+func isRedirectStatus(status int) bool {
+	switch status {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	}
+	return false
+}
+
+// validateFetchURL applies the same scheme and AllowedHosts checks that the
+// original include URL receives to an absolute fetch URL. It is used for the
+// DefaultUrl-expanded relative include URL and for every redirect hop target,
+// so no URL is ever dialed without passing the whitelist.
+func validateFetchURL(rawURL string, config EsiParserConfig) (*url.URL, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidURL, err.Error())
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("%w: invalid url scheme: %s", ErrInvalidURL, parsed.Scheme)
+	}
+	if err := isURLSafe(rawURL, config); err != nil {
+		return nil, err
+	}
+	return parsed, nil
+}
+
+// fetchClientForURL picks the HTTP client for the URL about to be fetched:
+// the caller-provided shared client (wrapped, never mutated, so its transport
+// is reused but redirects stay under our control), a plain client for
+// allowlisted hosts with the private-IP bypass opt-in, or the SSRF-safe
+// transport client. All clients disable automatic redirect following.
+func fetchClientForURL(fetchURL string, config EsiParserConfig) httpDoer {
+	if config.HTTPClient != nil {
+		return &http.Client{
+			Transport:     config.HTTPClient.Transport,
+			Timeout:       config.HTTPClient.Timeout,
+			CheckRedirect: noRedirectFunc,
+		}
+	}
+	parsed, _ := url.Parse(fetchURL)
+	if config.AllowPrivateIPsForAllowedHosts && parsed != nil && hostInAllowedHosts(parsed.Hostname(), config) {
+		// Allowed host with private-IP bypass opt-in - use standard client
+		// without SSRF protection.
+		return &http.Client{Timeout: config.Timeout, CheckRedirect: noRedirectFunc}
+	}
+	return &http.Client{
+		Timeout:       config.Timeout,
+		Transport:     NewSSRFSafeTransport(config),
+		CheckRedirect: noRedirectFunc,
+	}
+}
+
 type httpDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
@@ -88,25 +150,6 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		return "", false, err
 	}
 
-	var client httpDoer
-	if config.HTTPClient != nil {
-		// When HTTPClient is provided, callers are responsible for setting
-		// appropriate timeouts and SSRF protection on the client.
-		// Use NewSSRFSafeTransport(config) to create a transport with
-		// dial-time private IP blocking.
-		client = config.HTTPClient
-	} else if config.AllowPrivateIPsForAllowedHosts && hostInAllowedHosts(parsed.Hostname(), config) {
-		// Allowed host with private-IP bypass opt-in - use standard client
-		// without SSRF protection.
-		client = &http.Client{Timeout: config.Timeout}
-	} else {
-		transport := NewSSRFSafeTransport(config)
-		client = &http.Client{
-			Timeout:   config.Timeout,
-			Transport: transport,
-		}
-	}
-
 	var urlToFetch string
 	if parsed.Scheme == "" {
 		if config.DefaultUrl == "" {
@@ -115,6 +158,15 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		urlToFetch = strings.TrimRight(config.DefaultUrl, "/") + "/" + strings.TrimLeft(requestedURL, "/")
 	} else {
 		urlToFetch = requestedURL
+	}
+
+	// The DefaultUrl-expanded relative include is subject to the same scheme
+	// and AllowedHosts checks as the original URL: a relative include must
+	// never bypass the whitelist by resolving against a DefaultUrl whose host
+	// is not allowlisted.
+	if _, err := validateFetchURL(urlToFetch, config); err != nil {
+		logger.Debug("fetch_ssrf_error", "url", urlToFetch, "error", err.Error())
+		return "", false, err
 	}
 
 	cacheKey := ""
@@ -148,20 +200,57 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		defer mu.Unlock()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", urlToFetch, nil)
-	if err != nil {
-		return "", false, fmt.Errorf("%w: %s", ErrInvalidURL, err.Error())
-	}
-	req.Header.Set("Surrogate-Capability", "ESI/1.0")
+	// Redirects are followed manually: every client below is built with
+	// CheckRedirect returning http.ErrUseLastResponse so Go never auto-follows.
+	// Each hop target is resolved and re-validated (scheme + AllowedHosts)
+	// before it is dialed, so an allowlisted backend can no longer redirect to
+	// an arbitrary host.
+	const maxRedirects = 10
 
-	logger.Debug("fetch_start", "url", urlToFetch, "timeout", config.Timeout)
+	hopURL := urlToFetch
 	reqStart := time.Now()
-	content, err := client.Do(req)
-	if err != nil {
-		logger.Debug("fetch_error", "url", urlToFetch, "error", err.Error())
-		return "", false, errors.Join(ErrUpstreamStatus, err)
+	var content *http.Response
+	for hop := 0; ; hop++ {
+		req, err := http.NewRequestWithContext(ctx, "GET", hopURL, nil)
+		if err != nil {
+			return "", false, fmt.Errorf("%w: %s", ErrInvalidURL, err.Error())
+		}
+		req.Header.Set("Surrogate-Capability", "ESI/1.0")
+
+		logger.Debug("fetch_start", "url", hopURL, "timeout", config.Timeout)
+		content, err = fetchClientForURL(hopURL, config).Do(req)
+		if err != nil {
+			logger.Debug("fetch_error", "url", hopURL, "error", err.Error())
+			return "", false, errors.Join(ErrUpstreamStatus, err)
+		}
+		logger.Debug("fetch_done", "url", hopURL, "duration", time.Since(reqStart), "status", content.StatusCode)
+
+		if !isRedirectStatus(content.StatusCode) {
+			break
+		}
+		location := content.Header.Get("Location")
+		if location == "" {
+			// A 3xx without Location is returned as the final response.
+			break
+		}
+		if hop >= maxRedirects {
+			content.Body.Close()
+			return "", false, errors.Join(ErrUpstreamStatus, fmt.Errorf("stopped after %d redirects", maxRedirects))
+		}
+		ref, err := url.Parse(location)
+		if err != nil {
+			content.Body.Close()
+			return "", false, errors.Join(ErrUpstreamStatus, fmt.Errorf("invalid redirect location: %s", location))
+		}
+		nextURL := req.URL.ResolveReference(ref)
+		if _, err := validateFetchURL(nextURL.String(), config); err != nil {
+			content.Body.Close()
+			logger.Debug("fetch_ssrf_error", "url", nextURL.String(), "error", err.Error())
+			return "", false, err
+		}
+		content.Body.Close()
+		hopURL = nextURL.String()
 	}
-	logger.Debug("fetch_done", "url", urlToFetch, "duration", time.Since(reqStart), "status", content.StatusCode)
 	defer func() { _ = content.Body.Close() }()
 
 	var dataBytes []byte

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1135,6 +1137,262 @@ func TestSentinelErrorsIs(t *testing.T) {
 		})
 	}
 }
+func TestFetchRedirectToAllowedHostIsFollowed(t *testing.T) {
+	var targetHits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&targetHits, 1)
+		_, _ = w.Write([]byte("REDIRECT_TARGET_BODY"))
+	}))
+	defer target.Close()
+
+	// localhost resolves to the same loopback listener but is a distinct
+	// hostname, so the whitelist can tell the two endpoints apart.
+	targetPort := strings.TrimPrefix(target.URL, "http://127.0.0.1:")
+	redirectLocation := "http://localhost:" + targetPort + "/final"
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", redirectLocation)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1", "localhost"},
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(redirector.URL+"/start", config)
+	if err != nil {
+		t.Fatalf("expected redirect to allowlisted host to be followed, got error: %v", err)
+	}
+	if data != "REDIRECT_TARGET_BODY" {
+		t.Errorf("expected 'REDIRECT_TARGET_BODY', got %q", data)
+	}
+	if atomic.LoadInt32(&targetHits) != 1 {
+		t.Errorf("expected redirect target to be hit exactly once, got %d", atomic.LoadInt32(&targetHits))
+	}
+}
+
+func TestFetchRedirectToNonAllowedHostIsBlocked(t *testing.T) {
+	var targetHits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&targetHits, 1)
+		_, _ = w.Write([]byte("MUST_NOT_BE_FETCHED"))
+	}))
+	defer target.Close()
+
+	// localhost resolves to the target listener, so a buggy fetch that
+	// skipped hop validation would reach it; the whitelist block must
+	// happen before any dial.
+	targetPort := strings.TrimPrefix(target.URL, "http://127.0.0.1:")
+	redirectLocation := "http://localhost:" + targetPort + "/final"
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", redirectLocation)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1"},
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl(redirector.URL+"/start", config)
+	if err == nil {
+		t.Fatal("expected error for redirect to non-allowlisted host")
+	}
+	if !errors.Is(err, ErrSSRFBlocked) {
+		t.Errorf("expected ErrSSRFBlocked, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "host not in allowed list: localhost") {
+		t.Errorf("expected allowed-hosts block error, got: %v", err)
+	}
+	if atomic.LoadInt32(&targetHits) != 0 {
+		t.Errorf("redirect target was fetched %d times, want 0 (hop must be validated before dial)", atomic.LoadInt32(&targetHits))
+	}
+}
+
+func TestFetchRedirectRelativeLocationResolvedAgainstRedirectingURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			w.Header().Set("Location", "/next")
+			w.WriteHeader(http.StatusFound)
+		case "/next":
+			_, _ = w.Write([]byte("RELATIVE_NEXT_BODY"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1"},
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(server.URL+"/start", config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if data != "RELATIVE_NEXT_BODY" {
+		t.Errorf("expected 'RELATIVE_NEXT_BODY', got %q", data)
+	}
+}
+
+func TestFetchRedirectToNonHTTPSchemeIsBlocked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "ftp://evil.example/file")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl(server.URL+"/start", config)
+	if err == nil {
+		t.Fatal("expected error for non-http redirect scheme")
+	}
+	if !errors.Is(err, ErrInvalidURL) {
+		t.Errorf("expected ErrInvalidURL, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "invalid url scheme: ftp") {
+		t.Errorf("expected invalid scheme error, got: %v", err)
+	}
+}
+
+func TestFetchRedirectWithoutLocationReturnsFinalResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusFound) // 3xx without Location
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(server.URL+"/start", config)
+	if err != nil {
+		t.Fatalf("expected 3xx without Location to be returned as final response, got error: %v", err)
+	}
+	if data != "" {
+		t.Errorf("expected empty body, got %q", data)
+	}
+}
+
+func TestFetchRedirectLoopStopsAfterMaxRedirects(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var n int
+		if _, err := fmt.Sscanf(r.URL.Path, "/r%d", &n); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Location", fmt.Sprintf("/r%d", n+1))
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl(server.URL+"/r0", config)
+	if err == nil {
+		t.Fatal("expected error after exhausting redirect hops")
+	}
+	if !errors.Is(err, ErrUpstreamStatus) {
+		t.Errorf("expected ErrUpstreamStatus, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Errorf("expected 'stopped after 10 redirects' error, got: %v", err)
+	}
+}
+
+func TestFetchRelativeIncludeAllowedHostsOnExpandedURL(t *testing.T) {
+	t.Run("blocked when DefaultUrl host not in AllowedHosts", func(t *testing.T) {
+		var hits int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&hits, 1)
+			_, _ = w.Write([]byte("MUST_NOT_BE_FETCHED"))
+		}))
+		defer server.Close()
+
+		config := EsiParserConfig{
+			DefaultUrl:      server.URL + "/base/",
+			MaxDepth:        1,
+			Timeout:         5 * time.Second,
+			BlockPrivateIPs: false,
+			AllowedHosts:    []string{"allowed.example"},
+			Logger:          DiscardLogger{},
+		}
+
+		_, _, err := singleFetchUrl("relative/path", config)
+		if err == nil {
+			t.Fatal("expected error for relative include resolving to non-allowlisted host")
+		}
+		if !errors.Is(err, ErrSSRFBlocked) {
+			t.Errorf("expected ErrSSRFBlocked, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "host not in allowed list: 127.0.0.1") {
+			t.Errorf("expected allowed-hosts block error, got: %v", err)
+		}
+		if atomic.LoadInt32(&hits) != 0 {
+			t.Errorf("server was hit %d times, want 0 (expanded URL must be validated before dial)", atomic.LoadInt32(&hits))
+		}
+	})
+
+	t.Run("works when DefaultUrl host in AllowedHosts", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("RELATIVE_OK"))
+		}))
+		defer server.Close()
+
+		config := EsiParserConfig{
+			DefaultUrl:      server.URL + "/base/",
+			MaxDepth:        1,
+			Timeout:         5 * time.Second,
+			BlockPrivateIPs: false,
+			AllowedHosts:    []string{"127.0.0.1"},
+			Logger:          DiscardLogger{},
+		}
+
+		data, _, err := singleFetchUrl("relative/path", config)
+		if err != nil {
+			t.Fatalf("expected relative include to resolve to allowlisted host, got error: %v", err)
+		}
+		if data != "RELATIVE_OK" {
+			t.Errorf("expected 'RELATIVE_OK', got %q", data)
+		}
+	})
+}
+
 // TestNoDuplicatedHelper guards against re-introducing a hand-rolled
 // substring-search helper in fetch_test.go. The standard library
 // strings.Contains is the accepted implementation; any local

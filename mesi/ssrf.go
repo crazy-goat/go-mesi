@@ -46,7 +46,7 @@ func isURLSafe(requestedURL string, config EsiParserConfig) error {
 	if len(config.AllowedHosts) > 0 {
 		allowed := false
 		for _, allowedHost := range config.AllowedHosts {
-			if host == allowedHost || strings.HasSuffix(host, "."+allowedHost) {
+			if hostMatches(host, allowedHost) {
 				allowed = true
 				break
 			}
@@ -57,6 +57,16 @@ func isURLSafe(requestedURL string, config EsiParserConfig) error {
 	}
 
 	return nil
+}
+
+// hostMatches reports whether host equals allowedHost or is a subdomain of
+// it. Matching is case-insensitive, tolerates a single trailing root dot on
+// either side, and keeps the exact '.' suffix boundary so suffix injection
+// (attacker-example.com vs example.com) never matches.
+func hostMatches(host, allowedHost string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	allowedHost = strings.ToLower(strings.TrimSuffix(allowedHost, "."))
+	return host == allowedHost || strings.HasSuffix(host, "."+allowedHost)
 }
 
 func isPrivateOrReservedIP(ip net.IP) bool {
@@ -89,7 +99,7 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 
 func hostInAllowedHosts(host string, config EsiParserConfig) bool {
 	for _, allowed := range config.AllowedHosts {
-		if host == allowed || strings.HasSuffix(host, "."+allowed) {
+		if hostMatches(host, allowed) {
 			return true
 		}
 	}

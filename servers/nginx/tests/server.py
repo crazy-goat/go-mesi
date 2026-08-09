@@ -19,6 +19,14 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if self.path == '/redirect-to-cdn':
+            self.send_response(302)
+            self.send_header('Location',
+                             'http://cdn.example.net:8000/redirect_target.html')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
         path = self.path.lstrip('/')
         if os.path.isfile(path):
             with open(path, 'rb') as f:

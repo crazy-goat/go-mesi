@@ -473,6 +473,11 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   ngx_str_t host = r->headers_in.host->value;
   size_t len = scheme.len + sizeof("://") - 1 + host.len + sizeof("/") - 1;
 
+  // Relative <esi:include src="..."> paths resolve against this base URL,
+  // which is built from the request's Host header. When mesi_allowed_hosts
+  // is set, the resolved (expanded) host is subject to the whitelist in the
+  // shared core — a relative include can only fetch a host the operator
+  // explicitly allowed.
   ngx_str_t base_url;
   base_url.len = len;
   base_url.data = ngx_pnalloc(r->pool, len + 1);
@@ -586,7 +591,8 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
     EsiParseWithConfig = NULL;
     ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
                   "mesi: ParseWithConfig not available in libgomesi — "
-                  "SSRF protection via mesi_block_private_ips will be disabled");
+                  "SSRF protection via mesi_block_private_ips and "
+                  "mesi_allowed_hosts will be disabled");
   }
 
   EsiInitCache = (InitCacheFunc)dlsym(go_module, "InitCache");
