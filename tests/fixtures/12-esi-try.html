@@ -1,6 +1,6 @@
 <esi:try>
 	<esi:attempt>
-		before [<esi:include src="http://127.0.0.1:8080/hello"/>] after
+		before [<esi:include src="http://127.0.0.1:18080/hello"/>] after
 	</esi:attempt>
 	<esi:except>
 		except should not appear
@@ -9,7 +9,7 @@
 ---
 <esi:try>
 	<esi:attempt>
-		<esi:include src="http://127.0.0.1:8080/status/code/500"/>
+		<esi:include src="http://127.0.0.1:18080/status/code/500"/>
 	</esi:attempt>
 	<esi:except>
 		fallback rendered
@@ -18,7 +18,7 @@
 ---
 <esi:try>
 	<esi:attempt>
-		<esi:include onerror="continue" src="http://127.0.0.1:8080/status/code/500"/>
+		<esi:include onerror="continue" src="http://127.0.0.1:18080/status/code/500"/>
 		after error
 	</esi:attempt>
 	<esi:except>

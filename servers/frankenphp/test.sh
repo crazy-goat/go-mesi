@@ -8,7 +8,7 @@ docker compose up -d --build
 
 echo "Waiting for FrankenPHP to be ready..."
 for i in $(seq 1 60); do
-    if curl -s -o /dev/null http://localhost:8080/index.html 2>/dev/null; then
+    if curl -s -o /dev/null http://localhost:18080/index.html 2>/dev/null; then
         echo "FrankenPHP ready after ${i}s"
         break
     fi
@@ -33,7 +33,7 @@ else
 fi
 
 echo "=== Test 2: ESI include in static HTML ==="
-RESPONSE=$(curl -s http://localhost:8080/index.html)
+RESPONSE=$(curl -s http://localhost:18080/index.html)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "PASS: ESI include processed correctly in static HTML"
 else
@@ -44,7 +44,7 @@ else
 fi
 
 echo "=== Test 3: ESI include in PHP-generated HTML ==="
-RESPONSE=$(curl -s http://localhost:8080/esi.php)
+RESPONSE=$(curl -s http://localhost:18080/esi.php)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "PASS: ESI include processed correctly in PHP-generated HTML"
 else
@@ -55,7 +55,7 @@ else
 fi
 
 echo "=== Test 4: ESI comment unwrapping ==="
-RESPONSE=$(curl -s http://localhost:8080/index.html)
+RESPONSE=$(curl -s http://localhost:18080/index.html)
 if echo "$RESPONSE" | grep -q "Unwrapped content"; then
     echo "PASS: ESI comment unwrapped correctly"
 else
@@ -66,7 +66,7 @@ else
 fi
 
 echo "=== Test 5: ESI remove ==="
-RESPONSE=$(curl -s http://localhost:8080/index.html)
+RESPONSE=$(curl -s http://localhost:18080/index.html)
 if echo "$RESPONSE" | grep -q "Failed to include ESI"; then
     echo "FAIL: ESI remove content still present"
     echo "Response: $RESPONSE"
@@ -77,7 +77,7 @@ else
 fi
 
 echo "=== Test 6: Surrogate-Capability header ==="
-HEADERS=$(curl -sI http://localhost:8080/proxy/)
+HEADERS=$(curl -sI http://localhost:18080/proxy/)
 if echo "$HEADERS" | grep -q "Surrogate-Capability"; then
     echo "PASS: Surrogate-Capability header present"
 else
@@ -88,7 +88,7 @@ else
 fi
 
 echo "=== Test 7: Non-HTML content bypass (PHP-generated) ==="
-RESPONSE=$(curl -s http://localhost:8080/plain.php)
+RESPONSE=$(curl -s http://localhost:18080/plain.php)
 if echo "$RESPONSE" | grep -q "esi:include"; then
     echo "PASS: text/plain content bypassed ESI filter (tags preserved verbatim)"
 else
@@ -99,7 +99,7 @@ else
 fi
 
 echo "=== Test 8: Content-Length correctness ==="
-HEADERS=$(curl -sD - http://localhost:8080/index.html -o /tmp/mesi-frankenphp-response.txt 2>/dev/null)
+HEADERS=$(curl -sD - http://localhost:18080/index.html -o /tmp/mesi-frankenphp-response.txt 2>/dev/null)
 ACTUAL_BODY_SIZE=$(wc -c < /tmp/mesi-frankenphp-response.txt)
 HEADER_CL=$(echo "$HEADERS" | grep -i "Content-Length" | awk '{print $2}' | tr -d '\r')
 if [ -n "$HEADER_CL" ]; then
@@ -116,7 +116,7 @@ fi
 rm -f /tmp/mesi-frankenphp-response.txt
 
 echo "=== Test 9: Content-Type preserved ==="
-CT_HEADERS=$(curl -sI http://localhost:8080/esi.php)
+CT_HEADERS=$(curl -sI http://localhost:18080/esi.php)
 if echo "$CT_HEADERS" | grep -qi "text/html"; then
     echo "PASS: Content-Type is text/html for PHP-generated HTML"
 else
@@ -127,7 +127,7 @@ else
 fi
 
 echo "=== Test 10: Non-HTML JSON response preserved ==="
-RESPONSE=$(curl -s http://localhost:8080/esi-non-html.php)
+RESPONSE=$(curl -s http://localhost:18080/esi-non-html.php)
 if echo "$RESPONSE" | grep -q "esi:include"; then
     echo "PASS: JSON content bypassed ESI filter (tags preserved verbatim)"
 else

@@ -9,7 +9,7 @@ services:
       - ./traefik.yml:/traefik.yml
       - ./esi-configuration.yml:/esi-configuration.yml
     ports:
-      - "8080:80"
+      - "18080:80"
     depends_on:
       - test-server
 

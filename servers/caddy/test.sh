@@ -9,7 +9,7 @@ docker compose up -d --build
 
 echo "Waiting for services to be ready..."
 for i in $(seq 1 30); do
-    if curl -s -o /dev/null http://localhost:8080/ 2>/dev/null; then
+    if curl -s -o /dev/null http://localhost:18080/ 2>/dev/null; then
         echo "Services ready after ${i}s"
         break
     fi
@@ -23,7 +23,7 @@ for i in $(seq 1 30); do
 done
 
 echo "=== Test 1: ESI include processing ==="
-RESPONSE=$(curl -s http://localhost:8080/)
+RESPONSE=$(curl -s http://localhost:18080/)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "PASS: ESI include processed correctly"
 else
@@ -34,7 +34,7 @@ else
 fi
 
 echo "=== Test 2: ESI comment unwrapping ==="
-RESPONSE=$(curl -s http://localhost:8080/)
+RESPONSE=$(curl -s http://localhost:18080/)
 if echo "$RESPONSE" | grep -q "Welcome to ESI Test"; then
     echo "PASS: ESI comment unwrapped correctly"
 else
@@ -45,7 +45,7 @@ else
 fi
 
 echo "=== Test 3: ESI remove ==="
-RESPONSE=$(curl -s http://localhost:8080/)
+RESPONSE=$(curl -s http://localhost:18080/)
 if echo "$RESPONSE" | grep -q "Failed to include ESI"; then
     echo "FAIL: ESI remove content still present"
     echo "Response: $RESPONSE"
@@ -56,7 +56,7 @@ else
 fi
 
 echo "=== Test 4: Surrogate-Capability header ==="
-HEADERS=$(curl -sI http://localhost:8080/)
+HEADERS=$(curl -sI http://localhost:18080/)
 if echo "$HEADERS" | grep -q "Surrogate-Capability"; then
     echo "PASS: Surrogate-Capability header present"
 else
@@ -67,7 +67,7 @@ else
 fi
 
 echo "=== Test 5: Non-HTML content bypass ==="
-RESPONSE=$(curl -s http://localhost:8080/plain)
+RESPONSE=$(curl -s http://localhost:18080/plain)
 if echo "$RESPONSE" | grep -q "esi:include"; then
     echo "PASS: Plain text content bypassed ESI filter (tags preserved verbatim)"
 else
@@ -78,7 +78,7 @@ else
 fi
 
 echo "=== Test 6: Content-Length correctness ==="
-HEADERS=$(curl -sD - http://localhost:8080/ -o /tmp/mesi-caddy-response.txt 2>/dev/null)
+HEADERS=$(curl -sD - http://localhost:18080/ -o /tmp/mesi-caddy-response.txt 2>/dev/null)
 ACTUAL_BODY_SIZE=$(wc -c < /tmp/mesi-caddy-response.txt)
 HEADER_CL=$(echo "$HEADERS" | grep -i "Content-Length" | awk '{print $2}' | tr -d '\r')
 if [ -n "$HEADER_CL" ]; then
@@ -95,7 +95,7 @@ fi
 rm -f /tmp/mesi-caddy-response.txt
 
 echo "=== Test 7: Content-Type preserved ==="
-CT=$(curl -sI http://localhost:8080/ | grep -i "Content-Type")
+CT=$(curl -sI http://localhost:18080/ | grep -i "Content-Type")
 if echo "$CT" | grep -q "text/html"; then
     echo "PASS: Content-Type is text/html"
 else

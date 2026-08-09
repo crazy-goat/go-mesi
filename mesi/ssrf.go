@@ -9,11 +9,14 @@
 package mesi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -46,7 +49,7 @@ func isURLSafe(requestedURL string, config EsiParserConfig) error {
 	if len(config.AllowedHosts) > 0 {
 		allowed := false
 		for _, allowedHost := range config.AllowedHosts {
-			if host == allowedHost || strings.HasSuffix(host, "."+allowedHost) {
+			if hostMatches(host, allowedHost) {
 				allowed = true
 				break
 			}
@@ -57,6 +60,75 @@ func isURLSafe(requestedURL string, config EsiParserConfig) error {
 	}
 
 	return nil
+}
+
+// hostMatches reports whether host equals allowedHost or is a subdomain of
+// it. Matching is case-insensitive (EqualFold), tolerates a single trailing
+// root dot on either side, and keeps the exact '.' suffix boundary so suffix
+// injection (attacker-example.com vs example.com) never matches.
+func hostMatches(host, allowedHost string) bool {
+	host = strings.TrimSuffix(host, ".")
+	allowedHost = strings.TrimSuffix(allowedHost, ".")
+	return strings.EqualFold(host, allowedHost) ||
+		(len(host) > len(allowedHost) && host[len(host)-len(allowedHost)-1] == '.' &&
+			strings.EqualFold(host[len(host)-len(allowedHost):], allowedHost))
+}
+
+// securityPolicyFingerprint returns a canonical fingerprint of the SSRF
+// policy in effect for a fetch: the sorted AllowedHosts list, the
+// BlockPrivateIPs and AllowPrivateIPsForAllowedHosts flags, and the HTTP
+// client type (custom caller-supplied client vs default per-request client).
+// It is appended to every cache key (after the URL-derived key part) so
+// content cached under one policy can never be served under a different one
+// — a policy change in either direction (stricter or looser) invalidates
+// previously cached entries, and entries fetched through a custom transport
+// are never served to a config using the default client. The host list is
+// JSON-encoded rather than joined with a delimiter so entries containing
+// delimiter characters (e.g. "a,b") cannot collide with separate entries;
+// duplicates are collapsed so the fingerprint is canonical. Hosts are
+// encoded as byte slices: encoding/json base64-encodes []byte, which is
+// lossless even for malformed UTF-8, so distinct raw host strings always
+// produce distinct fingerprints.
+//
+// Host normalization is injective with respect to the authorization matcher
+// (hostMatches): pure-ASCII hosts are lowercased — strings.ToLower on ASCII
+// is exactly EqualFold-compatible, the fold classes being the case pairs,
+// so ASCII policies unify precisely like the matcher — while non-ASCII hosts
+// are preserved verbatim (after the one-trailing-dot trim), because there is
+// no rune-level canonical form matching Go's full case folding (multi-rune
+// folds like ß→ss). Different raw host strings therefore always produce
+// different fingerprints, so distinct policies can never collide; the cost is
+// safe cache fragmentation for case-variant non-ASCII configs.
+func securityPolicyFingerprint(config EsiParserConfig) string {
+	hosts := make([][]byte, 0, len(config.AllowedHosts))
+	seen := make(map[string]struct{}, len(config.AllowedHosts))
+	for _, h := range config.AllowedHosts {
+		h = strings.TrimSuffix(h, ".")
+		if isASCIIHost(h) {
+			h = strings.ToLower(h)
+		}
+		if _, ok := seen[h]; ok {
+			continue
+		}
+		seen[h] = struct{}{}
+		hosts = append(hosts, []byte(h))
+	}
+	sort.Slice(hosts, func(i, j int) bool { return string(hosts[i]) < string(hosts[j]) })
+	hostsJSON, _ := json.Marshal(hosts)
+	return fmt.Sprintf("|ssrf=ah:%s,bpi:%t,api4ah:%t,hc:%t",
+		string(hostsJSON), config.BlockPrivateIPs, config.AllowPrivateIPsForAllowedHosts,
+		config.HTTPClient != nil)
+}
+
+// isASCIIHost reports whether s contains only ASCII bytes (each < 0x80), i.e.
+// a hostname on which strings.ToLower is exactly EqualFold-compatible.
+func isASCIIHost(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 func isPrivateOrReservedIP(ip net.IP) bool {
@@ -89,7 +161,7 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 
 func hostInAllowedHosts(host string, config EsiParserConfig) bool {
 	for _, allowed := range config.AllowedHosts {
-		if host == allowed || strings.HasSuffix(host, "."+allowed) {
+		if hostMatches(host, allowed) {
 			return true
 		}
 	}

@@ -32,21 +32,21 @@ func returnEsi(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Edge-control", "dca=esi")
 	slow := r.URL.Query().Get("slow")
 	if slow != "" {
-		w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:8080/sleep/" + slow + "/1\" />]"))
+		w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:18080/sleep/" + slow + "/1\" />]"))
 		return
 	}
-	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:8080/hello\" />]"))
+	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:18080/hello\" />]"))
 }
 
 func returnEsiNoHeader(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:8080/hello\" />]"))
+	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:18080/hello\" />]"))
 }
 
 func recursive(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
 	w.Header().Add("Edge-control", "dca=esi")
-	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:8080/recursive\" />]"))
+	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:18080/recursive\" />]"))
 }
 
 func returnString(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +68,7 @@ func countHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	srv := &http.Server{Addr: ":8080"}
+	srv := &http.Server{Addr: ":18080"}
 
 	http.HandleFunc("/hello", hello)
 	http.HandleFunc("/status/code/{id}", statusCode)

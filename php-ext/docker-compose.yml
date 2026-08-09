@@ -5,7 +5,7 @@ services:
       context: ..
       dockerfile: php-ext/Dockerfile
     ports:
-      - 8080:8080
+      - 18080:8080
     depends_on:
       test-server:
         condition: service_started

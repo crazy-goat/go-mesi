@@ -6,7 +6,7 @@ services:
     volumes:
       - ./Caddyfile.ci:/etc/caddy/Caddyfile
     ports:
-      - 8080:8080
+      - 18080:8080
     depends_on:
       test-server:
         condition: service_started

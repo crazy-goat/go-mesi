@@ -16,6 +16,7 @@ typedef struct {
   ngx_str_t  cache_redis_password;
   ngx_int_t  cache_redis_db;           // Redis database number (0-15)
   ngx_flag_t block_private_ips;        // SSRF: block private/reserved IPs (default ON)
+  ngx_str_t  allowed_hosts;  // space-separated host whitelist ("" = no restriction)
 } ngx_http_mesi_loc_conf_t;
 
 typedef struct {
@@ -94,6 +95,10 @@ static ngx_command_t ngx_http_mesi_commands[] = {
      ngx_conf_set_flag_slot, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, block_private_ips), NULL},
 
+    {ngx_string("mesi_allowed_hosts"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, allowed_hosts), NULL},
+
     ngx_null_command};
 
 static ngx_http_module_t ngx_http_html_head_filter_module_ctx = {
@@ -153,6 +158,15 @@ static ngx_int_t ngx_http_html_mesi_head_filter(ngx_http_request_t *r) {
   if (r->headers_out.status > NGX_HTTP_BAD_REQUEST) {
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "[mESI head filter]: error status code");
+    return ngx_http_next_header_filter(r);
+  }
+
+  if (lcf->allowed_hosts.len > 0 && EsiParseWithConfig == NULL) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "mesi: ParseWithConfig unavailable in libgomesi — "
+                  "mesi_allowed_hosts cannot be enforced; returning HTTP 500 "
+                  "(fail closed)");
+    r->headers_out.status = NGX_HTTP_INTERNAL_SERVER_ERROR;
     return ngx_http_next_header_filter(r);
   }
 
@@ -409,7 +423,7 @@ static char *ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool) {
 }
 
 static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
-  ngx_str_t output;
+  ngx_str_t output = {0, NULL};
 
   ngx_http_mesi_loc_conf_t *lcf =
       ngx_http_get_module_loc_conf(r, ngx_http_mesi_module);
@@ -468,6 +482,11 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   ngx_str_t host = r->headers_in.host->value;
   size_t len = scheme.len + sizeof("://") - 1 + host.len + sizeof("/") - 1;
 
+  // Relative <esi:include src="..."> paths resolve against this base URL,
+  // which is built from the request's Host header. When mesi_allowed_hosts
+  // is set, the resolved (expanded) host is subject to the whitelist in the
+  // shared core — a relative include can only fetch a host the operator
+  // explicitly allowed.
   ngx_str_t base_url;
   base_url.len = len;
   base_url.data = ngx_pnalloc(r->pool, len + 1);
@@ -480,13 +499,30 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   char *input_cstr = ngx_str_to_cstr(&input, r->pool);
   char *base_url_cstr = ngx_str_to_cstr(&base_url, r->pool);
 
+  // AllowedHosts is checked by hostname before any dial; BlockPrivateIPs
+  // runs at dial time. Empty string = no hostname restriction.
+  char *hosts_cstr = lcf->allowed_hosts.len > 0
+                         ? ngx_str_to_cstr(&lcf->allowed_hosts, r->pool)
+                         : "";
+
   char *message;
   if (EsiParseWithConfig != NULL) {
     // ParseWithConfig enables SSRF protection (blockPrivateIPs) and an
-    // optional allowed-hosts whitelist (empty string = no restriction,
-    // handled separately in issue #199).
-    message = EsiParseWithConfig(input_cstr, 5, base_url_cstr, "",
+    // optional allowed-hosts whitelist (empty string = no restriction).
+    message = EsiParseWithConfig(input_cstr, 5, base_url_cstr, hosts_cstr,
                                  lcf->block_private_ips);
+  } else if (lcf->allowed_hosts.len > 0) {
+    // Defensive fail-closed fallback: the header phase already refused the
+    // request with HTTP 500 before any body filter ctx was created, so this
+    // path should never be reached. If it ever is, return a valid empty
+    // terminal response: zero length with a non-NULL data pointer, so the
+    // writer never receives the NULL-pos zero-size buffer that
+    // ngx_null_string would yield.
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "mesi: ParseWithConfig unavailable in libgomesi — "
+                  "mesi_allowed_hosts cannot be enforced; failing request "
+                  "(fail closed)");
+    return (ngx_str_t){0, (u_char *)""};
   } else {
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                   "mesi: ParseWithConfig unavailable in libgomesi — "
@@ -576,7 +612,9 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
     EsiParseWithConfig = NULL;
     ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
                   "mesi: ParseWithConfig not available in libgomesi — "
-                  "SSRF protection via mesi_block_private_ips will be disabled");
+                  "mesi_block_private_ips will not be enforced and a "
+                  "configured mesi_allowed_hosts will fail requests "
+                  "(fail closed) instead of being silently ignored");
   }
 
   EsiInitCache = (InitCacheFunc)dlsym(go_module, "InitCache");
@@ -640,5 +678,28 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   // Enabling by default is a BREAKING CHANGE — operators with intentional
   // private-IP includes must set `mesi_block_private_ips off;`.
   ngx_conf_merge_value(conf->block_private_ips, prev->block_private_ips, 1);
+  // Empty (unset) = no hostname restriction (backward compatible). A child
+  // that sets its own hosts always overrides the parent's list.
+  ngx_conf_merge_str_value(conf->allowed_hosts, prev->allowed_hosts, "");
+  if (conf->allowed_hosts.len > 0) {
+    // Reject whitespace-only allowlists: they would silently disable the
+    // hostname restriction the operator intended to configure. The check
+    // covers every byte of the ASCII whitespace set: space, tab, CR, LF,
+    // VT (vertical tab) and FF (form feed).
+    size_t i;
+    for (i = 0; i < conf->allowed_hosts.len; i++) {
+      u_char c = conf->allowed_hosts.data[i];
+      if (c != ' ' && c != '\t' && c != '\r' && c != '\n' &&
+          c != '\v' && c != '\f') {
+        break;
+      }
+    }
+    if (i == conf->allowed_hosts.len) {
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "\"mesi_allowed_hosts\" must contain at least "
+                         "one hostname");
+      return NGX_CONF_ERROR;
+    }
+  }
   return NGX_CONF_OK;
 }

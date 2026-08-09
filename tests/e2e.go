@@ -67,7 +67,7 @@ func main() {
 
 		result := mesi.MESIParse(string(testData), mesi.EsiParserConfig{
 			Context:       context.Background(),
-			DefaultUrl:    "http://127.0.0.1:8080",
+			DefaultUrl:    "http://127.0.0.1:18080",
 			MaxDepth:      5,
 			ParseOnHeader: true,
 			Timeout:       5 * time.Second,

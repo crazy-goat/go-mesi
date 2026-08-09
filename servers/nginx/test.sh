@@ -8,7 +8,7 @@ cd "$SCRIPT_DIR"
 docker compose up -d --wait
 
 echo "=== Test 1: ESI include processing ==="
-RESPONSE=$(curl -s http://localhost:8080/index.html)
+RESPONSE=$(curl -s http://localhost:18080/index.html)
 if echo "$RESPONSE" | grep -q "After include"; then
     echo "PASS: ESI include processed"
 else
@@ -18,7 +18,7 @@ else
 fi
 
 echo "=== Test 2: ESI comment unwrapping ==="
-RESPONSE=$(curl -s http://localhost:8080/comment.html)
+RESPONSE=$(curl -s http://localhost:18080/comment.html)
 if echo "$RESPONSE" | grep -q "ESI comment unwrapped content"; then
     echo "PASS: ESI comment unwrapped correctly"
 else
@@ -28,7 +28,7 @@ else
 fi
 
 echo "=== Test 3: ESI remove ==="
-RESPONSE=$(curl -s http://localhost:8080/remove.html)
+RESPONSE=$(curl -s http://localhost:18080/remove.html)
 if echo "$RESPONSE" | grep -q "After remove"; then
     if echo "$RESPONSE" | grep -q "This should be removed"; then
         echo "FAIL: ESI remove content still present"
@@ -43,7 +43,7 @@ else
 fi
 
 echo "=== Test 4: Surrogate-Capability header ==="
-HEADERS=$(curl -sI http://localhost:8080/index.html)
+HEADERS=$(curl -sI http://localhost:18080/index.html)
 if echo "$HEADERS" | grep -q "Surrogate-Capability"; then
     echo "PASS: Surrogate-Capability header present"
 else
@@ -53,7 +53,7 @@ else
 fi
 
 echo "=== Test 5: Non-HTML content (text/plain) ==="
-RESPONSE=$(curl -s http://localhost:8080/noesi.txt)
+RESPONSE=$(curl -s http://localhost:18080/noesi.txt)
 if echo "$RESPONSE" | grep -q "esi:include"; then
     echo "PASS: Plain text content bypassed ESI filter (tags preserved verbatim)"
 else
@@ -63,7 +63,7 @@ else
 fi
 
 echo "=== Test 6: Content-Length correctness ==="
-HEADERS=$(curl -s -D - http://localhost:8080/index.html -o /tmp/mesi-response-body.txt 2>/dev/null)
+HEADERS=$(curl -s -D - http://localhost:18080/index.html -o /tmp/mesi-response-body.txt 2>/dev/null)
 ACTUAL_BODY_SIZE=$(wc -c < /tmp/mesi-response-body.txt)
 HEADER_CL=$(echo "$HEADERS" | grep -i "Content-Length" | awk '{print $2}' | tr -d '\r')
 if [ -n "$HEADER_CL" ]; then
@@ -79,7 +79,7 @@ fi
 rm -f /tmp/mesi-response-body.txt
 
 echo "=== Test 7: Nested ESI includes ==="
-RESPONSE=$(curl -s http://localhost:8080/nested.html)
+RESPONSE=$(curl -s http://localhost:18080/nested.html)
 if echo "$RESPONSE" | grep -q "included content from backend"; then
     echo "PASS: Nested ESI include resolved correctly"
 else
@@ -89,7 +89,7 @@ else
 fi
 
 echo "=== Test 8: ESI include with fallback ==="
-RESPONSE=$(curl -s http://localhost:8080/fallback.html)
+RESPONSE=$(curl -s http://localhost:18080/fallback.html)
 if echo "$RESPONSE" | grep -q "fallback content rendered"; then
     echo "PASS: ESI fallback content used"
 else
@@ -99,7 +99,7 @@ else
 fi
 
 echo "=== Test 9: HTTP error passthrough (status >= 400) ==="
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/nonexistent.html)
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:18080/nonexistent.html)
 if [ "$STATUS" = "404" ]; then
     echo "PASS: HTTP 404 returned for nonexistent page"
 else
@@ -108,7 +108,7 @@ else
 fi
 
 echo "=== Test 10: JSON content (application/json) not processed ==="
-RESPONSE=$(curl -s http://localhost:8080/noesi.json)
+RESPONSE=$(curl -s http://localhost:18080/noesi.json)
 if echo "$RESPONSE" | grep -q "esi:include"; then
     echo "PASS: JSON content not processed (raw esi:include preserved)"
 else
@@ -116,7 +116,7 @@ else
     echo "Response: $RESPONSE"
     exit 1
 fi
-CT=$(curl -sI http://localhost:8080/noesi.json | grep -i "Content-Type")
+CT=$(curl -sI http://localhost:18080/noesi.json | grep -i "Content-Type")
 if echo "$CT" | grep -qi "application/json"; then
     echo "PASS: JSON Content-Type is application/json"
 else
@@ -125,7 +125,7 @@ else
 fi
 
 echo "=== Test 11: CSS content (text/css) not processed ==="
-RESPONSE=$(curl -s http://localhost:8080/noesi.css)
+RESPONSE=$(curl -s http://localhost:18080/noesi.css)
 if echo "$RESPONSE" | grep -q "esi:include"; then
     echo "PASS: CSS content not processed (raw esi:include preserved)"
 else
@@ -133,7 +133,7 @@ else
     echo "Response: $RESPONSE"
     exit 1
 fi
-CT=$(curl -sI http://localhost:8080/noesi.css | grep -i "Content-Type")
+CT=$(curl -sI http://localhost:18080/noesi.css | grep -i "Content-Type")
 if echo "$CT" | grep -qi "text/css"; then
     echo "PASS: CSS Content-Type is text/css"
 else
@@ -142,7 +142,7 @@ else
 fi
 
 echo "=== Test 12: Content-Type check ==="
-CT=$(curl -sI http://localhost:8080/index.html | grep -i "Content-Type")
+CT=$(curl -sI http://localhost:18080/index.html | grep -i "Content-Type")
 if echo "$CT" | grep -q "text/html"; then
     echo "PASS: Content-Type is text/html"
 else
@@ -152,7 +152,7 @@ else
 fi
 
 echo "=== Test 13: Cache hit in same page (two includes, same URL) ==="
-RESPONSE=$(curl -s http://localhost:8080/cache/cache.html)
+RESPONSE=$(curl -s http://localhost:18080/cache/cache.html)
 # Extract counter values (bare digits on their own line, possibly indented).
 COUNTERS=$(echo "$RESPONSE" | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ')
 FIRST_NUM=$(echo "$COUNTERS" | head -1)
@@ -172,10 +172,10 @@ else
 fi
 
 echo "=== Test 14: Cache hit across requests (within TTL) ==="
-RESPONSE1=$(curl -s http://localhost:8080/cache/cache_ttl.html)
+RESPONSE1=$(curl -s http://localhost:18080/cache/cache_ttl.html)
 NUM1=$(echo "$RESPONSE1" | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
 sleep 1
-RESPONSE2=$(curl -s http://localhost:8080/cache/cache_ttl.html)
+RESPONSE2=$(curl -s http://localhost:18080/cache/cache_ttl.html)
 NUM2=$(echo "$RESPONSE2" | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
 if [ -n "$NUM1" ] && [ -n "$NUM2" ]; then
     if [ "$NUM1" = "$NUM2" ]; then
@@ -194,7 +194,7 @@ else
 fi
 
 echo "=== Test 15: Cache backend unset — no caching ==="
-RESPONSE=$(curl -s http://localhost:8080/index.html)
+RESPONSE=$(curl -s http://localhost:18080/index.html)
 if echo "$RESPONSE" | grep -q "After include"; then
     echo "PASS: ESI still works without cache backend configured"
 else
@@ -210,7 +210,7 @@ docker compose restart nginx
 # Wait for nginx health check to pass again.
 docker compose up -d --wait
 
-RESPONSE=$(curl -s http://localhost:8080/cache/memcached/cache_memcached.html)
+RESPONSE=$(curl -s http://localhost:18080/cache/memcached/cache_memcached.html)
 COUNTERS=$(echo "$RESPONSE" | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ')
 FIRST_NUM=$(echo "$COUNTERS" | head -1)
 SECOND_NUM=$(echo "$COUNTERS" | tail -1)
@@ -229,10 +229,10 @@ else
 fi
 
 echo "=== Test 17: Memcached cache — cross-request hit within TTL ==="
-RESPONSE1=$(curl -s http://localhost:8080/cache/memcached/cache_ttl.html)
+RESPONSE1=$(curl -s http://localhost:18080/cache/memcached/cache_ttl.html)
 NUM1=$(echo "$RESPONSE1" | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
 sleep 1
-RESPONSE2=$(curl -s http://localhost:8080/cache/memcached/cache_ttl.html)
+RESPONSE2=$(curl -s http://localhost:18080/cache/memcached/cache_ttl.html)
 NUM2=$(echo "$RESPONSE2" | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
 if [ -n "$NUM1" ] && [ -n "$NUM2" ]; then
     if [ "$NUM1" = "$NUM2" ]; then
@@ -251,7 +251,7 @@ else
 fi
 
 echo "=== Test 18: SSRF default (unset) blocks private IP ==="
-RESPONSE=$(curl -s http://localhost:8080/ssrf-default/ssrf.html)
+RESPONSE=$(curl -s http://localhost:18080/ssrf-default/ssrf.html)
 if echo "$RESPONSE" | grep -q "included content from backend"; then
     echo "FAIL: SSRF default did not block private IP include"
     echo "Response: $RESPONSE"
@@ -265,7 +265,7 @@ else
 fi
 
 echo "=== Test 19: SSRF on blocks private IP ==="
-RESPONSE=$(curl -s http://localhost:8080/ssrf-on/ssrf.html)
+RESPONSE=$(curl -s http://localhost:18080/ssrf-on/ssrf.html)
 if echo "$RESPONSE" | grep -q "included content from backend"; then
     echo "FAIL: mesi_block_private_ips on did not block private IP include"
     echo "Response: $RESPONSE"
@@ -279,7 +279,7 @@ else
 fi
 
 echo "=== Test 20: SSRF off allows private IP ==="
-RESPONSE=$(curl -s http://localhost:8080/ssrf-off/ssrf.html)
+RESPONSE=$(curl -s http://localhost:18080/ssrf-off/ssrf.html)
 if echo "$RESPONSE" | grep -q "included content from backend"; then
     echo "PASS: mesi_block_private_ips off allows private IP include"
 else
@@ -288,7 +288,131 @@ else
     exit 1
 fi
 
-docker compose down
+echo "=== Test 21: AllowedHosts — listed host works ==="
+RESPONSE=$(curl -s http://localhost:18080/allowed/allowed.html)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: mesi_allowed_hosts allows the listed host"
+else
+    echo "FAIL: mesi_allowed_hosts blocked the listed host"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 22: AllowedHosts — non-listed hosts blocked ==="
+RESPONSE=$(curl -s http://localhost:18080/allowed/allowed_blocked.html)
+if echo "$RESPONSE" | grep -q "FALLBACK-NOTBACKEND"; then
+    if echo "$RESPONSE" | grep -q "FALLBACK-ATTACKER"; then
+        if echo "$RESPONSE" | grep -q "FALLBACK-EVIL"; then
+            if echo "$RESPONSE" | grep -q "included content from backend"; then
+                echo "FAIL: blocked include content leaked into response"
+                echo "Response: $RESPONSE"
+                exit 1
+            fi
+            echo "PASS: notbackend.com, attacker-example.com and evil.com all blocked"
+        else
+            echo "FAIL: evil.com include did not fall back (was it allowed?)"
+            echo "Response: $RESPONSE"
+            exit 1
+        fi
+    else
+        echo "FAIL: attacker-example.com include did not fall back (was it allowed?)"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+else
+    echo "FAIL: notbackend.com include did not fall back (was it allowed?)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 23: AllowedHosts — subdomain of allowed host works ==="
+RESPONSE=$(curl -s http://localhost:18080/allowed/allowed_subdomain.html)
+if echo "$RESPONSE" | grep -q "included content from subdomain"; then
+    echo "PASS: sub.backend (subdomain of backend) allowed"
+else
+    echo "FAIL: sub.backend include blocked or failed to fetch"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 24: AllowedHosts — suffix injection blocked (example.com list) ==="
+RESPONSE=$(curl -s http://localhost:18080/allowed-inject/allowed_inject.html)
+if echo "$RESPONSE" | grep -q "FALLBACK-ATTACKER"; then
+    if echo "$RESPONSE" | grep -q "FALLBACK-SUFFIX"; then
+        echo "PASS: attacker-example.com and example.com.evil.com do not match example.com"
+    else
+        echo "FAIL: example.com.evil.com include did not fall back (was it allowed?)"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+else
+    echo "FAIL: attacker-example.com include did not fall back (was it allowed?)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 25: AllowedHosts unset — all hosts allowed (backward compatible) ==="
+RESPONSE=$(curl -s http://localhost:18080/allowed-unset/allowed_unset.html)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    if echo "$RESPONSE" | grep -q "included content from cdn alias"; then
+        echo "PASS: unset mesi_allowed_hosts allows any host (incl. unlisted cdn.example.net)"
+    else
+        echo "FAIL: unlisted cdn.example.net include failed"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+else
+    echo "FAIL: unset mesi_allowed_hosts blocked a backend include"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 26: AllowedHosts — multiple space-separated hosts ==="
+RESPONSE=$(curl -s http://localhost:18080/allowed-multi/allowed_multi.html)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    if echo "$RESPONSE" | grep -q "included content from subdomain"; then
+        if echo "$RESPONSE" | grep -q "FALLBACK-NOTBACKEND"; then
+            echo "PASS: backend and sub.backend both allowed, notbackend.com blocked"
+        else
+            echo "FAIL: notbackend.com include did not fall back (was it allowed?)"
+            echo "Response: $RESPONSE"
+            exit 1
+        fi
+    else
+        echo "FAIL: sub.backend include failed in multi-host location"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+else
+    echo "FAIL: backend include failed in multi-host location"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 27: AllowedHosts — redirect to non-listed host NOT followed ==="
+RESPONSE=$(curl -s http://localhost:18080/allowed-redirect/)
+if echo "$RESPONSE" | grep -q "FALLBACK-REDIRECT"; then
+    if echo "$RESPONSE" | grep -q "included content from redirect target"; then
+        echo "FAIL: redirect target outside whitelist was fetched"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+    echo "PASS: redirect from allowed backend to cdn.example.net blocked (fallback rendered)"
+else
+    echo "FAIL: redirect target include did not fall back (was it followed?)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 28: AllowedHosts — redirect to listed host IS followed ==="
+RESPONSE=$(curl -s http://localhost:18080/allowed-redirect-cdn/)
+if echo "$RESPONSE" | grep -q "included content from redirect target"; then
+    echo "PASS: redirect to allowlisted cdn.example.net followed"
+else
+    echo "FAIL: redirect to allowlisted cdn.example.net did not resolve or was blocked"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
 
 docker compose down
 

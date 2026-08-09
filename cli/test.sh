@@ -37,12 +37,12 @@ go build -o "$CLI_BINARY" "$SCRIPT_DIR"
 echo "=== Building test server ==="
 go build -o "$SERVER_BINARY" "$ROOT_DIR/tests/server"
 
-echo "=== Starting test server on :8080 ==="
+echo "=== Starting test server on :18080 ==="
 "$SERVER_BINARY" &
 SERVER_PID=$!
 
 for i in $(seq 1 10); do
-	if curl -sf "http://127.0.0.1:8080/hello" > /dev/null 2>&1; then
+	if curl -sf "http://127.0.0.1:18080/hello" > /dev/null 2>&1; then
 		echo "Server ready (attempt $i)"
 		break
 	fi
@@ -116,7 +116,7 @@ echo ""
 echo "--- URL Mode Tests ---"
 
 echo "Test 7: URL mode - fetch content"
-RESULT=$("$CLI_BINARY" "http://127.0.0.1:8080/hello" 2>/dev/null)
+RESULT=$("$CLI_BINARY" "http://127.0.0.1:18080/hello" 2>/dev/null)
 if echo "$RESULT" | grep -q "Hello World"; then
 	pass "URL mode fetches and outputs content"
 else
@@ -135,7 +135,7 @@ echo ""
 echo "--- Flag Tests ---"
 
 echo "Test 9: --default-url flag"
-RESULT=$("$CLI_BINARY" --default-url "http://127.0.0.1:8080/" "http://127.0.0.1:8080/hello" 2>/dev/null)
+RESULT=$("$CLI_BINARY" --default-url "http://127.0.0.1:18080/" "http://127.0.0.1:18080/hello" 2>/dev/null)
 if echo "$RESULT" | grep -q "Hello World"; then
 	pass "Default URL flag works"
 else
@@ -159,7 +159,7 @@ else
 fi
 
 echo "Test 12: Multiple flags together"
-RESULT=$("$CLI_BINARY" --max-depth 3 --timeout 30 --default-url "http://127.0.0.1:8080/" "http://127.0.0.1:8080/returnString/Hello" 2>/dev/null)
+RESULT=$("$CLI_BINARY" --max-depth 3 --timeout 30 --default-url "http://127.0.0.1:18080/" "http://127.0.0.1:18080/returnString/Hello" 2>/dev/null)
 if echo "$RESULT" | grep -q "Hello"; then
 	pass "Multiple flags work together"
 else
@@ -175,7 +175,7 @@ cat > "$TEST_DIR/dup-includes-cached.html" <<'EOF'
 <esi:include src="count/cache-with-backend"/>
 <esi:include src="count/cache-with-backend"/>
 EOF
-RESULT=$("$CLI_BINARY" -cache-backend=memory -max-workers=1 -allow-private-ips -default-url "http://127.0.0.1:8080/" "$TEST_DIR/dup-includes-cached.html" 2>/dev/null)
+RESULT=$("$CLI_BINARY" -cache-backend=memory -max-workers=1 -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/dup-includes-cached.html" 2>/dev/null)
 RESULT_TRIM=$(echo "$RESULT" | tr -d '\n')
 if [ "$RESULT_TRIM" = "111" ]; then
 	pass "Cache dedup: 3 duplicate includes resolved with single origin hit"
@@ -189,7 +189,7 @@ cat > "$TEST_DIR/dup-includes-uncached.html" <<'EOF'
 <esi:include src="count/cache-no-backend"/>
 <esi:include src="count/cache-no-backend"/>
 EOF
-RESULT=$("$CLI_BINARY" -max-workers=1 -allow-private-ips -default-url "http://127.0.0.1:8080/" "$TEST_DIR/dup-includes-uncached.html" 2>/dev/null)
+RESULT=$("$CLI_BINARY" -max-workers=1 -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/dup-includes-uncached.html" 2>/dev/null)
 RESULT_TRIM=$(echo "$RESULT" | tr -d '\n')
 if [ "$RESULT_TRIM" = "123" ]; then
 	pass "No cache: 3 duplicate includes each hit origin"

@@ -5,7 +5,7 @@ services:
       context: ../..
       dockerfile: servers/nginx/Dockerfile
     ports:
-      - "8080:8080"
+      - "18080:8080"
     depends_on:
       backend:
         condition: service_started
@@ -26,6 +26,14 @@ services:
     command: python /data/server.py
     expose:
       - "8000"
+    # Aliases make subdomain hosts resolve to the backend container, so the
+    # allowed-hosts subdomain fixtures (sub.backend, cdn.example.net) get a
+    # real fetch target instead of a DNS failure.
+    networks:
+      default:
+        aliases:
+          - sub.backend
+          - cdn.example.net
 
   memcached:
     image: memcached:1.6-alpine

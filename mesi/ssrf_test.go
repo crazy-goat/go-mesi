@@ -10,6 +10,158 @@ import (
 	"time"
 )
 
+func TestSecurityPolicyFingerprintCollisionSafety(t *testing.T) {
+	fp := func(hosts []string) string {
+		return securityPolicyFingerprint(EsiParserConfig{AllowedHosts: hosts})
+	}
+
+	// A single host entry containing a comma must not collide with two
+	// separate entries: the list is JSON-encoded, so the delimiter cannot
+	// be confused with a hostname character.
+	if fp([]string{"a,b"}) == fp([]string{"a", "b"}) {
+		t.Error(`fingerprint(["a,b"]) must differ from fingerprint(["a","b"])`)
+	}
+
+	// Order-invariance: the list is sorted before encoding.
+	if fp([]string{"b", "a"}) != fp([]string{"a", "b"}) {
+		t.Error(`fingerprint must be invariant to allowlist order`)
+	}
+
+	// Duplicate-host invariance: duplicates collapse after sorting.
+	if fp([]string{"a", "a"}) != fp([]string{"a"}) {
+		t.Error(`fingerprint must be invariant to duplicate hosts`)
+	}
+
+	// Per-host normalization still applies before encoding.
+	if fp([]string{"Backend."}) != fp([]string{"backend"}) {
+		t.Error(`fingerprint must normalize hosts (lowercase + trailing dot)`)
+	}
+
+	// Unicode collision safety: strings.ToLower is not EqualFold-compatible
+	// for non-ASCII hosts (ToLower("İ.example") == "i.example" but the
+	// matcher rejects the fold), so the two policies must never share a
+	// fingerprint — otherwise content cached under the İ variant would be
+	// served to the i variant without ever validating the redirect hop.
+	if fp([]string{"127.0.0.1", "İ.example"}) == fp([]string{"127.0.0.1", "i.example"}) {
+		t.Error(`fingerprint([127.0.0.1, İ.example]) must differ from fingerprint([127.0.0.1, i.example])`)
+	}
+
+	// ASCII unification is preserved: ToLower on pure ASCII is exactly
+	// EqualFold-compatible, so ASCII case variants share a fingerprint.
+	if fp([]string{"Backend"}) != fp([]string{"backend"}) {
+		t.Error(`fingerprint([Backend]) must equal fingerprint([backend]) (ASCII case normalization)`)
+	}
+
+	// Non-ASCII hosts are preserved verbatim: even though the matcher folds
+	// long-s to s, the fingerprint must not collapse them — different raw
+	// strings always produce different fingerprints (safe fragmentation).
+	if fp([]string{"ſ.example"}) == fp([]string{"s.example"}) {
+		t.Error(`fingerprint([ſ.example]) must differ from fingerprint([s.example]) (non-ASCII verbatim)`)
+	}
+
+	// IPv6 hosts contain colons; distinct addresses must stay distinct.
+	if fp([]string{"2001:db8::1"}) == fp([]string{"2001:db8::2"}) {
+		t.Error(`fingerprints of distinct IPv6 hosts must differ`)
+	}
+
+	// Malformed UTF-8: hosts are encoded as byte slices (base64), which is
+	// lossless, so two distinct byte strings must never share a fingerprint
+	// (json.Marshal on strings would collapse both to U+FFFD).
+	if fp([]string{string([]byte{0x80})}) == fp([]string{string([]byte{0x81})}) {
+		t.Error(`fingerprints of distinct malformed-UTF-8 hosts must differ`)
+	}
+	if fp([]string{string([]byte{0x80})}) == fp([]string{"\ufffd"}) {
+		t.Error(`fingerprint of malformed byte 0x80 must differ from literal U+FFFD`)
+	}
+
+	// Distinct policies with identical host lists but different flags must
+	// produce different fingerprints.
+	if securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}, BlockPrivateIPs: true}) ==
+		securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}}) {
+		t.Error(`fingerprint must encode the BlockPrivateIPs flag`)
+	}
+
+	// A caller-supplied custom HTTPClient can fetch arbitrary hosts, so a
+	// custom-client policy must never share a fingerprint with an otherwise
+	// identical policy using the default (nil) client.
+	if securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}, BlockPrivateIPs: true}) ==
+		securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}, BlockPrivateIPs: true, HTTPClient: &http.Client{}}) {
+		t.Error(`fingerprint must encode the HTTPClient type (custom vs default)`)
+	}
+}
+
+func TestHostMatches(t *testing.T) {
+	tests := []struct {
+		name        string
+		host        string
+		allowedHost string
+		want        bool
+	}{
+		{"exact", "example.com", "example.com", true},
+		{"host case-insensitive", "Backend", "backend", true},
+		{"allowed case-insensitive", "backend", "Backend", true},
+		{"subdomain", "sub.backend", "backend", true},
+		{"subdomain case-insensitive", "SUB.Backend", "backend", true},
+		{"trailing root dot on host", "backend.", "backend", true},
+		{"trailing root dot on allowed", "backend", "backend.", true},
+		{"trailing root dot on both", "backend.", "backend.", true},
+		{"subdomain with trailing dot", "sub.backend.", "backend", true},
+		{"fold pair exact", "S.example", "s.example", true},
+		{"fold pair subdomain", "SUB.S.example", "s.example", true},
+		{"long-s folds to s", "\u017f.example", "s.example", true},
+		{"suffix injection hyphen", "attacker-example.com", "example.com", false},
+		{"suffix injection prefix", "notexample.com", "example.com", false},
+		{"suffix injection domain", "example.com.evil.com", "example.com", false},
+		{"ipv6 exact", "::1", "::1", true},
+		{"ipv6 case-insensitive", "2001:DB8::1", "2001:db8::1", true},
+		{"empty host", "", "example.com", false},
+		{"empty allowed host", "example.com", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hostMatches(tt.host, tt.allowedHost); got != tt.want {
+				t.Errorf("hostMatches(%q, %q) = %v, want %v", tt.host, tt.allowedHost, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsURLSafe_AllowedHostsNormalized(t *testing.T) {
+	tests := []struct {
+		name         string
+		url          string
+		allowedHosts []string
+		wantErr      bool
+	}{
+		{"host name case differs", "http://BACKEND:8000/x", []string{"backend"}, false},
+		{"allowlist case differs", "http://backend:8000/x", []string{"BACKEND"}, false},
+		{"subdomain case differs", "http://SUB.BACKEND:8000/x", []string{"backend"}, false},
+		{"host trailing root dot", "http://backend.:8000/x", []string{"backend"}, false},
+		{"allowlist trailing root dot", "http://backend:8000/x", []string{"backend."}, false},
+		{"case and trailing dot combined", "http://BACKEND.:8000/x", []string{"backend"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := EsiParserConfig{
+				BlockPrivateIPs: true,
+				AllowedHosts:    tt.allowedHosts,
+			}
+			err := isURLSafe(tt.url, config)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestIsURLSafe_DoesNotBlockPrivateIPs(t *testing.T) {
 	tests := []struct {
 		name string

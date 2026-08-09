@@ -67,9 +67,7 @@ location / {
 
 ## Shared HTTP Client
 
-A shared HTTP client is automatically created once per worker process and reused for all ESI fragment fetches. This reuses idle TCP connections (default: 100 per host, 90s idle timeout), dramatically reducing latency for pages with multiple `<esi:include>` tags to the same backend.
-
-The shared client includes SSRF protection — connections to private/reserved IP addresses are blocked at dial time.
+Not available in the nginx module: there is no shared-client directive (unlike Apache's `MesiSharedHTTPClient` and the CLI's `-shared-http-client`) and no `InitHTTPClient` wiring. Each `<esi:include>` fetch creates its own `http.Client` for the request, so TCP/TLS connection pooling across includes is not available — every include performs its own connection setup. Each per-include client still uses the SSRF-safe transport, so `mesi_block_private_ips` protection applies to every fetch.
 
 ## SSRF Protection
 
@@ -93,6 +91,70 @@ Enable (`on`, default) or disable (`off`) blocking of ESI includes to private/re
 location / {
     enable_mesi on;
     mesi_block_private_ips on;   # secure default; set off only for trusted internal includes
+    proxy_pass http://backend;
+}
+```
+
+## AllowedHosts
+
+The `mesi_allowed_hosts` directive restricts which hosts `<esi:include src=…>` may
+fetch, closing the SSRF gap for public-host exfiltration even when
+`mesi_block_private_ips` is disabled. Both checks are independent and
+complementary: `mesi_allowed_hosts` is validated by **hostname** before any
+connection is attempted, `mesi_block_private_ips` runs at **dial time** on the
+resolved IP address. A compromised backend can therefore never include from a
+host outside the whitelist, regardless of the dial-time setting.
+
+### Directive
+
+#### `mesi_allowed_hosts`
+
+- **Syntax:** `mesi_allowed_hosts <hosts>`
+- **Default:** empty (no restriction)
+- **Context:** `location`
+
+Space-separated list of hostnames allowed in `<esi:include src=…>`. The list is
+one nginx argument, so multiple entries are written as a single **quoted** string
+(e.g. `mesi_allowed_hosts "backend.internal cdn.example.com";`) — mirroring the
+existing `mesi_cache_memcached_servers` convention in this module. The content
+format (space-separated hostnames) matches Apache's `MesiAllowedHosts` directive
+for cross-server consistency.
+Unset (empty) = no hostname restriction — backward compatible, subject to
+`mesi_block_private_ips`.
+
+### Matching semantics
+
+A host matches if it is **exact** or a **subdomain suffix** of an entry:
+
+- `example.com` matches `example.com` and `sub.example.com` (suffix `".example.com"`)
+- `example.com` does **NOT** match `attacker-example.com` or `notexample.com`
+  (no dot boundary — suffix-injection is rejected by libgomesi)
+- Ports are ignored: `http://backend:8000/` matches entry `backend`
+
+Multiple hosts are space-separated; extra whitespace between entries is fine.
+
+### Redirects and relative includes
+
+Redirect responses (301/302/303/307/308) are **not** followed automatically.
+The shared core follows up to 10 redirects manually and re-validates every
+hop target against `mesi_allowed_hosts` (plus the http/https scheme check)
+before dialing it — an allowlisted backend can therefore never redirect to a
+host outside the whitelist; the include fails and renders through the
+include-error / fallback path.
+
+Relative `<esi:include src="…">` paths resolve against the request's `Host`
+header (via `DefaultUrl`, built as `scheme://Host/` by this module). When
+`mesi_allowed_hosts` is set, the **resolved** host is subject to the whitelist
+in the shared core: a relative include only works when the host the request
+was made to is allowlisted.
+
+### Example
+
+```nginx
+location / {
+    enable_mesi on;
+    mesi_block_private_ips off;   # trusted internal backend on a private IP
+    mesi_allowed_hosts "backend.internal cdn.example.com";
     proxy_pass http://backend;
 }
 ```

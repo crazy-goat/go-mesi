@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +17,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -705,6 +709,184 @@ func TestSingleFetchUrlExceedsTimeBudget(t *testing.T) {
 	}
 }
 
+func TestFetchSemaphoreWaitBoundedByTimeout(t *testing.T) {
+	upstreamStarted := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseUpstream) }) }
+	defer release()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(upstreamStarted)
+		<-releaseUpstream
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("DONE"))
+	}))
+	defer server.Close()
+
+	sem := make(chan struct{}, 1)
+	newConfig := func(timeout time.Duration) EsiParserConfig {
+		return (EsiParserConfig{
+			DefaultUrl:      server.URL,
+			MaxDepth:        1,
+			Timeout:         timeout,
+			BlockPrivateIPs: false,
+			Logger:          DiscardLogger{},
+		}).setSemaphore(sem)
+	}
+
+	// First include occupies the only slot and blocks on the slow upstream
+	// long past the queued call's budget.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _, _ = singleFetchUrlWithContext(server.URL+"/slow", newConfig(time.Minute), context.Background())
+	}()
+	<-upstreamStarted
+
+	// The queued include must be aborted by its own deadline: it errors at
+	// ~budget instead of waiting for the slow upstream to free the slot.
+	const budget = 300 * time.Millisecond
+	start := time.Now()
+	_, _, err := singleFetchUrlWithContext(server.URL+"/slow", newConfig(budget), context.Background())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Error("queued include: expected timeout error, got nil")
+	} else if !errors.Is(err, ErrTimeBudgetExceeded) {
+		t.Errorf("queued include: expected ErrTimeBudgetExceeded, got %v", err)
+	}
+	if elapsed > 2*budget {
+		t.Errorf("queued include waited %v — semaphore wait not bounded by the timeout", elapsed)
+	}
+
+	release()
+	wg.Wait()
+}
+
+func TestFetchSameKeyDedupSingleUpstreamHit(t *testing.T) {
+	var hitCount atomic.Int32
+	slowStart := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	defer closeRelease()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitCount.Add(1)
+		close(slowStart)
+		<-release
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("DEDUP"))
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL,
+		MaxDepth:        1,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+		Cache:           NewMemoryCache(100, time.Hour),
+		CacheKeyFunc:    func(url string) string { return "dedup:" + url },
+		Logger:          DiscardLogger{},
+	}
+	url := server.URL + "/dedup"
+
+	type result struct {
+		out string
+		err error
+	}
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		out, _, err := singleFetchUrlWithContext(url, config, context.Background())
+		results <- result{out, err}
+	}()
+	<-slowStart
+
+	// Give the first goroutine time to hold the inflight slot and block on
+	// the upstream before the second goroutine queues behind it.
+	time.Sleep(50 * time.Millisecond)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		out, _, err := singleFetchUrlWithContext(url, config, context.Background())
+		results <- result{out, err}
+	}()
+
+	// Free the upstream: the owner caches the body, then the queued goroutine
+	// acquires the slot, double-checks the cache and serves from it.
+	closeRelease()
+	wg.Wait()
+	close(results)
+
+	for res := range results {
+		if res.err != nil {
+			t.Errorf("unexpected error: %v", res.err)
+		}
+		if res.out != "DEDUP" {
+			t.Errorf("unexpected output %q", res.out)
+		}
+	}
+	if got := hitCount.Load(); got != 1 {
+		t.Fatalf("expected exactly one upstream hit, got %d", got)
+	}
+}
+
+func TestFetchSemaphoreWaiterUnblockedByCancel(t *testing.T) {
+	upstreamStarted := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(upstreamStarted)
+		<-release
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("DONE"))
+	}))
+	defer server.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL,
+		MaxDepth:        1,
+		Timeout:         30 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+	// One slot only, held by the first include.
+	config = config.setSemaphore(make(chan struct{}, 1))
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_, _, _ = singleFetchUrlWithContext(server.URL+"/slow", config, ctx)
+	}()
+	<-upstreamStarted
+
+	waiterDone := make(chan struct{})
+	var waiterErr error
+	go func() {
+		defer close(waiterDone)
+		_, _, waiterErr = singleFetchUrlWithContext(server.URL+"/slow", config, ctx)
+	}()
+	time.Sleep(100 * time.Millisecond) // let the waiter queue on the semaphore
+
+	start := time.Now()
+	cancel()
+	<-waiterDone
+	elapsed := time.Since(start)
+
+	if waiterErr == nil {
+		t.Error("waiter: expected error after context cancellation, got nil")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("waiter took %v to unblock — semaphore wait is not context-aware", elapsed)
+	}
+	<-firstDone
+}
+
 func TestParseWithConfigAllowedHostsAndBlockPrivateIPs(t *testing.T) {
 	log := &recordingLogger{}
 
@@ -866,7 +1048,7 @@ func TestFetchWithCache(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	val, ok, _ := cache.Get(ctx, "test:"+url)
+	val, ok, _ := cache.Get(ctx, "test:"+url+securityPolicyFingerprint(config))
 	if !ok || val != "cached content" {
 		t.Fatalf("cache miss or wrong value: ok=%v, val=%s", ok, val)
 	}
@@ -1135,6 +1317,496 @@ func TestSentinelErrorsIs(t *testing.T) {
 		})
 	}
 }
+func TestFetchRedirectToAllowedHostIsFollowed(t *testing.T) {
+	var targetHits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&targetHits, 1)
+		_, _ = w.Write([]byte("REDIRECT_TARGET_BODY"))
+	}))
+	defer target.Close()
+
+	// localhost resolves to the same loopback listener but is a distinct
+	// hostname, so the whitelist can tell the two endpoints apart.
+	targetPort := strings.TrimPrefix(target.URL, "http://127.0.0.1:")
+	redirectLocation := "http://localhost:" + targetPort + "/final"
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", redirectLocation)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1", "localhost"},
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(redirector.URL+"/start", config)
+	if err != nil {
+		t.Fatalf("expected redirect to allowlisted host to be followed, got error: %v", err)
+	}
+	if data != "REDIRECT_TARGET_BODY" {
+		t.Errorf("expected 'REDIRECT_TARGET_BODY', got %q", data)
+	}
+	if atomic.LoadInt32(&targetHits) != 1 {
+		t.Errorf("expected redirect target to be hit exactly once, got %d", atomic.LoadInt32(&targetHits))
+	}
+}
+
+func TestFetchRedirectToNonAllowedHostIsBlocked(t *testing.T) {
+	var targetHits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&targetHits, 1)
+		_, _ = w.Write([]byte("MUST_NOT_BE_FETCHED"))
+	}))
+	defer target.Close()
+
+	// localhost resolves to the target listener, so a buggy fetch that
+	// skipped hop validation would reach it; the whitelist block must
+	// happen before any dial.
+	targetPort := strings.TrimPrefix(target.URL, "http://127.0.0.1:")
+	redirectLocation := "http://localhost:" + targetPort + "/final"
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", redirectLocation)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1"},
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl(redirector.URL+"/start", config)
+	if err == nil {
+		t.Fatal("expected error for redirect to non-allowlisted host")
+	}
+	if !errors.Is(err, ErrSSRFBlocked) {
+		t.Errorf("expected ErrSSRFBlocked, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "host not in allowed list: localhost") {
+		t.Errorf("expected allowed-hosts block error, got: %v", err)
+	}
+	if atomic.LoadInt32(&targetHits) != 0 {
+		t.Errorf("redirect target was fetched %d times, want 0 (hop must be validated before dial)", atomic.LoadInt32(&targetHits))
+	}
+}
+
+func TestFetchRedirectRelativeLocationResolvedAgainstRedirectingURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			w.Header().Set("Location", "/next")
+			w.WriteHeader(http.StatusFound)
+		case "/next":
+			_, _ = w.Write([]byte("RELATIVE_NEXT_BODY"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1"},
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(server.URL+"/start", config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if data != "RELATIVE_NEXT_BODY" {
+		t.Errorf("expected 'RELATIVE_NEXT_BODY', got %q", data)
+	}
+}
+
+func TestFetchRedirectToNonHTTPSchemeIsBlocked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "ftp://evil.example/file")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl(server.URL+"/start", config)
+	if err == nil {
+		t.Fatal("expected error for non-http redirect scheme")
+	}
+	if !errors.Is(err, ErrInvalidURL) {
+		t.Errorf("expected ErrInvalidURL, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "invalid url scheme: ftp") {
+		t.Errorf("expected invalid scheme error, got: %v", err)
+	}
+}
+
+func TestFetchRedirectWithoutLocationReturnsFinalResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusFound) // 3xx without Location
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(server.URL+"/start", config)
+	if err != nil {
+		t.Fatalf("expected 3xx without Location to be returned as final response, got error: %v", err)
+	}
+	if data != "" {
+		t.Errorf("expected empty body, got %q", data)
+	}
+}
+
+func TestFetchRedirectLoopStopsAfterMaxRedirects(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var n int
+		if _, err := fmt.Sscanf(r.URL.Path, "/r%d", &n); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Location", fmt.Sprintf("/r%d", n+1))
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl(server.URL+"/r0", config)
+	if err == nil {
+		t.Fatal("expected error after exhausting redirect hops")
+	}
+	if !errors.Is(err, ErrUpstreamStatus) {
+		t.Errorf("expected ErrUpstreamStatus, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Errorf("expected 'stopped after 10 redirects' error, got: %v", err)
+	}
+}
+
+func TestFetchTimeoutBoundsWholeRedirectChain(t *testing.T) {
+	// 10 hops x ~40ms sleep = ~400ms pre-fix; config.Timeout = 50ms must
+	// bound the WHOLE chain (redirect hops + final body read), not each hop.
+	chain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var n int
+		if _, err := fmt.Sscanf(r.URL.Path, "/hop%d", &n); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		time.Sleep(40 * time.Millisecond)
+		if n < 10 {
+			w.Header().Set("Location", fmt.Sprintf("/hop%d", n+1))
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("DONE"))
+	}))
+	defer chain.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         50 * time.Millisecond,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1"},
+		Logger:          DiscardLogger{},
+	}
+
+	start := time.Now()
+	data, _, err := singleFetchUrl(chain.URL+"/hop0", config)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error: timeout must bound the whole redirect chain, not each hop")
+	}
+	if strings.Contains(data, "DONE") {
+		t.Errorf("redirect chain completed despite the 50ms fetch budget, got %q", data)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("fetch took %v, exceeding one configured budget of 50ms", elapsed)
+	}
+}
+
+func TestFetchCacheKeyNamespacedBySSRFPolicy(t *testing.T) {
+	var secretHits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&secretHits, 1)
+		_, _ = w.Write([]byte("SECRET_FROM_REDIRECT"))
+	}))
+	defer target.Close()
+
+	// localhost resolves to the same loopback listener but is a distinct
+	// hostname, so the whitelist can tell the two policies apart.
+	targetPort := strings.TrimPrefix(target.URL, "http://127.0.0.1:")
+	secretURL := "http://localhost:" + targetPort + "/secret"
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", secretURL)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	cache := NewMemoryCache(100, time.Hour)
+	startURL := redirector.URL + "/start"
+
+	// Broad policy: localhost is allowlisted, so the redirect is followed and
+	// the secret body is cached under the requested URL's key.
+	broad := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1", "localhost"},
+		Cache:           cache,
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(startURL, broad)
+	if err != nil {
+		t.Fatalf("broad-policy fetch failed: %v", err)
+	}
+	if data != "SECRET_FROM_REDIRECT" {
+		t.Fatalf("expected SECRET_FROM_REDIRECT, got %q", data)
+	}
+
+	// Strict policy: same cache, same URL, but localhost is not allowlisted.
+	// The cached body from the broad policy must NOT be served.
+	strict := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1"},
+		Cache:           cache,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err = singleFetchUrl(startURL, strict)
+	if err == nil {
+		t.Fatal("expected error: strict-policy fetch must not be served the broad-policy cached body")
+	}
+	if !errors.Is(err, ErrSSRFBlocked) {
+		t.Errorf("expected ErrSSRFBlocked on the redirect hop, got: %v", err)
+	}
+
+	// Same-policy repeat must still hit the cache (dedup preserved).
+	data2, _, err := singleFetchUrl(startURL, broad)
+	if err != nil {
+		t.Fatalf("second broad-policy fetch failed: %v", err)
+	}
+	if data2 != "SECRET_FROM_REDIRECT" {
+		t.Errorf("expected cached SECRET_FROM_REDIRECT, got %q", data2)
+	}
+	if atomic.LoadInt32(&secretHits) != 1 {
+		t.Errorf("secret endpoint hit %d times, want 1 (same-policy call must be served from cache)", atomic.LoadInt32(&secretHits))
+	}
+}
+
+// recordingTransport answers every request without any network: /start
+// redirects to the non-ASCII host İ.example and /secret returns SECRET. It
+// records the URL of every request so a test can assert which upstreams were
+// actually dialed.
+type recordingTransport struct {
+	mu   sync.Mutex
+	urls []string
+}
+
+func (rt *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.mu.Lock()
+	rt.urls = append(rt.urls, r.URL.String())
+	rt.mu.Unlock()
+
+	switch r.URL.Path {
+	case "/start":
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Status:     "302 Found",
+			Header:     http.Header{"Location": []string{"http://İ.example/secret"}},
+			Body:       http.NoBody,
+			Request:    r,
+		}, nil
+	case "/secret":
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("SECRET")),
+			Request:    r,
+		}, nil
+	}
+	return nil, fmt.Errorf("unexpected request path %q", r.URL.Path)
+}
+
+func (rt *recordingTransport) countPath(path string) int {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	n := 0
+	for _, u := range rt.urls {
+		if parsed, err := url.Parse(u); err == nil && parsed.Path == path {
+			n++
+		}
+	}
+	return n
+}
+
+func TestFetchCacheKeyUnicodePolicyIsolation(t *testing.T) {
+	transport := &recordingTransport{}
+	client := &http.Client{Transport: transport}
+
+	cache := NewMemoryCache(100, time.Hour)
+	startURL := "http://127.0.0.1/start"
+	keyFor := func(config EsiParserConfig) string {
+		return "test:" + startURL + securityPolicyFingerprint(config)
+	}
+
+	// Policy A allowlists the exact non-ASCII host İ.example: the redirect
+	// hop passes the matcher, so SECRET is fetched and cached under A's
+	// fingerprint key.
+	policyA := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1", "İ.example"},
+		HTTPClient:      client,
+		Cache:           cache,
+		CacheKeyFunc:    func(url string) string { return "test:" + url },
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(startURL, policyA)
+	if err != nil {
+		t.Fatalf("policy-A fetch failed: %v", err)
+	}
+	if data != "SECRET" {
+		t.Fatalf("expected SECRET, got %q", data)
+	}
+	if val, ok, _ := cache.Get(context.Background(), keyFor(policyA)); !ok || val != "SECRET" {
+		t.Fatalf("policy-A body not cached: ok=%v, val=%q", ok, val)
+	}
+
+	// Policy B allowlists the ASCII variant i.example. With the old
+	// Lower()-based fingerprint the two policies produced the same key, so B
+	// would have been served the cached SECRET without ever validating (or
+	// fetching) the redirect target it would have blocked. With the injective
+	// fingerprint the keys differ: B misses the cache, dials /start, and the
+	// İ.example hop fails the matcher before any dial.
+	policyB := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1", "i.example"},
+		HTTPClient:      client,
+		Cache:           cache,
+		CacheKeyFunc:    func(url string) string { return "test:" + url },
+		Logger:          DiscardLogger{},
+	}
+
+	body, _, err := singleFetchUrl(startURL, policyB)
+	if err == nil {
+		t.Fatal("expected error: policy-B fetch must not be served policy-A's cached SECRET")
+	}
+	if !errors.Is(err, ErrSSRFBlocked) {
+		t.Errorf("expected ErrSSRFBlocked on the İ.example redirect hop, got: %v", err)
+	}
+	if body == "SECRET" {
+		t.Error("policy-B fetch returned the cached SECRET body")
+	}
+	if n := transport.countPath("/secret"); n != 1 {
+		t.Errorf("SECRET endpoint hit %d times, want 1 (only policy A's hop; policy B must never dial it)", n)
+	}
+}
+
+func TestFetchRelativeIncludeAllowedHostsOnExpandedURL(t *testing.T) {
+	t.Run("blocked when DefaultUrl host not in AllowedHosts", func(t *testing.T) {
+		var hits int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&hits, 1)
+			_, _ = w.Write([]byte("MUST_NOT_BE_FETCHED"))
+		}))
+		defer server.Close()
+
+		config := EsiParserConfig{
+			DefaultUrl:      server.URL + "/base/",
+			MaxDepth:        1,
+			Timeout:         5 * time.Second,
+			BlockPrivateIPs: false,
+			AllowedHosts:    []string{"allowed.example"},
+			Logger:          DiscardLogger{},
+		}
+
+		_, _, err := singleFetchUrl("relative/path", config)
+		if err == nil {
+			t.Fatal("expected error for relative include resolving to non-allowlisted host")
+		}
+		if !errors.Is(err, ErrSSRFBlocked) {
+			t.Errorf("expected ErrSSRFBlocked, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "host not in allowed list: 127.0.0.1") {
+			t.Errorf("expected allowed-hosts block error, got: %v", err)
+		}
+		if atomic.LoadInt32(&hits) != 0 {
+			t.Errorf("server was hit %d times, want 0 (expanded URL must be validated before dial)", atomic.LoadInt32(&hits))
+		}
+	})
+
+	t.Run("works when DefaultUrl host in AllowedHosts", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("RELATIVE_OK"))
+		}))
+		defer server.Close()
+
+		config := EsiParserConfig{
+			DefaultUrl:      server.URL + "/base/",
+			MaxDepth:        1,
+			Timeout:         5 * time.Second,
+			BlockPrivateIPs: false,
+			AllowedHosts:    []string{"127.0.0.1"},
+			Logger:          DiscardLogger{},
+		}
+
+		data, _, err := singleFetchUrl("relative/path", config)
+		if err != nil {
+			t.Fatalf("expected relative include to resolve to allowlisted host, got error: %v", err)
+		}
+		if data != "RELATIVE_OK" {
+			t.Errorf("expected 'RELATIVE_OK', got %q", data)
+		}
+	})
+}
+
 // TestNoDuplicatedHelper guards against re-introducing a hand-rolled
 // substring-search helper in fetch_test.go. The standard library
 // strings.Contains is the accepted implementation; any local
