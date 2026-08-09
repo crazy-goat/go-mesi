@@ -629,3 +629,9 @@ Knowledge" above).
   ```
 - Code review via subagent runs locally – the subagent has access to
   read/write/edit/bash tools. Give it clear instructions on what to check.
+- When functional tests need subdomain fixtures inside docker-compose
+  (e.g. allowed-hosts "subdomain of allowed host works" cases), DNS
+  wildcards do not resolve inside the test network: add the host as a
+  network `alias` on the target service (see `servers/nginx/docker-compose.yml`
+  `backend` aliases). Without an alias the include fails at DNS and is
+  indistinguishable from an SSRF block.

@@ -288,7 +288,106 @@ else
     exit 1
 fi
 
-docker compose down
+echo "=== Test 21: AllowedHosts — listed host works ==="
+RESPONSE=$(curl -s http://localhost:8080/allowed/allowed.html)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: mesi_allowed_hosts allows the listed host"
+else
+    echo "FAIL: mesi_allowed_hosts blocked the listed host"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 22: AllowedHosts — non-listed hosts blocked ==="
+RESPONSE=$(curl -s http://localhost:8080/allowed/allowed_blocked.html)
+if echo "$RESPONSE" | grep -q "FALLBACK-NOTBACKEND"; then
+    if echo "$RESPONSE" | grep -q "FALLBACK-ATTACKER"; then
+        if echo "$RESPONSE" | grep -q "FALLBACK-EVIL"; then
+            if echo "$RESPONSE" | grep -q "included content from backend"; then
+                echo "FAIL: blocked include content leaked into response"
+                echo "Response: $RESPONSE"
+                exit 1
+            fi
+            echo "PASS: notbackend.com, attacker-example.com and evil.com all blocked"
+        else
+            echo "FAIL: evil.com include did not fall back (was it allowed?)"
+            echo "Response: $RESPONSE"
+            exit 1
+        fi
+    else
+        echo "FAIL: attacker-example.com include did not fall back (was it allowed?)"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+else
+    echo "FAIL: notbackend.com include did not fall back (was it allowed?)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 23: AllowedHosts — subdomain of allowed host works ==="
+RESPONSE=$(curl -s http://localhost:8080/allowed/allowed_subdomain.html)
+if echo "$RESPONSE" | grep -q "included content from subdomain"; then
+    echo "PASS: sub.backend (subdomain of backend) allowed"
+else
+    echo "FAIL: sub.backend include blocked or failed to fetch"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 24: AllowedHosts — suffix injection blocked (example.com list) ==="
+RESPONSE=$(curl -s http://localhost:8080/allowed-inject/allowed_inject.html)
+if echo "$RESPONSE" | grep -q "FALLBACK-ATTACKER"; then
+    if echo "$RESPONSE" | grep -q "FALLBACK-SUFFIX"; then
+        echo "PASS: attacker-example.com and example.com.evil.com do not match example.com"
+    else
+        echo "FAIL: example.com.evil.com include did not fall back (was it allowed?)"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+else
+    echo "FAIL: attacker-example.com include did not fall back (was it allowed?)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 25: AllowedHosts unset — all hosts allowed (backward compatible) ==="
+RESPONSE=$(curl -s http://localhost:8080/allowed-unset/allowed_unset.html)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    if echo "$RESPONSE" | grep -q "included content from cdn alias"; then
+        echo "PASS: unset mesi_allowed_hosts allows any host (incl. unlisted cdn.example.net)"
+    else
+        echo "FAIL: unlisted cdn.example.net include failed"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+else
+    echo "FAIL: unset mesi_allowed_hosts blocked a backend include"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 26: AllowedHosts — multiple space-separated hosts ==="
+RESPONSE=$(curl -s http://localhost:8080/allowed-multi/allowed_multi.html)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    if echo "$RESPONSE" | grep -q "included content from subdomain"; then
+        if echo "$RESPONSE" | grep -q "FALLBACK-NOTBACKEND"; then
+            echo "PASS: backend and sub.backend both allowed, notbackend.com blocked"
+        else
+            echo "FAIL: notbackend.com include did not fall back (was it allowed?)"
+            echo "Response: $RESPONSE"
+            exit 1
+        fi
+    else
+        echo "FAIL: sub.backend include failed in multi-host location"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+else
+    echo "FAIL: backend include failed in multi-host location"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
 
 docker compose down
 

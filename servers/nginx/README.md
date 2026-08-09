@@ -97,6 +97,55 @@ location / {
 }
 ```
 
+## AllowedHosts
+
+The `mesi_allowed_hosts` directive restricts which hosts `<esi:include src=…>` may
+fetch, closing the SSRF gap for public-host exfiltration even when
+`mesi_block_private_ips` is disabled. Both checks are independent and
+complementary: `mesi_allowed_hosts` is validated by **hostname** before any
+connection is attempted, `mesi_block_private_ips` runs at **dial time** on the
+resolved IP address. A compromised backend can therefore never include from a
+host outside the whitelist, regardless of the dial-time setting.
+
+### Directive
+
+#### `mesi_allowed_hosts`
+
+- **Syntax:** `mesi_allowed_hosts <hosts>`
+- **Default:** empty (no restriction)
+- **Context:** `location`
+
+Space-separated list of hostnames allowed in `<esi:include src=…>`. The list is
+one nginx argument, so multiple entries are written as a single **quoted** string
+(e.g. `mesi_allowed_hosts "backend.internal cdn.example.com";`) — mirroring the
+existing `mesi_cache_memcached_servers` convention in this module. The content
+format (space-separated hostnames) matches Apache's `MesiAllowedHosts` directive
+for cross-server consistency.
+Unset (empty) = no hostname restriction — backward compatible, subject to
+`mesi_block_private_ips`.
+
+### Matching semantics
+
+A host matches if it is **exact** or a **subdomain suffix** of an entry:
+
+- `example.com` matches `example.com` and `sub.example.com` (suffix `".example.com"`)
+- `example.com` does **NOT** match `attacker-example.com` or `notexample.com`
+  (no dot boundary — suffix-injection is rejected by libgomesi)
+- Ports are ignored: `http://backend:8000/` matches entry `backend`
+
+Multiple hosts are space-separated; extra whitespace between entries is fine.
+
+### Example
+
+```nginx
+location / {
+    enable_mesi on;
+    mesi_block_private_ips off;   # trusted internal backend on a private IP
+    mesi_allowed_hosts "backend.internal cdn.example.com";
+    proxy_pass http://backend;
+}
+```
+
 ## Cache Backend
 
 The nginx module supports in-memory caching of ESI fragment responses. When enabled, duplicate `<esi:include>` URLs within the configured TTL are served from cache instead of fetching from the origin backend.

@@ -16,6 +16,7 @@ typedef struct {
   ngx_str_t  cache_redis_password;
   ngx_int_t  cache_redis_db;           // Redis database number (0-15)
   ngx_flag_t block_private_ips;        // SSRF: block private/reserved IPs (default ON)
+  ngx_str_t  allowed_hosts;  // space-separated host whitelist ("" = no restriction)
 } ngx_http_mesi_loc_conf_t;
 
 typedef struct {
@@ -93,6 +94,10 @@ static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("mesi_block_private_ips"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
      ngx_conf_set_flag_slot, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, block_private_ips), NULL},
+
+    {ngx_string("mesi_allowed_hosts"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, allowed_hosts), NULL},
 
     ngx_null_command};
 
@@ -480,12 +485,17 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   char *input_cstr = ngx_str_to_cstr(&input, r->pool);
   char *base_url_cstr = ngx_str_to_cstr(&base_url, r->pool);
 
+  // AllowedHosts is checked by hostname before any dial; BlockPrivateIPs
+  // runs at dial time. Empty string = no hostname restriction.
+  char *hosts_cstr = lcf->allowed_hosts.len > 0
+                         ? ngx_str_to_cstr(&lcf->allowed_hosts, r->pool)
+                         : "";
+
   char *message;
   if (EsiParseWithConfig != NULL) {
     // ParseWithConfig enables SSRF protection (blockPrivateIPs) and an
-    // optional allowed-hosts whitelist (empty string = no restriction,
-    // handled separately in issue #199).
-    message = EsiParseWithConfig(input_cstr, 5, base_url_cstr, "",
+    // optional allowed-hosts whitelist (empty string = no restriction).
+    message = EsiParseWithConfig(input_cstr, 5, base_url_cstr, hosts_cstr,
                                  lcf->block_private_ips);
   } else {
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
@@ -640,5 +650,8 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   // Enabling by default is a BREAKING CHANGE — operators with intentional
   // private-IP includes must set `mesi_block_private_ips off;`.
   ngx_conf_merge_value(conf->block_private_ips, prev->block_private_ips, 1);
+  // Empty (unset) = no hostname restriction (backward compatible). A child
+  // that sets its own hosts always overrides the parent's list.
+  ngx_conf_merge_str_value(conf->allowed_hosts, prev->allowed_hosts, "");
   return NGX_CONF_OK;
 }
