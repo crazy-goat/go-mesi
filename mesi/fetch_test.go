@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -1629,6 +1630,122 @@ func TestFetchCacheKeyNamespacedBySSRFPolicy(t *testing.T) {
 	}
 	if atomic.LoadInt32(&secretHits) != 1 {
 		t.Errorf("secret endpoint hit %d times, want 1 (same-policy call must be served from cache)", atomic.LoadInt32(&secretHits))
+	}
+}
+
+// recordingTransport answers every request without any network: /start
+// redirects to the non-ASCII host İ.example and /secret returns SECRET. It
+// records the URL of every request so a test can assert which upstreams were
+// actually dialed.
+type recordingTransport struct {
+	mu   sync.Mutex
+	urls []string
+}
+
+func (rt *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.mu.Lock()
+	rt.urls = append(rt.urls, r.URL.String())
+	rt.mu.Unlock()
+
+	switch r.URL.Path {
+	case "/start":
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Status:     "302 Found",
+			Header:     http.Header{"Location": []string{"http://İ.example/secret"}},
+			Body:       http.NoBody,
+			Request:    r,
+		}, nil
+	case "/secret":
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("SECRET")),
+			Request:    r,
+		}, nil
+	}
+	return nil, fmt.Errorf("unexpected request path %q", r.URL.Path)
+}
+
+func (rt *recordingTransport) countPath(path string) int {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	n := 0
+	for _, u := range rt.urls {
+		if parsed, err := url.Parse(u); err == nil && parsed.Path == path {
+			n++
+		}
+	}
+	return n
+}
+
+func TestFetchCacheKeyUnicodePolicyIsolation(t *testing.T) {
+	transport := &recordingTransport{}
+	client := &http.Client{Transport: transport}
+
+	cache := NewMemoryCache(100, time.Hour)
+	startURL := "http://127.0.0.1/start"
+	keyFor := func(config EsiParserConfig) string {
+		return "test:" + startURL + securityPolicyFingerprint(config)
+	}
+
+	// Policy A allowlists the exact non-ASCII host İ.example: the redirect
+	// hop passes the matcher, so SECRET is fetched and cached under A's
+	// fingerprint key.
+	policyA := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1", "İ.example"},
+		HTTPClient:      client,
+		Cache:           cache,
+		CacheKeyFunc:    func(url string) string { return "test:" + url },
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(startURL, policyA)
+	if err != nil {
+		t.Fatalf("policy-A fetch failed: %v", err)
+	}
+	if data != "SECRET" {
+		t.Fatalf("expected SECRET, got %q", data)
+	}
+	if val, ok, _ := cache.Get(context.Background(), keyFor(policyA)); !ok || val != "SECRET" {
+		t.Fatalf("policy-A body not cached: ok=%v, val=%q", ok, val)
+	}
+
+	// Policy B allowlists the ASCII variant i.example. With the old
+	// Lower()-based fingerprint the two policies produced the same key, so B
+	// would have been served the cached SECRET without ever validating (or
+	// fetching) the redirect target it would have blocked. With the injective
+	// fingerprint the keys differ: B misses the cache, dials /start, and the
+	// İ.example hop fails the matcher before any dial.
+	policyB := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1", "i.example"},
+		HTTPClient:      client,
+		Cache:           cache,
+		CacheKeyFunc:    func(url string) string { return "test:" + url },
+		Logger:          DiscardLogger{},
+	}
+
+	body, _, err := singleFetchUrl(startURL, policyB)
+	if err == nil {
+		t.Fatal("expected error: policy-B fetch must not be served policy-A's cached SECRET")
+	}
+	if !errors.Is(err, ErrSSRFBlocked) {
+		t.Errorf("expected ErrSSRFBlocked on the İ.example redirect hop, got: %v", err)
+	}
+	if body == "SECRET" {
+		t.Error("policy-B fetch returned the cached SECRET body")
+	}
+	if n := transport.countPath("/secret"); n != 1 {
+		t.Errorf("SECRET endpoint hit %d times, want 1 (only policy A's hop; policy B must never dial it)", n)
 	}
 }
 

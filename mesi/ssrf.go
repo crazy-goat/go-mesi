@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -85,11 +86,24 @@ func hostMatches(host, allowedHost string) bool {
 // JSON-encoded rather than joined with a delimiter so entries containing
 // delimiter characters (e.g. "a,b") cannot collide with separate entries;
 // duplicates are collapsed so the fingerprint is canonical.
+//
+// Host normalization is injective with respect to the authorization matcher
+// (hostMatches): pure-ASCII hosts are lowercased — strings.ToLower on ASCII
+// is exactly EqualFold-compatible, the fold classes being the case pairs,
+// so ASCII policies unify precisely like the matcher — while non-ASCII hosts
+// are preserved verbatim (after the one-trailing-dot trim), because there is
+// no rune-level canonical form matching Go's full case folding (multi-rune
+// folds like ß→ss). Different raw host strings therefore always produce
+// different fingerprints, so distinct policies can never collide; the cost is
+// safe cache fragmentation for case-variant non-ASCII configs.
 func securityPolicyFingerprint(config EsiParserConfig) string {
 	hosts := make([]string, 0, len(config.AllowedHosts))
 	seen := make(map[string]struct{}, len(config.AllowedHosts))
 	for _, h := range config.AllowedHosts {
-		h = strings.ToLower(strings.TrimSuffix(h, "."))
+		h = strings.TrimSuffix(h, ".")
+		if isASCIIHost(h) {
+			h = strings.ToLower(h)
+		}
 		if _, ok := seen[h]; ok {
 			continue
 		}
@@ -101,6 +115,17 @@ func securityPolicyFingerprint(config EsiParserConfig) string {
 	return fmt.Sprintf("|ssrf=ah:%s,bpi:%t,api4ah:%t,hc:%t",
 		string(hostsJSON), config.BlockPrivateIPs, config.AllowPrivateIPsForAllowedHosts,
 		config.HTTPClient != nil)
+}
+
+// isASCIIHost reports whether s contains only ASCII bytes (each < 0x80), i.e.
+// a hostname on which strings.ToLower is exactly EqualFold-compatible.
+func isASCIIHost(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 func isPrivateOrReservedIP(ip net.IP) bool {

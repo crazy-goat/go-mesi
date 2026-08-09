@@ -515,13 +515,14 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
     // Defensive fail-closed fallback: the header phase already refused the
     // request with HTTP 500 before any body filter ctx was created, so this
     // path should never be reached. If it ever is, return a valid empty
-    // terminal response (ngx_null_string) so no NULL-pos buffer is fed to
-    // the writer.
+    // terminal response: zero length with a non-NULL data pointer, so the
+    // writer never receives the NULL-pos zero-size buffer that
+    // ngx_null_string would yield.
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                   "mesi: ParseWithConfig unavailable in libgomesi — "
                   "mesi_allowed_hosts cannot be enforced; failing request "
                   "(fail closed)");
-    return (ngx_str_t) ngx_null_string;
+    return (ngx_str_t){0, (u_char *)""};
   } else {
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                   "mesi: ParseWithConfig unavailable in libgomesi — "

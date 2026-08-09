@@ -37,6 +37,28 @@ func TestSecurityPolicyFingerprintCollisionSafety(t *testing.T) {
 		t.Error(`fingerprint must normalize hosts (lowercase + trailing dot)`)
 	}
 
+	// Unicode collision safety: strings.ToLower is not EqualFold-compatible
+	// for non-ASCII hosts (ToLower("İ.example") == "i.example" but the
+	// matcher rejects the fold), so the two policies must never share a
+	// fingerprint — otherwise content cached under the İ variant would be
+	// served to the i variant without ever validating the redirect hop.
+	if fp([]string{"127.0.0.1", "İ.example"}) == fp([]string{"127.0.0.1", "i.example"}) {
+		t.Error(`fingerprint([127.0.0.1, İ.example]) must differ from fingerprint([127.0.0.1, i.example])`)
+	}
+
+	// ASCII unification is preserved: ToLower on pure ASCII is exactly
+	// EqualFold-compatible, so ASCII case variants share a fingerprint.
+	if fp([]string{"Backend"}) != fp([]string{"backend"}) {
+		t.Error(`fingerprint([Backend]) must equal fingerprint([backend]) (ASCII case normalization)`)
+	}
+
+	// Non-ASCII hosts are preserved verbatim: even though the matcher folds
+	// long-s to s, the fingerprint must not collapse them — different raw
+	// strings always produce different fingerprints (safe fragmentation).
+	if fp([]string{"ſ.example"}) == fp([]string{"s.example"}) {
+		t.Error(`fingerprint([ſ.example]) must differ from fingerprint([s.example]) (non-ASCII verbatim)`)
+	}
+
 	// IPv6 hosts contain colons; distinct addresses must stay distinct.
 	if fp([]string{"2001:db8::1"}) == fp([]string{"2001:db8::2"}) {
 		t.Error(`fingerprints of distinct IPv6 hosts must differ`)
