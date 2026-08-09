@@ -265,21 +265,21 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 			break
 		}
 		if hop >= maxRedirects {
-			content.Body.Close()
+			_ = content.Body.Close()
 			return "", false, errors.Join(ErrUpstreamStatus, fmt.Errorf("stopped after %d redirects", maxRedirects))
 		}
 		ref, err := url.Parse(location)
 		if err != nil {
-			content.Body.Close()
+			_ = content.Body.Close()
 			return "", false, errors.Join(ErrUpstreamStatus, fmt.Errorf("invalid redirect location: %s", location))
 		}
 		nextURL := req.URL.ResolveReference(ref)
 		if _, err := validateFetchURL(nextURL.String(), config); err != nil {
-			content.Body.Close()
+			_ = content.Body.Close()
 			logger.Debug("fetch_ssrf_error", "url", nextURL.String(), "error", err.Error())
 			return "", false, err
 		}
-		content.Body.Close()
+		_ = content.Body.Close()
 		hopURL = nextURL.String()
 	}
 	defer func() { _ = content.Body.Close() }()
