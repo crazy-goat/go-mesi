@@ -48,6 +48,14 @@ func TestSecurityPolicyFingerprintCollisionSafety(t *testing.T) {
 		securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}}) {
 		t.Error(`fingerprint must encode the BlockPrivateIPs flag`)
 	}
+
+	// A caller-supplied custom HTTPClient can fetch arbitrary hosts, so a
+	// custom-client policy must never share a fingerprint with an otherwise
+	// identical policy using the default (nil) client.
+	if securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}, BlockPrivateIPs: true}) ==
+		securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}, BlockPrivateIPs: true, HTTPClient: &http.Client{}}) {
+		t.Error(`fingerprint must encode the HTTPClient type (custom vs default)`)
+	}
 }
 
 func TestHostMatches(t *testing.T) {

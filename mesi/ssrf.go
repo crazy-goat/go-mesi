@@ -74,14 +74,17 @@ func hostMatches(host, allowedHost string) bool {
 }
 
 // securityPolicyFingerprint returns a canonical fingerprint of the SSRF
-// policy in effect for a fetch: the sorted AllowedHosts list plus the
-// BlockPrivateIPs and AllowPrivateIPsForAllowedHosts flags. It is appended to
-// every cache key (after the URL-derived key part) so content cached under one
-// policy can never be served under a different one — a policy change in either
-// direction (stricter or looser) invalidates previously cached entries. The
-// host list is JSON-encoded rather than joined with a delimiter so entries
-// containing delimiter characters (e.g. "a,b") cannot collide with separate
-// entries; duplicates are collapsed so the fingerprint is canonical.
+// policy in effect for a fetch: the sorted AllowedHosts list, the
+// BlockPrivateIPs and AllowPrivateIPsForAllowedHosts flags, and the HTTP
+// client type (custom caller-supplied client vs default per-request client).
+// It is appended to every cache key (after the URL-derived key part) so
+// content cached under one policy can never be served under a different one
+// — a policy change in either direction (stricter or looser) invalidates
+// previously cached entries, and entries fetched through a custom transport
+// are never served to a config using the default client. The host list is
+// JSON-encoded rather than joined with a delimiter so entries containing
+// delimiter characters (e.g. "a,b") cannot collide with separate entries;
+// duplicates are collapsed so the fingerprint is canonical.
 func securityPolicyFingerprint(config EsiParserConfig) string {
 	hosts := make([]string, 0, len(config.AllowedHosts))
 	seen := make(map[string]struct{}, len(config.AllowedHosts))
@@ -95,8 +98,9 @@ func securityPolicyFingerprint(config EsiParserConfig) string {
 	}
 	sort.Strings(hosts)
 	hostsJSON, _ := json.Marshal(hosts)
-	return fmt.Sprintf("|ssrf=ah:%s,bpi:%t,api4ah:%t",
-		string(hostsJSON), config.BlockPrivateIPs, config.AllowPrivateIPsForAllowedHosts)
+	return fmt.Sprintf("|ssrf=ah:%s,bpi:%t,api4ah:%t,hc:%t",
+		string(hostsJSON), config.BlockPrivateIPs, config.AllowPrivateIPsForAllowedHosts,
+		config.HTTPClient != nil)
 }
 
 func isPrivateOrReservedIP(ip net.IP) bool {

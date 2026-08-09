@@ -67,9 +67,7 @@ location / {
 
 ## Shared HTTP Client
 
-A shared HTTP client is automatically created once per worker process and reused for all ESI fragment fetches. This reuses idle TCP connections (default: 100 per host, 90s idle timeout), dramatically reducing latency for pages with multiple `<esi:include>` tags to the same backend.
-
-The shared client includes SSRF protection — connections to private/reserved IP addresses are blocked at dial time.
+Not available in the nginx module: there is no shared-client directive (unlike Apache's `MesiSharedHTTPClient` and the CLI's `-shared-http-client`) and no `InitHTTPClient` wiring. Each `<esi:include>` fetch creates its own `http.Client` for the request, so TCP/TLS connection pooling across includes is not available — every include performs its own connection setup. Each per-include client still uses the SSRF-safe transport, so `mesi_block_private_ips` protection applies to every fetch.
 
 ## SSRF Protection
 

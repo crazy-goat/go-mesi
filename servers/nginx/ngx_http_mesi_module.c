@@ -161,6 +161,15 @@ static ngx_int_t ngx_http_html_mesi_head_filter(ngx_http_request_t *r) {
     return ngx_http_next_header_filter(r);
   }
 
+  if (lcf->allowed_hosts.len > 0 && EsiParseWithConfig == NULL) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "mesi: ParseWithConfig unavailable in libgomesi — "
+                  "mesi_allowed_hosts cannot be enforced; returning HTTP 500 "
+                  "(fail closed)");
+    r->headers_out.status = NGX_HTTP_INTERNAL_SERVER_ERROR;
+    return ngx_http_next_header_filter(r);
+  }
+
   h = ngx_list_push(&r->headers_out.headers);
   if (h == NULL) {
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
@@ -503,15 +512,16 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
     message = EsiParseWithConfig(input_cstr, 5, base_url_cstr, hosts_cstr,
                                  lcf->block_private_ips);
   } else if (lcf->allowed_hosts.len > 0) {
-    // Fail closed: a libgomesi build without ParseWithConfig cannot
-    // enforce mesi_allowed_hosts. Serving the include anyway would
-    // silently disable the configured whitelist, so the request is
-    // refused through the module's error-output path (empty output).
+    // Defensive fail-closed fallback: the header phase already refused the
+    // request with HTTP 500 before any body filter ctx was created, so this
+    // path should never be reached. If it ever is, return a valid empty
+    // terminal response (ngx_null_string) so no NULL-pos buffer is fed to
+    // the writer.
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                   "mesi: ParseWithConfig unavailable in libgomesi — "
                   "mesi_allowed_hosts cannot be enforced; failing request "
                   "(fail closed)");
-    return output;
+    return (ngx_str_t) ngx_null_string;
   } else {
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                   "mesi: ParseWithConfig unavailable in libgomesi — "
@@ -672,10 +682,14 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   ngx_conf_merge_str_value(conf->allowed_hosts, prev->allowed_hosts, "");
   if (conf->allowed_hosts.len > 0) {
     // Reject whitespace-only allowlists: they would silently disable the
-    // hostname restriction the operator intended to configure.
+    // hostname restriction the operator intended to configure. The check
+    // covers every byte of the ASCII whitespace set: space, tab, CR, LF,
+    // VT (vertical tab) and FF (form feed).
     size_t i;
     for (i = 0; i < conf->allowed_hosts.len; i++) {
-      if (conf->allowed_hosts.data[i] != ' ' && conf->allowed_hosts.data[i] != '\t') {
+      u_char c = conf->allowed_hosts.data[i];
+      if (c != ' ' && c != '\t' && c != '\r' && c != '\n' &&
+          c != '\v' && c != '\f') {
         break;
       }
     }
