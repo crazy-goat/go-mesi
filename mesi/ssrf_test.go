@@ -64,6 +64,16 @@ func TestSecurityPolicyFingerprintCollisionSafety(t *testing.T) {
 		t.Error(`fingerprints of distinct IPv6 hosts must differ`)
 	}
 
+	// Malformed UTF-8: hosts are encoded as byte slices (base64), which is
+	// lossless, so two distinct byte strings must never share a fingerprint
+	// (json.Marshal on strings would collapse both to U+FFFD).
+	if fp([]string{string([]byte{0x80})}) == fp([]string{string([]byte{0x81})}) {
+		t.Error(`fingerprints of distinct malformed-UTF-8 hosts must differ`)
+	}
+	if fp([]string{string([]byte{0x80})}) == fp([]string{"\ufffd"}) {
+		t.Error(`fingerprint of malformed byte 0x80 must differ from literal U+FFFD`)
+	}
+
 	// Distinct policies with identical host lists but different flags must
 	// produce different fingerprints.
 	if securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}, BlockPrivateIPs: true}) ==

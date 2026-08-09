@@ -94,6 +94,7 @@ func fetchClientForURL(fetchURL string, config EsiParserConfig) httpDoer {
 		return &http.Client{
 			Transport:     config.HTTPClient.Transport,
 			Timeout:       config.HTTPClient.Timeout,
+			Jar:           config.HTTPClient.Jar,
 			CheckRedirect: noRedirectFunc,
 		}
 	}
@@ -197,7 +198,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		// caches are process-wide/shared, so without this a body fetched
 		// under a broader policy could be served to a stricter one.
 		cacheKey += securityPolicyFingerprint(config)
-		if val, ok, err := config.Cache.Get(ctx, cacheKey); err != nil {
+		if val, ok, err := config.Cache.Get(fetchCtx, cacheKey); err != nil {
 			config.warn("cache_get_error", "key", cacheKey, "error", err.Error())
 		} else if ok {
 			return val, false, nil
@@ -223,7 +224,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		}
 		// Double-check: another goroutine may have populated the
 		// cache while we were waiting for the slot.
-		if val, ok, _ := config.Cache.Get(ctx, cacheKey); ok {
+		if val, ok, _ := config.Cache.Get(fetchCtx, cacheKey); ok {
 			<-lock
 			return val, false, nil
 		}
@@ -307,7 +308,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	}
 	contentStr := string(dataBytes)
 	if config.Cache != nil && cacheKey != "" {
-		if err := config.Cache.Set(ctx, cacheKey, contentStr, config.CacheTTL); err != nil {
+		if err := config.Cache.Set(fetchCtx, cacheKey, contentStr, config.CacheTTL); err != nil {
 			config.warn("cache_set_error", "key", cacheKey, "error", err.Error())
 		}
 	}

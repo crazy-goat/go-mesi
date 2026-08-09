@@ -85,7 +85,10 @@ func hostMatches(host, allowedHost string) bool {
 // are never served to a config using the default client. The host list is
 // JSON-encoded rather than joined with a delimiter so entries containing
 // delimiter characters (e.g. "a,b") cannot collide with separate entries;
-// duplicates are collapsed so the fingerprint is canonical.
+// duplicates are collapsed so the fingerprint is canonical. Hosts are
+// encoded as byte slices: encoding/json base64-encodes []byte, which is
+// lossless even for malformed UTF-8, so distinct raw host strings always
+// produce distinct fingerprints.
 //
 // Host normalization is injective with respect to the authorization matcher
 // (hostMatches): pure-ASCII hosts are lowercased — strings.ToLower on ASCII
@@ -97,7 +100,7 @@ func hostMatches(host, allowedHost string) bool {
 // different fingerprints, so distinct policies can never collide; the cost is
 // safe cache fragmentation for case-variant non-ASCII configs.
 func securityPolicyFingerprint(config EsiParserConfig) string {
-	hosts := make([]string, 0, len(config.AllowedHosts))
+	hosts := make([][]byte, 0, len(config.AllowedHosts))
 	seen := make(map[string]struct{}, len(config.AllowedHosts))
 	for _, h := range config.AllowedHosts {
 		h = strings.TrimSuffix(h, ".")
@@ -108,9 +111,9 @@ func securityPolicyFingerprint(config EsiParserConfig) string {
 			continue
 		}
 		seen[h] = struct{}{}
-		hosts = append(hosts, h)
+		hosts = append(hosts, []byte(h))
 	}
-	sort.Strings(hosts)
+	sort.Slice(hosts, func(i, j int) bool { return string(hosts[i]) < string(hosts[j]) })
 	hostsJSON, _ := json.Marshal(hosts)
 	return fmt.Sprintf("|ssrf=ah:%s,bpi:%t,api4ah:%t,hc:%t",
 		string(hostsJSON), config.BlockPrivateIPs, config.AllowPrivateIPsForAllowedHosts,
