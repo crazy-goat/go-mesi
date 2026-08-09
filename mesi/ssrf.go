@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -60,13 +61,31 @@ func isURLSafe(requestedURL string, config EsiParserConfig) error {
 }
 
 // hostMatches reports whether host equals allowedHost or is a subdomain of
-// it. Matching is case-insensitive, tolerates a single trailing root dot on
-// either side, and keeps the exact '.' suffix boundary so suffix injection
-// (attacker-example.com vs example.com) never matches.
+// it. Matching is case-insensitive (EqualFold), tolerates a single trailing
+// root dot on either side, and keeps the exact '.' suffix boundary so suffix
+// injection (attacker-example.com vs example.com) never matches.
 func hostMatches(host, allowedHost string) bool {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	allowedHost = strings.ToLower(strings.TrimSuffix(allowedHost, "."))
-	return host == allowedHost || strings.HasSuffix(host, "."+allowedHost)
+	host = strings.TrimSuffix(host, ".")
+	allowedHost = strings.TrimSuffix(allowedHost, ".")
+	return strings.EqualFold(host, allowedHost) ||
+		(len(host) > len(allowedHost) && host[len(host)-len(allowedHost)-1] == '.' &&
+			strings.EqualFold(host[len(host)-len(allowedHost):], allowedHost))
+}
+
+// securityPolicyFingerprint returns a canonical fingerprint of the SSRF
+// policy in effect for a fetch: the sorted AllowedHosts list plus the
+// BlockPrivateIPs and AllowPrivateIPsForAllowedHosts flags. It is appended to
+// every cache key (after the URL-derived key part) so content cached under one
+// policy can never be served under a different one — a policy change in either
+// direction (stricter or looser) invalidates previously cached entries.
+func securityPolicyFingerprint(config EsiParserConfig) string {
+	hosts := make([]string, len(config.AllowedHosts))
+	for i, h := range config.AllowedHosts {
+		hosts[i] = strings.ToLower(strings.TrimSuffix(h, "."))
+	}
+	sort.Strings(hosts)
+	return fmt.Sprintf("|ssrf=ah:%s,bpi:%t,api4ah:%t",
+		strings.Join(hosts, ","), config.BlockPrivateIPs, config.AllowPrivateIPsForAllowedHosts)
 }
 
 func isPrivateOrReservedIP(ip net.IP) bool {

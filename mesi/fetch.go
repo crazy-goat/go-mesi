@@ -136,6 +136,14 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		return "", false, fmt.Errorf("%w", ErrTimeBudgetExceeded)
 	}
 
+	// One deadline for the whole fetch: every redirect hop request and the
+	// final response-body read share the same budget, so a chain of redirects
+	// cannot restart the timeout per hop (previously each hop got a fresh
+	// client.Timeout, allowing roughly 11x the configured budget). The
+	// per-hop client Timeout below remains as a secondary per-hop bound.
+	fetchCtx, cancel := context.WithTimeout(ctx, config.Timeout)
+	defer cancel()
+
 	parsed, err := url.Parse(requestedURL)
 	if err != nil {
 		return "", false, fmt.Errorf("%w: %s", ErrInvalidURL, err.Error())
@@ -176,6 +184,10 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 			cacheKeyFunc = DefaultCacheKey
 		}
 		cacheKey = cacheKeyFunc(urlToFetch)
+		// Namespace the key by the SSRF policy in effect for this fetch:
+		// caches are process-wide/shared, so without this a body fetched
+		// under a broader policy could be served to a stricter one.
+		cacheKey += securityPolicyFingerprint(config)
 		if val, ok, err := config.Cache.Get(ctx, cacheKey); err != nil {
 			config.warn("cache_get_error", "key", cacheKey, "error", err.Error())
 		} else if ok {
@@ -211,7 +223,7 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	reqStart := time.Now()
 	var content *http.Response
 	for hop := 0; ; hop++ {
-		req, err := http.NewRequestWithContext(ctx, "GET", hopURL, nil)
+		req, err := http.NewRequestWithContext(fetchCtx, "GET", hopURL, nil)
 		if err != nil {
 			return "", false, fmt.Errorf("%w: %s", ErrInvalidURL, err.Error())
 		}

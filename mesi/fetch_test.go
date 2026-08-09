@@ -868,7 +868,7 @@ func TestFetchWithCache(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	val, ok, _ := cache.Get(ctx, "test:"+url)
+	val, ok, _ := cache.Get(ctx, "test:"+url+securityPolicyFingerprint(config))
 	if !ok || val != "cached content" {
 		t.Fatalf("cache miss or wrong value: ok=%v, val=%s", ok, val)
 	}
@@ -1332,6 +1332,124 @@ func TestFetchRedirectLoopStopsAfterMaxRedirects(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "stopped after 10 redirects") {
 		t.Errorf("expected 'stopped after 10 redirects' error, got: %v", err)
+	}
+}
+
+func TestFetchTimeoutBoundsWholeRedirectChain(t *testing.T) {
+	// 10 hops x ~40ms sleep = ~400ms pre-fix; config.Timeout = 50ms must
+	// bound the WHOLE chain (redirect hops + final body read), not each hop.
+	chain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var n int
+		if _, err := fmt.Sscanf(r.URL.Path, "/hop%d", &n); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		time.Sleep(40 * time.Millisecond)
+		if n < 10 {
+			w.Header().Set("Location", fmt.Sprintf("/hop%d", n+1))
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("DONE"))
+	}))
+	defer chain.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         50 * time.Millisecond,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1"},
+		Logger:          DiscardLogger{},
+	}
+
+	start := time.Now()
+	data, _, err := singleFetchUrl(chain.URL+"/hop0", config)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error: timeout must bound the whole redirect chain, not each hop")
+	}
+	if strings.Contains(data, "DONE") {
+		t.Errorf("redirect chain completed despite the 50ms fetch budget, got %q", data)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("fetch took %v, exceeding one configured budget of 50ms", elapsed)
+	}
+}
+
+func TestFetchCacheKeyNamespacedBySSRFPolicy(t *testing.T) {
+	var secretHits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&secretHits, 1)
+		_, _ = w.Write([]byte("SECRET_FROM_REDIRECT"))
+	}))
+	defer target.Close()
+
+	// localhost resolves to the same loopback listener but is a distinct
+	// hostname, so the whitelist can tell the two policies apart.
+	targetPort := strings.TrimPrefix(target.URL, "http://127.0.0.1:")
+	secretURL := "http://localhost:" + targetPort + "/secret"
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", secretURL)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	cache := NewMemoryCache(100, time.Hour)
+	startURL := redirector.URL + "/start"
+
+	// Broad policy: localhost is allowlisted, so the redirect is followed and
+	// the secret body is cached under the requested URL's key.
+	broad := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1", "localhost"},
+		Cache:           cache,
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(startURL, broad)
+	if err != nil {
+		t.Fatalf("broad-policy fetch failed: %v", err)
+	}
+	if data != "SECRET_FROM_REDIRECT" {
+		t.Fatalf("expected SECRET_FROM_REDIRECT, got %q", data)
+	}
+
+	// Strict policy: same cache, same URL, but localhost is not allowlisted.
+	// The cached body from the broad policy must NOT be served.
+	strict := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1"},
+		Cache:           cache,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err = singleFetchUrl(startURL, strict)
+	if err == nil {
+		t.Fatal("expected error: strict-policy fetch must not be served the broad-policy cached body")
+	}
+	if !errors.Is(err, ErrSSRFBlocked) {
+		t.Errorf("expected ErrSSRFBlocked on the redirect hop, got: %v", err)
+	}
+
+	// Same-policy repeat must still hit the cache (dedup preserved).
+	data2, _, err := singleFetchUrl(startURL, broad)
+	if err != nil {
+		t.Fatalf("second broad-policy fetch failed: %v", err)
+	}
+	if data2 != "SECRET_FROM_REDIRECT" {
+		t.Errorf("expected cached SECRET_FROM_REDIRECT, got %q", data2)
+	}
+	if atomic.LoadInt32(&secretHits) != 1 {
+		t.Errorf("secret endpoint hit %d times, want 1 (same-policy call must be served from cache)", atomic.LoadInt32(&secretHits))
 	}
 }
 
