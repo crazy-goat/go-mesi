@@ -287,17 +287,21 @@ static int mesi_unicode_ws_len(const unsigned char *p) {
         if ((p[2] >= 0x80 && p[2] <= 0x8A) || p[2] == 0xA8
             || p[2] == 0xA9 || p[2] == 0xAF) return 3;              /* U+2000-U+200A, U+2028, U+2029, U+202F */
     }
+    if (p[0] == 0xE2 && p[1] == 0x81 && p[2] == 0x9F) return 3;     /* U+205F */
     if (p[0] == 0xE3 && p[1] == 0x80 && p[2] == 0x80) return 3;     /* U+3000 */
     return 0;
 }
 
 /* Does s contain at least one byte that is not whitespace under Go's
- * strings.Fields definition (space/tab plus the Unicode set above)?
- * Returns 1 if a hostname token is present, 0 for empty/whitespace-only. */
+ * strings.Fields definition (space plus the Unicode set above)? Note
+ * that tab/CR/LF and other control characters never reach this helper —
+ * parse_with_config() rejects them earlier — so only the literal space
+ * needs an explicit check here. Returns 1 if a hostname token is
+ * present, 0 for empty/whitespace-only. */
 static int mesi_allowed_hosts_has_token(const char *s) {
     const unsigned char *p = (const unsigned char *)s;
     while (*p) {
-        if (*p == ' ' || *p == '\t') { p++; continue; }
+        if (*p == ' ') { p++; continue; }
         if (p[0] == 0xC2 || p[0] == 0xE1 || p[0] == 0xE2 || p[0] == 0xE3) {
             int n = mesi_unicode_ws_len(p);
             if (n > 0) { p += n; continue; }

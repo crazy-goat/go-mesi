@@ -57,10 +57,34 @@ list($res, $w) = parse_ok(['allowed_hosts' => "\t"]);
 echo "tabonly_result=$res\n";
 echo "tabonly_warnings=$w\n";
 
-// Unicode whitespace only (U+00A0): tokenizes like Go strings.Fields
+// Unicode whitespace only: every byte-family branch of the validator
+// rejects (each value tokenizes to zero hostnames under Go's
+// strings.Fields, exactly like nginx's mesi_allowed_hosts hardening #354):
+//   U+00A0 (0xC2 0xA0), U+1680 (0xE1 0x9A 0x80), U+2008 (0xE2 0x80 0x88),
+//   U+202F (0xE2 0x80 0xAF), U+205F (0xE2 0x81 0x9F), U+3000 (0xE3 0x80 0x80)
 list($res, $w) = parse_ok(['allowed_hosts' => "\xC2\xA0"]);
-echo "unicodews_result=$res\n";
-echo "unicodews_warnings=$w\n";
+echo "unicodews_a0_result=$res\n";
+echo "unicodews_a0_warnings=$w\n";
+
+list($res, $w) = parse_ok(['allowed_hosts' => "\xE1\x9A\x80"]);
+echo "unicodews_1680_result=$res\n";
+echo "unicodews_1680_warnings=$w\n";
+
+list($res, $w) = parse_ok(['allowed_hosts' => "\xE2\x80\x88"]);
+echo "unicodews_2008_result=$res\n";
+echo "unicodews_2008_warnings=$w\n";
+
+list($res, $w) = parse_ok(['allowed_hosts' => "\xE2\x80\xAF"]);
+echo "unicodews_202f_result=$res\n";
+echo "unicodews_202f_warnings=$w\n";
+
+list($res, $w) = parse_ok(['allowed_hosts' => "\xE2\x81\x9F"]);
+echo "unicodews_205f_result=$res\n";
+echo "unicodews_205f_warnings=$w\n";
+
+list($res, $w) = parse_ok(['allowed_hosts' => "\xE3\x80\x80"]);
+echo "unicodews_3000_result=$res\n";
+echo "unicodews_3000_warnings=$w\n";
 
 // control character inside the list is rejected
 list($res, $w) = parse_ok(['allowed_hosts' => "local\nhost"]);
@@ -147,8 +171,18 @@ spacesonly_result=false
 spacesonly_warnings=1
 tabonly_result=false
 tabonly_warnings=1
-unicodews_result=false
-unicodews_warnings=1
+unicodews_a0_result=false
+unicodews_a0_warnings=1
+unicodews_1680_result=false
+unicodews_1680_warnings=1
+unicodews_2008_result=false
+unicodews_2008_warnings=1
+unicodews_202f_result=false
+unicodews_202f_warnings=1
+unicodews_205f_result=false
+unicodews_205f_warnings=1
+unicodews_3000_result=false
+unicodews_3000_warnings=1
 ctrlchar_result=false
 ctrlchar_warnings=1
 unicodelist_result=string
