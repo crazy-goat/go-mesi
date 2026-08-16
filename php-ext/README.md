@@ -98,8 +98,9 @@ $html = \mesi\parse_with_config(
 | `cache_redis_db` | optional, `cache_backend = "redis"` | int | `[0, 15]`; omitted means Redis DB 0 |
 | `cache_memcached_servers` | `cache_backend = "memcached"` | array of strings | Each entry is `"host:port"`; non-empty list required |
 | `block_private_ips` | optional | bool | SSRF dial-time blocking of private/reserved IP ranges. Defaults to `true` (secure by default); pass `false` to allow includes from private IPs (e.g. loopback, RFC1918). A non-boolean value is rejected with `E_WARNING` |
+| `allowed_hosts` | optional | string | Space-separated hostname whitelist restricting which `<esi:include>` destinations are fetched (e.g. `'backend.internal cdn.example.com'`). Empty/absent = all hosts allowed (backward compatible). Non-string, control-character, or whitespace-only values are rejected with `E_WARNING` |
 
-Validation is strict: an unknown `cache_backend`, mismatched Redis-vs-Memcached key, out-of-range numeric value, non-integer value, malformed `host:port`, or a non-string memcached server entry emits an `E_WARNING` and returns `false`. The function never silently degrades to "no cache" on a typo — a wrong host:port or empty memcached list surfaces as `E_WARNING`, matching the validation pattern in `parse_with_config()` for the in-memory backend and the equivalent `MesiCache*` directives in `servers/apache`. The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
+Validation is strict: an unknown `cache_backend`, mismatched Redis-vs-Memcached key, out-of-range numeric value, non-integer value, malformed `host:port`, or a non-string memcached server entry emits an `E_WARNING` and returns `false`. The function never silently degrades to "no cache" on a typo — a wrong host:port or empty memcached list surfaces as `E_WARNING`, matching the validation pattern in `parse_with_config()` for the in-memory backend and the equivalent `MesiCache*` directives in `servers/apache`. The same applies to `allowed_hosts`: a non-string or whitespace-only value is rejected (a whitespace-only list would silently tokenize to an empty allowlist = allow all hosts — the same fail-open typo nginx hardens against, #354). The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
 
 ### Examples
 
@@ -177,6 +178,44 @@ echo \mesi\parse_with_config(
 The shared HTTP client's transport is rebuilt only when the requested
 `block_private_ips` value changes between calls, so repeated calls with the
 same setting incur no extra setup cost.
+
+#### Host whitelist (`allowed_hosts`)
+
+`allowed_hosts` restricts which `<esi:include>` destinations are fetched, by
+hostname, before any connection is made. It complements `block_private_ips`:
+
+```php
+// Only includes to backend.internal and cdn.example.com are fetched.
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    [
+        'allowed_hosts'    => 'backend.internal cdn.example.com',
+        'block_private_ips' => false,   // internal backend is on a private IP
+    ]
+);
+```
+
+Semantics (identical to Apache's `MesiAllowedHosts`, nginx's
+`mesi_allowed_hosts` and libgomesi's `allowedHosts` parameter):
+
+- Values are space-separated bare hostnames, passed verbatim to libgomesi.
+- Matching is exact or subdomain-suffix: `sub.backend` matches `backend`.
+- The `.` boundary prevents suffix injection: `notbackend.com` and
+  `attacker-backend.com` do **not** match `backend`.
+- Matching is case-insensitive; ports in include URLs are ignored
+  (`http://backend:8000/` matches `backend`).
+- Empty or absent value means **all hosts allowed** (backward compatible).
+  Whitespace-only values (ASCII or Unicode) are rejected with `E_WARNING` —
+  they would silently tokenize to an empty allowlist.
+- `allowed_hosts` does **not** bypass `block_private_ips`: includes to
+  private/reserved IPs still require `block_private_ips => false` (a
+  dedicated `allow_private_ips_for_allowed_hosts` bypass is tracked in
+  #196).
+- The check runs by hostname before the dial-time private-IP check —
+  two-phase defense-in-depth (redirect targets are re-validated on every
+  hop by the shared core).
 
 ### Cache scope
 

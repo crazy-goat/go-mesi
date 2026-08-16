@@ -14,3 +14,12 @@ services:
     build:
       context: ../servers/test-server
       dockerfile: Dockerfile
+    # allowed_hosts subdomain fixture: like the nginx suite, DNS wildcards
+    # do not resolve inside the test network, so the test-server service
+    # carries the alias the ESI include targets. The alias must point at a
+    # multi-threaded server: PHP's built-in server is single-threaded, so
+    # self-include would deadlock the outer request.
+    networks:
+      default:
+        aliases:
+          - sub.test-server

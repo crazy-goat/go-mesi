@@ -1,0 +1,38 @@
+# Local php-ext build artifacts must never enter the php-ext image:
+# phpize-generated files carry host-absolute paths (e.g. a stale Makefile
+# referencing /Users/<you>/go-mesi/php-ext/mesi.c) that break the
+# in-container `phpize && ./configure && make` build.
+# Mirrors php-ext/.gitignore.
+php-ext/Makefile
+php-ext/Makefile.*
+php-ext/aclocal.m4
+php-ext/autom4te.cache/
+php-ext/build/
+php-ext/config.h
+php-ext/config.h.in*
+php-ext/config.log
+php-ext/config.nice
+php-ext/config.status
+php-ext/configure
+php-ext/configure~
+php-ext/.deps/
+php-ext/.libs/
+php-ext/libtool
+php-ext/mesi.dep
+php-ext/mesi.la
+php-ext/mesi.lo
+php-ext/modules/
+php-ext/php_test_results_*.txt
+php-ext/run-tests.php
+php-ext/*.a
+php-ext/*.dylib
+php-ext/*.so
+php-ext/tests/*.diff
+php-ext/tests/*.exp
+php-ext/tests/*.log
+php-ext/tests/*.out
+php-ext/tests/*.php.log
+php-ext/tests/*.sh.log
+php-ext/tests/[a-z_]*.php
+php-ext/tests/[a-z_]*.sh
+!php-ext/tests/router.php
