@@ -121,6 +121,12 @@ format (space-separated hostnames) matches Apache's `MesiAllowedHosts` directive
 for cross-server consistency.
 Unset (empty) = no hostname restriction — backward compatible, subject to
 `mesi_block_private_ips`.
+Whitespace-only values are rejected at config load: the check mirrors
+libgomesi's `strings.Fields` tokenization and covers the full Unicode
+whitespace set (e.g. a non-breaking space U+00A0), so a value that would
+tokenize to zero hostnames can never silently disable the restriction
+(`nginx -t` fails). Values with leading/trailing whitespace around real
+hostnames are fine.
 
 ### Matching semantics
 
