@@ -233,6 +233,28 @@ else
 fi
 
 echo ""
+echo "--- Allowed Hosts Tests ---"
+
+echo "Test 19: -allowedHosts allows include from listed host"
+cat > "$TEST_DIR/allowed-host.html" <<'EOF'
+<esi:include src="hello"/>
+EOF
+RESULT=$("$CLI_BINARY" -allowedHosts=127.0.0.1 -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
+if echo "$RESULT" | grep -q "Hello World"; then
+	pass "Allowed host include resolved"
+else
+	fail "Allowed host include" "Result: $RESULT"
+fi
+
+echo "Test 20: -allowedHosts blocks include from unlisted host"
+RESULT=$("$CLI_BINARY" -allowedHosts=other.example.com -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
+if echo "$RESULT" | grep -q "Hello World"; then
+	fail "Unlisted host include" "Expected blocked include, got: $RESULT"
+else
+	pass "Unlisted host include blocked"
+fi
+
+echo ""
 echo "--- Fixture Comparison (Inline Fixtures) ---"
 
 FIXTURE_PASS=0

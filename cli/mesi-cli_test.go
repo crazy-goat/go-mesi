@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -399,6 +400,71 @@ func TestCLI_cacheKeyTemplateWithURLPlaceholder(t *testing.T) {
 		"-cache-key-template=prefix:${url}:suffix",
 		inputFile,
 	)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Hello") {
+		t.Errorf("expected 'Hello' in output, got %q", stdout)
+	}
+}
+
+func TestAllowedHostsFromFlag(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{"absent", "", nil},
+		{"single host", "backend.internal", []string{"backend.internal"}},
+		{"multiple hosts", "backend.internal,cdn.example.com", []string{"backend.internal", "cdn.example.com"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := allowedHostsFromFlag(tt.input)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("allowedHostsFromFlag(%q) = %#v, want %#v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCLI_allowedHostsFlagInHelp(t *testing.T) {
+	stdout, stderr, _ := runCLI(t, "-h")
+	output := stdout + stderr
+	if !strings.Contains(output, "-allowedHosts") {
+		t.Errorf("expected -allowedHosts in help output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(output, "Comma-separated list of allowed hosts") {
+		t.Errorf("expected -allowedHosts description in help output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestCLI_allowedHostsFlag(t *testing.T) {
+	// The whitelist does not affect file-mode processing of static ESI
+	// comments (no includes fetched), but the flag must be accepted.
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello World-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, exitCode := runCLI(t, "-allowedHosts=backend.internal,cdn.example.com", inputFile)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Hello World") {
+		t.Errorf("expected 'Hello World' in output, got %q", stdout)
+	}
+}
+
+func TestCLI_allowedHostsFlagDefaultEmpty(t *testing.T) {
+	// Absent flag keeps the legacy nil allowlist (all hosts allowed,
+	// subject to BlockPrivateIPs).
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, exitCode := runCLI(t, inputFile)
 	if exitCode != 0 {
 		t.Fatalf("unexpected exit code %d", exitCode)
 	}

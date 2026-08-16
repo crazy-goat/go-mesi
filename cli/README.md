@@ -55,6 +55,7 @@ mesi-cli [options] path/url
 - **cache-ttl <duration>** (duration): Cache TTL (e.g. `30s`, `5m`); `0` = no expiry. Default: 0
 - **max-workers <count>** (int): Max concurrent ESI include goroutines. `0` = `NumCPU*4`. Useful for forcing sequential processing to make caching deterministic. Default: 0
 - **allow-private-ips** (bool): Allow ESI includes to private/reserved IP ranges. Required when testing against a local ESI origin. Default: false
+- **allowedHosts <hosts>** (string): Comma-separated list of allowed hosts for ESI includes. Only includes whose host is listed (exact or subdomain-suffix match with a `.` boundary that rejects suffix injection; case-insensitive; ports ignored) are fetched. Unset = all hosts allowed, subject to `allow-private-ips` (the whitelist check runs by hostname first and does NOT bypass the private-IP block). Separate hosts with commas only — whitespace around an entry is part of the entry and would prevent it from ever matching. Default: empty (no restriction)
 - **shared-http-client** (bool): Share a single HTTP client (with connection pooling) across all ESI includes within a single invocation. When false (default), each include creates a fresh `http.Client`. Use this flag when processing a page with many includes to the same origin for measurable latency improvement. Default: false
 - **cache-key-template <template>** (string): Custom cache key template with placeholders. Supported placeholders: `${url}` (the include URL). Example: `mesi:${url}:${header:Accept-Language}`. Note: header and cookie placeholders require an HTTP request context and are not supported in CLI mode (only `${url}` is substituted). Default: URL-only cache key.
 - **include-error-marker <marker>** (string): Marker string rendered in place of a failed `<esi:include>` when no `onerror="continue"` and no fallback body is present. Useful for debugging — set to something like `"<!-- esi error -->"` to make failed includes visible in the rendered HTML. Security warning: never include the original error message as it may leak internal details. Default: "" (silent — failed includes produce empty output).
@@ -79,6 +80,11 @@ The memory cache is **per-invocation** — it lives for the duration of a single
 ```shell
 # Custom cache key template (URL-only placeholder supported in CLI mode)
 mesi-cli -cache-backend=memory -cache-key-template='myapp:${url}' ./input.html
+```
+
+```shell
+# Allow-list: only fetch includes from these hosts
+mesi-cli -allowedHosts="backend.internal,cdn.example.com" ./input.html
 ```
 
 ## Example Usage

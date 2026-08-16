@@ -25,7 +25,7 @@ Support status of mESI features across all server integrations.
 | Global MaxDepth | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
 | Global Timeout | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ |
 | SSRF (BlockPrivateIPs) | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔒 | ✅ |
-| AllowedHosts | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| AllowedHosts | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | AllowPrivateIPsForAllowedHosts | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ |
 | MaxResponseSize | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | MaxConcurrentRequests | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
@@ -58,6 +58,7 @@ Support status of mESI features across all server integrations.
 - **PHP Extension** – Exposes `\mesi\parse(input, max_depth, default_url)` (legacy, no security configuration) and `\mesi\parse_with_config(input, max_depth, default_url, config)` which supports `block_private_ips` (defaults to `true` — SSRF dial-time blocking of private/reserved IP ranges) and `allowed_hosts` (space-separated hostname whitelist; empty/absent = all hosts allowed; exact or subdomain-suffix match with a `.` boundary that rejects suffix injection; case-insensitive; ports ignored; passed verbatim to libgomesi's `ParseWithConfig`). The whitelist check runs by hostname before the dial-time private-IP check and does NOT bypass it — includes to private/reserved IPs still require `block_private_ips => false`. Non-string, control-character and whitespace-only (ASCII or Unicode) values are rejected with `E_WARNING` so a restriction can never silently tokenize to an empty allowlist (#190). The legacy `parse()` entrypoint keeps the module-init behaviour (no blocking) until a `parse_with_config()` call opts in.
 - **Caddy / FrankenPHP** – FrankenPHP uses the Caddy plugin, identical functionality.
 - **Proxy** – Accepts full `EsiParserConfig`; all features available when provided by calling code.
+- **AllowedHosts (CLI)** – Exposed via the `-allowedHosts` flag: a comma-separated host whitelist passed verbatim to `mesi.EsiParserConfig.AllowedHosts`. Matching is handled entirely by the shared core — exact or subdomain-suffix match with a `.` boundary that rejects suffix injection, case-insensitive, ports ignored. Unset/empty = all hosts allowed (backward compatible), subject to the dial-time private-IP block (`-allow-private-ips`); the whitelist check does NOT bypass `BlockPrivateIPs`. Entries are matched as written — separate hosts with commas only (#179).
 - **IncludeErrorMarker (CLI)** – Can only be set programmatically (no CLI flag).
 - **`fetch-mode="ab"` (`ab-ratio`)** – Format requirements enforced since #315:
   - Exactly one `:` separator (`A:B`); leading and trailing whitespace is trimmed.
