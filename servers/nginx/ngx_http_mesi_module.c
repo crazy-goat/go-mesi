@@ -272,6 +272,7 @@ static ngx_int_t ngx_http_html_mesi_body_filter(ngx_http_request_t *r,
 }
 
 static char *ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool);
+static size_t ngx_http_mesi_unicode_space(const u_char *p, size_t len);
 static char *build_memcached_config_json(ngx_http_mesi_loc_conf_t *lcf, ngx_pool_t *pool);
 static char *build_redis_config_json(ngx_http_mesi_loc_conf_t *lcf, ngx_pool_t *pool);
 
@@ -420,6 +421,37 @@ static char *ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool) {
   ngx_memcpy(cstr, input->data, input->len);
   cstr[input->len] = '\0';
   return cstr;
+}
+
+// ngx_http_mesi_unicode_space returns the width in bytes of the UTF-8 rune
+// starting at p when it is a Unicode whitespace rune that libgomesi's
+// strings.Fields treats as a separator (Go's unicode.IsSpace), 0 otherwise.
+// Covers every non-ASCII whitespace rune: U+0085, U+00A0, U+1680,
+// U+2000..U+200A, U+2028, U+2029, U+202F, U+205F and U+3000. Any other
+// byte — including truncated or invalid UTF-8, which Go decodes as U+FFFD
+// (not a space) — forms a hostname token, so it is not whitespace here.
+static size_t ngx_http_mesi_unicode_space(const u_char *p, size_t len) {
+  if (len >= 2 && p[0] == 0xc2 && (p[1] == 0x85 || p[1] == 0xa0)) {
+    return 2;  // U+0085 NEL, U+00A0 no-break space
+  }
+  if (len >= 3 && p[0] == 0xe1 && p[1] == 0x9a && p[2] == 0x80) {
+    return 3;  // U+1680 ogham space mark
+  }
+  if (len >= 3 && p[0] == 0xe2 && p[1] == 0x80 &&
+      ((p[2] >= 0x80 && p[2] <= 0x8a)  // U+2000..U+200A
+       || p[2] == 0xa8                 // U+2028 line separator
+       || p[2] == 0xa9                 // U+2029 paragraph separator
+       || p[2] == 0xaf))               // U+202F narrow no-break space
+  {
+    return 3;
+  }
+  if (len >= 3 && p[0] == 0xe2 && p[1] == 0x81 && p[2] == 0x9f) {
+    return 3;  // U+205F medium mathematical space
+  }
+  if (len >= 3 && p[0] == 0xe3 && p[1] == 0x80 && p[2] == 0x80) {
+    return 3;  // U+3000 ideographic space
+  }
+  return 0;
 }
 
 static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
@@ -683,16 +715,30 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   ngx_conf_merge_str_value(conf->allowed_hosts, prev->allowed_hosts, "");
   if (conf->allowed_hosts.len > 0) {
     // Reject whitespace-only allowlists: they would silently disable the
-    // hostname restriction the operator intended to configure. The check
-    // covers every byte of the ASCII whitespace set: space, tab, CR, LF,
-    // VT (vertical tab) and FF (form feed).
-    size_t i;
-    for (i = 0; i < conf->allowed_hosts.len; i++) {
+    // hostname restriction the operator intended to configure. libgomesi
+    // splits the value with Go's strings.Fields, so the check mirrors that
+    // tokenization: every byte of the ASCII whitespace set (space, tab, CR,
+    // LF, VT, FF) plus every rune of the Unicode whitespace set (U+0085,
+    // U+00A0, U+1680, U+2000..U+200A, U+2028, U+2029, U+202F, U+205F,
+    // U+3000 — e.g. a no-break space U+00A0 encoded as bytes c2 a0) counts
+    // as a separator, and a value with no hostname token at all is rejected.
+    // Any other byte, including invalid UTF-8, forms a token exactly like
+    // strings.Fields.
+    size_t i = 0;
+    while (i < conf->allowed_hosts.len) {
       u_char c = conf->allowed_hosts.data[i];
-      if (c != ' ' && c != '\t' && c != '\r' && c != '\n' &&
-          c != '\v' && c != '\f') {
-        break;
+      size_t ws_width;
+      if (c == ' ' || c == '\t' || c == '\r' || c == '\n' ||
+          c == '\v' || c == '\f') {
+        i++;
+        continue;
       }
+      ws_width = ngx_http_mesi_unicode_space(&conf->allowed_hosts.data[i],
+                                             conf->allowed_hosts.len - i);
+      if (ws_width == 0) {
+        break;  // a non-whitespace rune: the value has a hostname token
+      }
+      i += ws_width;
     }
     if (i == conf->allowed_hosts.len) {
       ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,

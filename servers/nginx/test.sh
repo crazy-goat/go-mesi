@@ -414,6 +414,86 @@ else
     exit 1
 fi
 
+echo "=== Test 29: Config validation — ASCII-whitespace-only mesi_allowed_hosts rejected ==="
+# Regression: a value made only of ASCII whitespace must fail nginx -t, not
+# silently become an empty allowlist (allow all hosts) in libgomesi.
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_allowed_hosts "  \t\r\n";' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-allowed-host-ascii-ws.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-allowed-host-ascii-ws.conf' < /tmp/nginx-allowed-host-ascii-ws.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-allowed-host-ascii-ws.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q "must contain at least one hostname"; then
+    echo "PASS: ASCII-whitespace-only mesi_allowed_hosts rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject ASCII-whitespace-only mesi_allowed_hosts with the expected error"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+echo "=== Test 30: Config validation — Unicode-whitespace-only mesi_allowed_hosts rejected ==="
+# U+00A0 no-break space (bytes c2 a0) only: passes the ASCII whitespace
+# check, but libgomesi splits the value with strings.Fields, which strips
+# all Unicode whitespace — the allowlist would silently become empty
+# (allow all hosts, fail-open). Must be rejected at config load.
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_allowed_hosts "\302\240";' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-allowed-host-nbsp.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-allowed-host-nbsp.conf' < /tmp/nginx-allowed-host-nbsp.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-allowed-host-nbsp.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q "must contain at least one hostname"; then
+    echo "PASS: Unicode-whitespace-only mesi_allowed_hosts rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject Unicode-whitespace-only mesi_allowed_hosts with the expected error"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+echo "=== Test 31: Config validation — valid mesi_allowed_hosts values still pass ==="
+# Legitimate values must keep passing: leading/trailing whitespace around a
+# real hostname, ASCII-whitespace separation as today, and Unicode
+# whitespace between two real hostnames (tokenizes to multiple entries in
+# libgomesi — only zero-token values are rejected).
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_allowed_hosts "  backend   sub.backend \302\240cdn.example.net \t";' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-allowed-host-valid.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-allowed-host-valid.conf' < /tmp/nginx-allowed-host-valid.conf
+if ! docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-allowed-host-valid.conf >/dev/null 2>&1; then
+    echo "FAIL: nginx rejected a valid mesi_allowed_hosts with surrounding whitespace"
+    docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-allowed-host-valid.conf 2>&1 || true
+    exit 1
+fi
+echo "PASS: valid mesi_allowed_hosts (leading/trailing whitespace, ASCII and Unicode separators between hosts) accepted by nginx -t"
+
 docker compose down
 
 echo ""
