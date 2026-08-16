@@ -131,6 +131,46 @@ else
 fi
 rm -f "$TMPFILE"
 
+echo ""
+echo "=== Test 9: allowed_hosts (host listed -> include resolves) ==="
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/allowed-hosts)
+if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
+    echo "PASS: allowed_hosts whitelist permits the configured backend"
+else
+    echo "FAIL: include blocked although host is in allowed_hosts"
+    echo "Response: $RESPONSE"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 10: allowed_hosts (host not listed -> include blocked) ==="
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/allowed-hosts-blocked)
+if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
+    echo "FAIL: include from host outside allowed_hosts was still fetched"
+    echo "Response: $RESPONSE"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+else
+    echo "PASS: include from host outside allowed_hosts blocked"
+fi
+
+echo ""
+echo "=== Test 11: allowed_hosts subdomain match (docker network alias) ==="
+if [ "${CI:-}" != "true" ]; then
+    RESPONSE=$(curl -s http://localhost:$TEST_PORT/allowed-hosts-subdomain)
+    if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
+        echo "PASS: subdomain of an allowed host resolves (sub.test-server alias)"
+    else
+        echo "FAIL: subdomain include did not resolve (is the alias present?)"
+        echo "Response: $RESPONSE"
+        docker compose down
+        exit 1
+    fi
+else
+    echo "SKIP: subdomain fixture needs docker DNS aliases (CI runs test.sh without docker)"
+fi
+
 if [ "${CI:-}" != "true" ]; then
   docker compose down -v
 fi

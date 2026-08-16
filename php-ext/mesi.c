@@ -272,6 +272,41 @@ static int parse_host_port(const char *s) {
     return 1;
 }
 
+/* Return the byte length of the UTF-8 sequence at p if it decodes to a
+ * rune that Go's strings.Fields treats as whitespace (the same set nginx's
+ * mesi_allowed_hosts validator mirrors, see #354), else 0. Keeps the
+ * PHP-side list tokenization identical to libgomesi's, so a value made
+ * solely of Unicode whitespace can never slip past validation and
+ * silently become an empty allowlist (= allow all hosts). p is followed
+ * by a NUL terminator; reads never go past it (a truncated sequence
+ * simply reports 0). */
+static int mesi_unicode_ws_len(const unsigned char *p) {
+    if (p[0] == 0xC2 && (p[1] == 0x85 || p[1] == 0xA0)) return 2;  /* U+0085, U+00A0 */
+    if (p[0] == 0xE1 && p[1] == 0x9A && p[2] == 0x80) return 3;     /* U+1680 */
+    if (p[0] == 0xE2 && p[1] == 0x80) {
+        if ((p[2] >= 0x80 && p[2] <= 0x8A) || p[2] == 0xA8
+            || p[2] == 0xA9 || p[2] == 0xAF) return 3;              /* U+2000-U+200A, U+2028, U+2029, U+202F */
+    }
+    if (p[0] == 0xE3 && p[1] == 0x80 && p[2] == 0x80) return 3;     /* U+3000 */
+    return 0;
+}
+
+/* Does s contain at least one byte that is not whitespace under Go's
+ * strings.Fields definition (space/tab plus the Unicode set above)?
+ * Returns 1 if a hostname token is present, 0 for empty/whitespace-only. */
+static int mesi_allowed_hosts_has_token(const char *s) {
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        if (*p == ' ' || *p == '\t') { p++; continue; }
+        if (p[0] == 0xC2 || p[0] == 0xE1 || p[0] == 0xE2 || p[0] == 0xE3) {
+            int n = mesi_unicode_ws_len(p);
+            if (n > 0) { p += n; continue; }
+        }
+        return 1;
+    }
+    return 0;
+}
+
 PHP_FUNCTION(parse) {
     char *input, *default_url;
     size_t input_len, default_url_len;
@@ -308,6 +343,25 @@ PHP_FUNCTION(parse) {
  *                            that blocks connections to private/reserved IP
  *                            ranges, preventing SSRF via DNS rebinding. A
  *                            non-boolean value is rejected with E_WARNING.
+ *   allowed_hosts:           string. Space-separated hostname whitelist
+ *                            restricting which <esi:include> destinations
+ *                            are fetched (e.g. "backend.internal
+ *                            cdn.example.com"). Empty string (or absent)
+ *                            allows all hosts — backward compatible.
+ *                            Matching is exact or subdomain-suffix with a
+ *                            '.' boundary, per the shared core — the PHP
+ *                            layer only passes the list through to
+ *                            libgomesi's ParseWithConfig. The whitelist
+ *                            check runs before the dial-time private-IP
+ *                            block and does NOT bypass it: includes to
+ *                            private/reserved IPs still need
+ *                            block_private_ips=false. Non-string values,
+ *                            control characters, embedded NULs and
+ *                            whitespace-only values (ASCII or Unicode) are
+ *                            rejected with E_WARNING — a whitespace-only
+ *                            value would silently tokenize to an empty
+ *                            allowlist (= allow all hosts), the same
+ *                            fail-open typo nginx hardened against (#354).
  *
  * Validation strictly mirrors libgomesi's InitCacheWithConfig contract —
  * we detect the same bad inputs libgomesi would silently ignore or silently
@@ -338,6 +392,10 @@ PHP_FUNCTION(parse_with_config) {
 
     /* block_private_ips: secure by default. Absent => true. */
     int block_private_ips = 1;
+
+    /* allowed_hosts: hostname whitelist; empty (absent key) = all hosts
+     * allowed. Passed verbatim to libgomesi ParseWithConfig. */
+    const char *allowed_hosts = "";
 
     if (config != NULL && Z_TYPE_P(config) == IS_ARRAY) {
         zval *val;
@@ -521,6 +579,52 @@ PHP_FUNCTION(parse_with_config) {
             }
         }
 
+        /* allowed_hosts: hostname whitelist (space-separated string, passed
+         * verbatim to libgomesi's ParseWithConfig allowedHosts argument).
+         * Absent/empty => no restriction (all hosts allowed). Validation is
+         * deliberately strict: a typo must never silently fail open. */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "allowed_hosts", sizeof("allowed_hosts") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) != IS_STRING) {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): allowed_hosts must be a string "
+                    "(space-separated hostnames, e.g. 'backend.internal cdn.example.com')");
+                RETURN_FALSE;
+            }
+            const char *raw = Z_STRVAL_P(val);
+            size_t raw_len = Z_STRLEN_P(val);
+            /* Reject embedded NULs: the C string handed to libgomesi would
+             * silently truncate at the first NUL, dropping the rest of the
+             * list. */
+            if (memchr(raw, '\0', raw_len) != NULL) {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): allowed_hosts contains a NUL byte");
+                RETURN_FALSE;
+            }
+            /* Reject control characters — never valid in hostnames. */
+            for (size_t i = 0; i < raw_len; i++) {
+                unsigned char c = (unsigned char)raw[i];
+                if (c < 0x20 || c == 0x7f) {
+                    php_error_docref(NULL, E_WARNING,
+                        "mesi\\parse_with_config(): allowed_hosts contains control characters");
+                    RETURN_FALSE;
+                }
+            }
+            /* Reject empty/whitespace-only values — unless the string is
+             * completely empty, which is the documented "no restriction"
+             * (backward compatible). libgomesi splits with strings.Fields,
+             * so a whitespace-only value would silently become an empty
+             * allowlist = allow ALL hosts — the same fail-open typo nginx
+             * hardened against in #354. */
+            if (raw_len > 0 && !mesi_allowed_hosts_has_token(raw)) {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): allowed_hosts must contain at least one "
+                    "hostname (whitespace-only values would silently allow all hosts)");
+                RETURN_FALSE;
+            }
+            allowed_hosts = raw;
+        }
+
         /* Backend-specific requirements: redis requires addr; memcached
          * requires servers. Detected after per-key parsing so a stray
          * key doesn't by itself trigger the error. */
@@ -588,7 +692,7 @@ PHP_FUNCTION(parse_with_config) {
         g_http_block_private_ips = block_private_ips;
     }
 
-    char* result = ParseWithConfig(input, max_depth, default_url, "", block_private_ips ? 1 : 0);
+    char* result = ParseWithConfig(input, max_depth, default_url, (char*)allowed_hosts, block_private_ips ? 1 : 0);
     RETVAL_STRING(result);
     FreeString(result);
 }
