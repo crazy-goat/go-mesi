@@ -21,6 +21,19 @@ func isURL(input string) bool {
 	return strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://")
 }
 
+// allowedHostsFromFlag converts the -allowedHosts flag value into the
+// config allowlist. An empty value keeps the default nil allowlist (all
+// hosts allowed, subject to BlockPrivateIPs) — backward compatible with
+// the pre-flag behaviour. Entries are passed verbatim to the shared-core
+// matcher (exact or subdomain-suffix match with a '.' boundary,
+// case-insensitive, ports ignored), so entries are matched as written.
+func allowedHostsFromFlag(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return strings.Split(value, ",")
+}
+
 func main() {
 	defaultUrl := flag.String("default-url", "http://127.0.0.1/", "Default URL to parse")
 	maxDepth := flag.Uint("max-depth", 5, "Maximum depth of parsing")
@@ -45,6 +58,7 @@ func main() {
 		"Custom cache key template with placeholders: ${url}, ${header:Name}, ${cookie:Name}")
 	allowPrivateIPs := flag.Bool("allow-private-ips", false,
 		"Allow ESI includes to private/reserved IP ranges (for local testing)")
+	allowedHosts := flag.String("allowedHosts", "", "Comma-separated list of allowed hosts for ESI includes")
 	maxWorkers := flag.Int("max-workers", 0,
 		"Max concurrent ESI include goroutines (0 = NumCPU*4)")
 	sharedHTTPClient := flag.Bool("shared-http-client", false,
@@ -68,6 +82,7 @@ func main() {
 	config.ParseOnHeader = *parseOnHeader
 	config.Debug = *debug
 	config.BlockPrivateIPs = !*allowPrivateIPs
+	config.AllowedHosts = allowedHostsFromFlag(*allowedHosts)
 	config.MaxWorkers = *maxWorkers
 	config.IncludeErrorMarker = *includeErrorMarker
 
