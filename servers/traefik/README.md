@@ -104,6 +104,37 @@ http:
 **SECURITY**: Always set `allowedHosts` in untrusted environments. Without it,
 any `<esi:include src>` URL is fetched unconditionally.
 
+### Private-IP bypass for whitelisted hosts
+
+`allowPrivateIPsForAllowedHosts` lets hosts listed in `allowedHosts` resolve to
+private/reserved IP addresses even when `blockPrivateIPs` is enabled:
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          blockPrivateIPs: true
+          allowedHosts:
+            - backend.internal
+          allowPrivateIPsForAllowedHosts: true
+```
+
+- Default is `false` (no bypass — backward compatible).
+- Only effective when BOTH `blockPrivateIPs` is `true` AND `allowedHosts` is
+  non-empty; otherwise a no-op. Unlisted hosts and empty allowlists can never
+  bypass (fail closed) — the whitelist check runs before any dial.
+- **No effect under `sharedHTTPClient`**: the shared transport bakes
+  `blockPrivateIPs` at startup, so the bypass is not consulted for
+  shared-client fetches.
+- **Yaegi note**: under the interpreted plugin the dial-time IP-blocking
+  transport is stubbed (see `servers/traefik/Dockerfile`), so the bypass is not
+  observable in functional tests — the unit tests exercise the real Go path.
+  URL-level `allowedHosts` remains the effective SSRF control.
+- **SECURITY**: the bypass **trusts DNS** for hosts in `allowedHosts` — only
+  use it with internal DNS (Consul, Kubernetes DNS, `/etc/hosts`).
+
 ## Cache Backend
 
 The plugin supports multiple cache backends for ESI fragment caching:
@@ -172,6 +203,7 @@ http:
 | `cacheRedisDb` | int | `0` | Redis database number |
 | `cacheMemcachedServers` | []string | `[]` | Memcached server addresses (host:port) |
 | `allowedHosts` | []string | `[]` | ESI include host whitelist (exact or subdomain-suffix match); empty = allow all |
+| `allowPrivateIPsForAllowedHosts` | bool | `false` | Let `allowedHosts` entries resolve to private/reserved IPs when `blockPrivateIPs` is on (trusts DNS; no effect under `sharedHTTPClient`) |
 
 #### Redis Features
 
