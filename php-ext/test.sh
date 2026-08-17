@@ -171,6 +171,46 @@ else
     echo "SKIP: subdomain fixture needs docker DNS aliases (CI runs test.sh without docker)"
 fi
 
+echo ""
+echo "=== Test 12: allow_private_ips_for_allowed_hosts (on -> listed private backend fetched) ==="
+# block_private_ips stays TRUE: the whitelisted backend host resolves to a
+# private/reserved IP (loopback in CI, container IP in docker). Only the
+# per-host bypass can let that dial through — this case proves the libgomesi
+# shared-client yield; without it the bypass is a silent no-op and this FAILS.
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/bypass-on)
+if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
+    echo "PASS: bypass lets the whitelisted private backend through (block_private_ips on)"
+else
+    echo "FAIL: bypass did not take effect (shared-client yield broken?)"
+    echo "Response: $RESPONSE"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 13: allow_private_ips_for_allowed_hosts (off by default -> blocked) ==="
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/bypass-off)
+if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
+    echo "FAIL: private backend fetched although the bypass is off"
+    echo "Response: $RESPONSE"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+else
+    echo "PASS: private-IP dial blocked with the bypass off (default)"
+fi
+
+echo ""
+echo "=== Test 14: allow_private_ips_for_allowed_hosts (unlisted host still blocked) ==="
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/bypass-unlisted)
+if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
+    echo "FAIL: unlisted private host fetched despite whitelist"
+    echo "Response: $RESPONSE"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+else
+    echo "PASS: unlisted host blocked even with the bypass on"
+fi
+
 if [ "${CI:-}" != "true" ]; then
   docker compose down -v
 fi

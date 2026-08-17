@@ -366,6 +366,25 @@ PHP_FUNCTION(parse) {
  *                            value would silently tokenize to an empty
  *                            allowlist (= allow all hosts), the same
  *                            fail-open typo nginx hardened against (#354).
+ *   allow_private_ips_for_allowed_hosts: bool. When true, hosts listed in
+ *                            allowed_hosts may resolve to private/reserved
+ *                            IP addresses — the dial-time block is bypassed
+ *                            for them (per-host, in the shared core). Only
+ *                            effective when BOTH block_private_ips=true
+ *                            AND a non-empty allowed_hosts are set;
+ *                            otherwise a no-op. Trusts DNS — a compromised
+ *                            entry in allowed_hosts can reach internal/
+ *                            private addresses (same security profile as
+ *                            Apache MesiAllowPrivateIPsForAllowedHosts,
+ *                            #168). Under the hood the parse detaches from
+ *                            the shared HTTP client (whose transport bakes
+ *                            block_private_ips at startup — attaching it
+ *                            would silently negate the bypass), so
+ *                            bypass-flagged parses use per-request clients
+ *                            without connection pooling; the shared client
+ *                            keeps serving all other parses. Absent =>
+ *                            false (no bypass). A non-boolean value is
+ *                            rejected with E_WARNING.
  *
  * Validation strictly mirrors libgomesi's InitCacheWithConfig contract —
  * we detect the same bad inputs libgomesi would silently ignore or silently
@@ -396,6 +415,8 @@ PHP_FUNCTION(parse_with_config) {
 
     /* block_private_ips: secure by default. Absent => true. */
     int block_private_ips = 1;
+    /* allow_private_ips_for_allowed_hosts: no bypass by default (false). */
+    int allow_private_ips_for_allowed_hosts = 0;
 
     /* allowed_hosts: hostname whitelist; empty (absent key) = all hosts
      * allowed. Passed verbatim to libgomesi ParseWithConfig. */
@@ -629,6 +650,29 @@ PHP_FUNCTION(parse_with_config) {
             allowed_hosts = raw;
         }
 
+        /* allow_private_ips_for_allowed_hosts: per-host private-IP bypass
+         * for allowed_hosts entries. Accepted as bool or int (0/1); any
+         * other type is rejected so a typo never silently enables a
+         * security bypass (SSRF protection relies on it never being set
+         * by accident). Absent => false (no bypass). The bypass only
+         * takes effect when BOTH block_private_ips=true AND a non-empty
+         * allowed_hosts are set — enforced by the shared core (and by
+         * libgomesi detaching the shared client for bypass parses). */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "allow_private_ips_for_allowed_hosts",
+                                 sizeof("allow_private_ips_for_allowed_hosts") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) == IS_TRUE || Z_TYPE_P(val) == IS_FALSE) {
+                allow_private_ips_for_allowed_hosts = (Z_TYPE_P(val) == IS_TRUE);
+            } else if (Z_TYPE_P(val) == IS_LONG) {
+                allow_private_ips_for_allowed_hosts = (Z_LVAL_P(val) != 0);
+            } else {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): allow_private_ips_for_allowed_hosts must be "
+                    "a boolean (true/false) or integer (non-zero = enabled)");
+                RETURN_FALSE;
+            }
+        }
+
         /* Backend-specific requirements: redis requires addr; memcached
          * requires servers. Detected after per-key parsing so a stray
          * key doesn't by itself trigger the error. */
@@ -696,7 +740,9 @@ PHP_FUNCTION(parse_with_config) {
         g_http_block_private_ips = block_private_ips;
     }
 
-    char* result = ParseWithConfig(input, max_depth, default_url, (char*)allowed_hosts, block_private_ips ? 1 : 0);
+    char* result = ParseWithConfigEx(input, max_depth, default_url, (char*)allowed_hosts,
+                                     block_private_ips ? 1 : 0,
+                                     allow_private_ips_for_allowed_hosts ? 1 : 0);
     RETVAL_STRING(result);
     FreeString(result);
 }

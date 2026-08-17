@@ -95,6 +95,59 @@ if ($path === '/allowed-hosts-subdomain') {
     return true;
 }
 
+// allow_private_ips_for_allowed_hosts: bypass ON. block_private_ips stays
+// TRUE — the whitelisted backend host resolves to a private/reserved IP
+// (loopback in CI where MESI_BACKEND_URL=http://localhost:8081/, a docker
+// container IP otherwise), so only the per-host bypass can let the dial
+// through. Proves the libgomesi shared-client yield end-to-end: without it
+// the bypass is a silent no-op and this include is blocked.
+if ($path === '/bypass-on') {
+    header('Content-Type: text/html');
+    $host = parse_url($backend, PHP_URL_HOST) ?: '';
+    echo \mesi\parse_with_config(
+        '<p>bypass on</p><esi:include src="' . $esiIncludeUrl . '" />',
+        5,
+        $backend,
+        [
+            'allowed_hosts' => (string)$host,
+            'block_private_ips' => true,
+            'allow_private_ips_for_allowed_hosts' => true,
+        ]
+    );
+    return true;
+}
+
+// bypass OFF (default): same whitelisted host, private dial must stay
+// blocked.
+if ($path === '/bypass-off') {
+    header('Content-Type: text/html');
+    $host = parse_url($backend, PHP_URL_HOST) ?: '';
+    echo \mesi\parse_with_config(
+        '<p>bypass off</p><esi:include src="' . $esiIncludeUrl . '" />',
+        5,
+        $backend,
+        ['allowed_hosts' => (string)$host, 'block_private_ips' => true]
+    );
+    return true;
+}
+
+// bypass ON but the backend host is NOT in allowed_hosts -> rejected by the
+// whitelist before any dial; the bypass only covers whitelisted hosts.
+if ($path === '/bypass-unlisted') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>bypass unlisted</p><esi:include src="' . $esiIncludeUrl . '" />',
+        5,
+        $backend,
+        [
+            'allowed_hosts' => 'example.com',
+            'block_private_ips' => true,
+            'allow_private_ips_for_allowed_hosts' => true,
+        ]
+    );
+    return true;
+}
+
 if ($path === '/health') {
     header('Content-Type: text/plain');
     echo 'OK';
