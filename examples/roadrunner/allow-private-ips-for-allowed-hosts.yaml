@@ -1,0 +1,32 @@
+# RoadRunner mESI — allow_private_ips_for_allowed_hosts example
+
+This `.rr.yaml` snippet lets hosts listed in `allowed_hosts` resolve to
+private/reserved IPs while the dial-time SSRF block (`block_private_ips`)
+stays enabled for everyone else — for service meshes that fetch from
+internal backends without the all-or-nothing `block_private_ips: false`
+choice.
+
+```yaml
+http:
+  address: "0.0.0.0:8080"
+  middleware:
+    mesi:
+      allowed_hosts:
+        - backend.internal
+        - cdn.trusted.com
+      block_private_ips: true
+      allow_private_ips_for_allowed_hosts: true
+```
+
+## Semantics and security
+
+- Only hosts present in `allowed_hosts` get the bypass; every other include
+  host is still subject to the dial-time private-IP block.
+- The flag is a no-op when `block_private_ips` is `false` (nothing to bypass)
+  or `allowed_hosts` is empty (no host qualifies).
+- **The bypass trusts DNS.** Anyone who controls a hostname in
+  `allowed_hosts` (or what it resolves to) can reach internal/private
+  addresses. Only enable it for hostnames under your control.
+- With `shared_http_client: true` the bypass does NOT apply: the shared
+  client's SSRF-safe transport is built once at startup and bakes in
+  `block_private_ips`. Disable `shared_http_client` to use the bypass.
