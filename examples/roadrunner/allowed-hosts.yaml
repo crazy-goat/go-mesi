@@ -1,0 +1,33 @@
+# RoadRunner mESI — allowed_hosts example
+
+This `.rr.yaml` snippet enables mESI with a hostname whitelist for
+`<esi:include>` destinations. Matching is exact or subdomain-suffix
+(`sub.backend` matches `backend`); the `.` boundary rejects suffix
+injection. Empty/absent list = all hosts allowed.
+
+```yaml
+http:
+  address: "0.0.0.0:8080"
+  middleware:
+    mesi:
+      allowed_hosts:
+        - backend.internal
+        - cdn.trusted.com
+```
+
+## Interaction with block_private_ips
+
+The whitelist check runs by hostname before the dial-time private-IP block
+and does NOT bypass it: an allowlisted host that resolves to a
+private/reserved IP is still blocked unless `block_private_ips: false` is
+set. Keep the default `block_private_ips: true` unless you intentionally
+include from internal/private backends:
+
+```yaml
+http:
+  middleware:
+    mesi:
+      allowed_hosts:
+        - backend.internal   # resolves to 10.x.x.x
+      block_private_ips: false   # required for private-IP backends
+```

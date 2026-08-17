@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/crazy-goat/go-mesi/servers/roadrunner"
@@ -13,9 +14,17 @@ import (
 
 func main() {
 	listen := flag.String("listen", ":8080", "Listen address")
+	allowedHosts := flag.String("allowed-hosts", "", "Comma-separated allowed hosts for <esi:include> (empty/unset = all hosts allowed)")
+	blockPrivateIPs := flag.Bool("block-private-ips", true, "Block ESI includes to private/reserved IPs at dial time")
 	flag.Parse()
 
-	plugin := &roadrunner.Plugin{}
+	config := roadrunner.CreateConfig()
+	if *allowedHosts != "" {
+		config.AllowedHosts = strings.Split(*allowedHosts, ",")
+	}
+	config.BlockPrivateIPs = blockPrivateIPs
+
+	plugin := roadrunner.NewWithConfig(config)
 	if err := plugin.Init(); err != nil {
 		log.Fatalf("Failed to initialize plugin: %v", err)
 	}
@@ -37,6 +46,17 @@ func main() {
 	mux.HandleFunc("/plain", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte(`plain text with <esi:include src="http://example.com/test" /> tags`))
+	})
+	// /fragment is the loopback include target; /allowed serves a page that
+	// includes it via an absolute URL on the same listener. The hostname is
+	// "127.0.0.1" so allowed_hosts functional cases need no DNS.
+	mux.HandleFunc("/fragment", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("FRAGMENT_OK"))
+	})
+	mux.HandleFunc("/allowed", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/fragment" /></body></html>`))
 	})
 
 	handler := plugin.Middleware(mux)
