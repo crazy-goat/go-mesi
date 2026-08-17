@@ -3140,6 +3140,10 @@ func TestAllowPrivateIPsForAllowedHostsUnlistedHostStillBlocked(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
 		t.Errorf("Expected include to stay blocked for a host outside allowed_hosts, got body: %s", rec.Body.String())
 	}
+	// Guard against a vacuous pass: the raw <esi:include> tag must also be gone.
+	if strings.Contains(rec.Body.String(), "esi:include") {
+		t.Errorf("Expected the <esi:include> tag to be processed away, got body: %s", rec.Body.String())
+	}
 }
 
 // TestAllowPrivateIPsForAllowedHostsEmptyAllowlistNoBypass: an empty
@@ -3159,5 +3163,9 @@ func TestAllowPrivateIPsForAllowedHostsEmptyAllowlistNoBypass(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
 		t.Errorf("Expected include to stay blocked with an empty allowed_hosts list, got body: %s", rec.Body.String())
+	}
+	// Guard against a vacuous pass: the raw <esi:include> tag must also be gone.
+	if strings.Contains(rec.Body.String(), "esi:include") {
+		t.Errorf("Expected the <esi:include> tag to be processed away, got body: %s", rec.Body.String())
 	}
 }
