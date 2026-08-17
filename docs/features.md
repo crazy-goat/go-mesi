@@ -25,7 +25,7 @@ Support status of mESI features across all server integrations.
 | Global MaxDepth | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
 | Global Timeout | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ |
 | SSRF (BlockPrivateIPs) | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔒 | ✅ |
-| AllowedHosts | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| AllowedHosts | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | AllowPrivateIPsForAllowedHosts | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ |
 | MaxResponseSize | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | MaxConcurrentRequests | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
@@ -59,6 +59,7 @@ Support status of mESI features across all server integrations.
 - **Caddy / FrankenPHP** – FrankenPHP uses the Caddy plugin, identical functionality.
 - **Proxy** – Accepts full `EsiParserConfig`; all features available when provided by calling code.
 - **AllowedHosts (CLI)** – Exposed via the `-allowedHosts` flag: a comma-separated host whitelist passed verbatim to `mesi.EsiParserConfig.AllowedHosts`. Matching is handled entirely by the shared core — exact or subdomain-suffix match with a `.` boundary that rejects suffix injection, case-insensitive, ports ignored. Unset/empty = all hosts allowed (backward compatible), subject to the dial-time private-IP block (`-allow-private-ips`); the whitelist check does NOT bypass `BlockPrivateIPs`. Entries are matched as written — separate hosts with commas only (#179).
+- **AllowedHosts (RoadRunner)** since #203 – Exposed via the `allowed_hosts` YAML list (`mesi.allowed_hosts: [backend.internal, cdn.trusted.com]`), passed verbatim to `mesi.EsiParserConfig.AllowedHosts`. Matching is handled entirely by the shared core — exact or subdomain-suffix match with a `.` boundary that rejects suffix injection, case-insensitive, ports ignored. Unset/empty list = all hosts allowed (backward compatible), subject to the dial-time `block_private_ips` check (default `true`); the whitelist check runs by hostname first and does NOT bypass `BlockPrivateIPs` — includes to private/reserved IPs still require `block_private_ips: false` (two-phase defense-in-depth). An entry that matches nothing (e.g. an accidental empty string) makes the list fail closed rather than open.
 - **IncludeErrorMarker (CLI)** – Can only be set programmatically (no CLI flag).
 - **`fetch-mode="ab"` (`ab-ratio`)** – Format requirements enforced since #315:
   - Exactly one `:` separator (`A:B`); leading and trailing whitespace is trimmed.
