@@ -226,9 +226,43 @@ mesi {
 - Does NOT match `attacker-example.com` against `example.com` (suffix-injection safe).
 - `allowed_hosts` does NOT bypass `block_private_ips` by default.
   Use `allow_private_ips_for_allowed_hosts` to enable private-IP bypass for
-  trusted environments (see issue #256).
+  trusted environments (see below).
 - When combined with `shared_http_client`, the shared transport is created with
   SSRF-safe dialer. The `allowed_hosts` check is applied at the ESI parser level.
+
+### `allow_private_ips_for_allowed_hosts`
+
+When `block_private_ips` is enabled (default) and `allowed_hosts` is set,
+listed hosts are still blocked at dial time if they resolve to
+private/reserved IPs. This directive permits listed hosts to resolve to
+private IPs — the dial-time block is bypassed for them:
+
+```
+mesi {
+    block_private_ips true
+    allowed_hosts backend.internal
+    allow_private_ips_for_allowed_hosts
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| present | Listed `allowed_hosts` may resolve to private/reserved IPs. |
+| absent | No bypass (default, backward compatible). |
+
+**Notes:**
+- Only effective when BOTH `block_private_ips true` AND a non-empty
+  `allowed_hosts` are set; otherwise a no-op.
+- The `allowed_hosts` whitelist check still runs first: hosts outside the
+  list are rejected regardless of this directive, and an empty whitelist
+  never grants the bypass (fail closed).
+- **SECURITY: this directive trusts DNS.** A compromised entry in
+  `allowed_hosts` can reach internal/private addresses. Enable it only when
+  DNS is trustworthy (internal DNS, pinned hostnames).
+- When combined with `shared_http_client`, the shared transport bakes
+  `block_private_ips` at startup, so the bypass is not consulted for
+  shared-client fetches (same documented limitation as the RoadRunner and
+  Traefik integrations).
 
 ### `max_concurrent_requests`
 

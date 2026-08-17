@@ -11,7 +11,6 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
-
 )
 
 // TestSharedHTTPClientDefault ensures that without the directive,
@@ -641,8 +640,8 @@ func TestCacheKeyTemplateDefaultAbsent(t *testing.T) {
 // full URL in the cache key.
 func TestCacheKeyTemplateUrlSubstitution(t *testing.T) {
 	m := &MesiMiddleware{
-		CacheBackend:      "memory",
-		CacheKeyTemplate:  "pfx:${url}:sfx",
+		CacheBackend:     "memory",
+		CacheKeyTemplate: "pfx:${url}:sfx",
 	}
 	if err := m.Provision(caddy.Context{}); err != nil {
 		t.Fatalf("Provision() returned error: %v", err)
@@ -674,8 +673,8 @@ func TestCacheKeyTemplateUrlSubstitution(t *testing.T) {
 // are replaced with request header values.
 func TestCacheKeyTemplateSubstitutesHeaders(t *testing.T) {
 	m := &MesiMiddleware{
-		CacheBackend:      "memory",
-		CacheKeyTemplate:  "${header:Accept-Language}",
+		CacheBackend:     "memory",
+		CacheKeyTemplate: "${header:Accept-Language}",
 	}
 	if err := m.Provision(caddy.Context{}); err != nil {
 		t.Fatalf("Provision() returned error: %v", err)
@@ -705,8 +704,8 @@ func TestCacheKeyTemplateSubstitutesHeaders(t *testing.T) {
 // are replaced with cookie values.
 func TestCacheKeyTemplateSubstitutesCookies(t *testing.T) {
 	m := &MesiMiddleware{
-		CacheBackend:      "memory",
-		CacheKeyTemplate:  "sess:${cookie:session_id}",
+		CacheBackend:     "memory",
+		CacheKeyTemplate: "sess:${cookie:session_id}",
 	}
 	if err := m.Provision(caddy.Context{}); err != nil {
 		t.Fatalf("Provision() returned error: %v", err)
@@ -736,8 +735,8 @@ func TestCacheKeyTemplateSubstitutesCookies(t *testing.T) {
 // left as-is (literal) in the cache key.
 func TestCacheKeyTemplateUnknownPlaceholder(t *testing.T) {
 	m := &MesiMiddleware{
-		CacheBackend:      "memory",
-		CacheKeyTemplate:  "key:${unknown}:literal",
+		CacheBackend:     "memory",
+		CacheKeyTemplate: "key:${unknown}:literal",
 	}
 	if err := m.Provision(caddy.Context{}); err != nil {
 		t.Fatalf("Provision() returned error: %v", err)
@@ -797,8 +796,8 @@ func TestCacheKeyTemplateWithoutCacheBackend(t *testing.T) {
 // multiple placeholder types.
 func TestCacheKeyTemplateComplexPattern(t *testing.T) {
 	m := &MesiMiddleware{
-		CacheBackend:      "memory",
-		CacheKeyTemplate:  "mesi:${url}:lang=${header:Accept-Language}:sess=${cookie:session_id}",
+		CacheBackend:     "memory",
+		CacheKeyTemplate: "mesi:${url}:lang=${header:Accept-Language}:sess=${cookie:session_id}",
 	}
 	if err := m.Provision(caddy.Context{}); err != nil {
 		t.Fatalf("Provision() returned error: %v", err)
@@ -935,8 +934,8 @@ func TestUnmarshalCaddyfileCacheRedisDBNoArg(t *testing.T) {
 // a non-nil cache and redisClient in Provision().
 func TestRedisBackendProvision(t *testing.T) {
 	m := &MesiMiddleware{
-		CacheBackend:    "redis",
-		CacheRedisAddr:  "localhost:6379",
+		CacheBackend:   "redis",
+		CacheRedisAddr: "localhost:6379",
 	}
 	err := m.Provision(caddy.Context{})
 	if err != nil {
@@ -3002,5 +3001,163 @@ func TestMaxResponseSizeIntegrationParseAndProvision(t *testing.T) {
 	}
 	if err := m.Cleanup(); err != nil {
 		t.Fatalf("Cleanup() returned error: %v", err)
+	}
+}
+
+// TestAllowPrivateIPsForAllowedHostsDefaultFalse verifies the bypass defaults
+// to false (zero value, backward compatible).
+func TestAllowPrivateIPsForAllowedHostsDefaultFalse(t *testing.T) {
+	m := &MesiMiddleware{}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if m.AllowPrivateIPsForAllowedHosts {
+		t.Error("AllowPrivateIPsForAllowedHosts should be false by default")
+	}
+}
+
+// TestAllowPrivateIPsForAllowedHostsProvision verifies the flag survives Provision.
+func TestAllowPrivateIPsForAllowedHostsProvision(t *testing.T) {
+	m := &MesiMiddleware{AllowPrivateIPsForAllowedHosts: true}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	if !m.AllowPrivateIPsForAllowedHosts {
+		t.Error("AllowPrivateIPsForAllowedHosts should be true after Provision")
+	}
+}
+
+// TestUnmarshalCaddyfileAllowPrivateIPsForAllowedHosts parses the no-argument
+// boolean directive: present in the Caddyfile means enabled (mirrors the
+// shared_http_client / debug convention).
+func TestUnmarshalCaddyfileAllowPrivateIPsForAllowedHosts(t *testing.T) {
+	input := `mesi {
+		allow_private_ips_for_allowed_hosts
+	}`
+	d := caddyfile.NewTestDispenser(input)
+	m := &MesiMiddleware{}
+	err := m.UnmarshalCaddyfile(d)
+	if err != nil {
+		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+	}
+	if !m.AllowPrivateIPsForAllowedHosts {
+		t.Error("AllowPrivateIPsForAllowedHosts should be true after parsing the directive")
+	}
+}
+
+// newBypassTestMiddleware builds a provisioned middleware with
+// BlockPrivateIPs at its secure default true, the given allowed_hosts list
+// and the given bypass flag.
+func newBypassTestMiddleware(t *testing.T, allowedHosts []string, bypass bool) *MesiMiddleware {
+	t.Helper()
+	block := true
+	m := &MesiMiddleware{
+		BlockPrivateIPs:                &block,
+		AllowedHosts:                   allowedHosts,
+		AllowPrivateIPsForAllowedHosts: bypass,
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+	return m
+}
+
+// serveBypassPage runs a full ServeHTTP round whose upstream page includes
+// the given fragment URL, returning the recorder.
+func serveBypassPage(t *testing.T, m *MesiMiddleware, fragURL string) *httptest.ResponseRecorder {
+	t.Helper()
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("<html><body><esi:include src=\"" + fragURL + "/frag\" /></body></html>"))
+		return nil
+	})
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+	if err := m.ServeHTTP(rec, req, handler); err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	return rec
+}
+
+// TestAllowPrivateIPsForAllowedHostsBypassAllows proves the real per-host
+// bypass: BlockPrivateIPs stays true and the loopback (private) fragment is
+// fetched only because the host is listed in allowed_hosts and the flag is on.
+func TestAllowPrivateIPsForAllowedHostsBypassAllows(t *testing.T) {
+	m := newBypassTestMiddleware(t, []string{"127.0.0.1"}, true)
+	frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("FRAGMENT_OK"))
+	}))
+	defer frag.Close()
+
+	rec := serveBypassPage(t, m, frag.URL)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to be fetched via the bypass, got body: %s", rec.Body.String())
+	}
+}
+
+// TestAllowPrivateIPsForAllowedHostsDisabledBlocks: without the flag the same
+// include to the private loopback fragment stays blocked (BlockPrivateIPs on).
+func TestAllowPrivateIPsForAllowedHostsDisabledBlocks(t *testing.T) {
+	m := newBypassTestMiddleware(t, []string{"127.0.0.1"}, false)
+	frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("FRAGMENT_OK"))
+	}))
+	defer frag.Close()
+
+	rec := serveBypassPage(t, m, frag.URL)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to stay blocked without the bypass, got body: %s", rec.Body.String())
+	}
+	// Guard against a vacuous pass: the raw <esi:include> tag must be gone too.
+	if strings.Contains(rec.Body.String(), "esi:include") {
+		t.Errorf("Expected the <esi:include> tag to be processed away, got body: %s", rec.Body.String())
+	}
+}
+
+// TestAllowPrivateIPsForAllowedHostsUnlistedHostStillBlocked: the bypass only
+// covers hosts listed in allowed_hosts — the whitelist check runs first.
+func TestAllowPrivateIPsForAllowedHostsUnlistedHostStillBlocked(t *testing.T) {
+	m := newBypassTestMiddleware(t, []string{"example.com"}, true)
+	frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("FRAGMENT_OK"))
+	}))
+	defer frag.Close()
+
+	rec := serveBypassPage(t, m, frag.URL)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to stay blocked for a host outside allowed_hosts, got body: %s", rec.Body.String())
+	}
+}
+
+// TestAllowPrivateIPsForAllowedHostsEmptyAllowlistNoBypass: an empty
+// AllowedHosts list never grants the bypass (fail closed) — the private
+// fragment stays blocked.
+func TestAllowPrivateIPsForAllowedHostsEmptyAllowlistNoBypass(t *testing.T) {
+	m := newBypassTestMiddleware(t, nil, true)
+	frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("FRAGMENT_OK"))
+	}))
+	defer frag.Close()
+
+	rec := serveBypassPage(t, m, frag.URL)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to stay blocked with an empty allowed_hosts list, got body: %s", rec.Body.String())
 	}
 }
