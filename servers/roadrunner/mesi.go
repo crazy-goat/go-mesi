@@ -53,6 +53,10 @@ func CreateConfig() *Config {
 // NewWithConfig returns a Plugin using the given config for programmatic
 // callers (e.g. embedded test harnesses). Normal RoadRunner deployments
 // configure the plugin from .rr.yaml and need no constructor.
+//
+// The caller must still call Init() on the returned Plugin to apply the
+// config defaults and initialize backing resources (shared transport,
+// cache); NewWithConfig only sets the config pointer.
 func NewWithConfig(config *Config) *Plugin {
 	return &Plugin{config: config}
 }

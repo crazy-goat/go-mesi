@@ -449,4 +449,27 @@ func TestAllowedHostsUnlistedHostBlocks(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
 		t.Errorf("Expected include to be blocked when the host is NOT listed in allowed_hosts, got body: %s", rec.Body.String())
 	}
+	// Guard against a vacuous pass (ESI processing silently disabled): the
+	// raw <esi:include> tag must also be gone from the output.
+	if strings.Contains(rec.Body.String(), "esi:include") {
+		t.Errorf("Expected the <esi:include> tag to be processed away, got body: %s", rec.Body.String())
+	}
+}
+
+func TestAllowedHostsMultipleHostsAllows(t *testing.T) {
+	// A multi-entry allowed_hosts list: the include host matched by the
+	// second entry still resolves (ordering must not matter, and one
+	// unrelated entry must not break matching for the listed host).
+	handler := newAllowedHostsTestPlugin(t, []string{"someother.host", "127.0.0.1"})
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to be allowed when the host is listed (2nd entry) in allowed_hosts, got body: %s", rec.Body.String())
+	}
 }
