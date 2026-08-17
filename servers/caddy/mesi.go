@@ -83,6 +83,13 @@ type MesiMiddleware struct {
 	// Host matching: exact match or subdomain suffix (sub.example.com matches example.com).
 	AllowedHosts []string `json:"allowed_hosts,omitempty"`
 
+	// AllowPrivateIPsForAllowedHosts permits hosts listed in AllowedHosts to
+	// resolve to private/reserved IP addresses when BlockPrivateIPs blocks
+	// them. Only effective when BOTH BlockPrivateIPs is true AND AllowedHosts
+	// is non-empty; otherwise a no-op. Default: false (no bypass).
+	// SECURITY: this trusts DNS for hosts in AllowedHosts.
+	AllowPrivateIPsForAllowedHosts bool `json:"allow_private_ips_for_allowed_hosts,omitempty"`
+
 	// MaxConcurrentRequests limits the number of concurrent HTTP requests
 	// made during ESI processing. When set, a semaphore limits parallelism.
 	// 0 = unlimited (backward compatible).
@@ -233,16 +240,17 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 			blockPrivateIPs = *m.BlockPrivateIPs
 		}
 		config := mesi.EsiParserConfig{
-			Context:                r.Context(),
-			MaxDepth:               uint(depth),
-			DefaultUrl:             middleware.GetDefaultUrl(r),
-			Timeout:                m.parsedTimeout,
-			BlockPrivateIPs:        blockPrivateIPs,
-			AllowedHosts:           m.AllowedHosts,
-			IncludeErrorMarker:     m.IncludeErrorMarker,
-			Debug:                  m.Debug,
-			MaxConcurrentRequests:  m.MaxConcurrentRequests,
-			MaxWorkers:             m.MaxWorkers,
+			Context:                        r.Context(),
+			MaxDepth:                       uint(depth),
+			DefaultUrl:                     middleware.GetDefaultUrl(r),
+			Timeout:                        m.parsedTimeout,
+			BlockPrivateIPs:                blockPrivateIPs,
+			AllowedHosts:                   m.AllowedHosts,
+			AllowPrivateIPsForAllowedHosts: m.AllowPrivateIPsForAllowedHosts,
+			IncludeErrorMarker:             m.IncludeErrorMarker,
+			Debug:                          m.Debug,
+			MaxConcurrentRequests:          m.MaxConcurrentRequests,
+			MaxWorkers:                     m.MaxWorkers,
 		}
 
 		if m.MaxResponseSize != nil {
@@ -324,15 +332,15 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if err != nil {
 					return d.Errf("invalid max_concurrent_requests %q: %v", d.Val(), err)
 				}
-		case "max_workers":
-			if !d.NextArg() {
-				return d.ArgErr()
-			}
-			var err error
-			m.MaxWorkers, err = strconv.Atoi(d.Val())
-			if err != nil {
-				return d.Errf("invalid max_workers %q: %v", d.Val(), err)
-			}
+			case "max_workers":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				var err error
+				m.MaxWorkers, err = strconv.Atoi(d.Val())
+				if err != nil {
+					return d.Errf("invalid max_workers %q: %v", d.Val(), err)
+				}
 			case "max_response_size":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -342,28 +350,30 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid max_response_size %q: %v", d.Val(), err)
 				}
 				m.MaxResponseSize = &v
-		case "shared_http_client":
-			m.SharedHTTPClient = true
-		case "block_private_ips":
-			if d.NextArg() {
-				v, err := strconv.ParseBool(d.Val())
-				if err != nil {
-					return d.Errf("invalid block_private_ips %q: %v", d.Val(), err)
+			case "shared_http_client":
+				m.SharedHTTPClient = true
+			case "block_private_ips":
+				if d.NextArg() {
+					v, err := strconv.ParseBool(d.Val())
+					if err != nil {
+						return d.Errf("invalid block_private_ips %q: %v", d.Val(), err)
+					}
+					m.BlockPrivateIPs = &v
+				} else {
+					v := true
+					m.BlockPrivateIPs = &v
 				}
-				m.BlockPrivateIPs = &v
-			} else {
-				v := true
-				m.BlockPrivateIPs = &v
-			}
-		case "allowed_hosts":
-			m.AllowedHosts = d.RemainingArgs()
-		case "debug":
-			m.Debug = true
-		case "cache_backend":
-			if !d.NextArg() {
-				return d.ArgErr()
-			}
-			m.CacheBackend = d.Val()
+			case "allowed_hosts":
+				m.AllowedHosts = d.RemainingArgs()
+			case "allow_private_ips_for_allowed_hosts":
+				m.AllowPrivateIPsForAllowedHosts = true
+			case "debug":
+				m.Debug = true
+			case "cache_backend":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				m.CacheBackend = d.Val()
 			case "cache_size":
 				if !d.NextArg() {
 					return d.ArgErr()
