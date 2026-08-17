@@ -20,10 +20,20 @@ trap cleanup EXIT
 echo "=== Building binary ==="
 cd "$SCRIPT_DIR/cmd/rrtest" && go build -o "$RR_TEST_BINARY" .
 
+# start_rr restarts the test server with the given flags so each case runs
+# with its own plugin config.
+start_rr() {
+	[ -n "$RR_PID" ] && kill "$RR_PID" 2>/dev/null || true
+	sleep 1
+	[ -n "$RR_PID" ] && kill -9 "$RR_PID" 2>/dev/null || true
+	"$RR_TEST_BINARY" -listen :9090 "$@" &
+	RR_PID=$!
+	sleep 2
+}
+
+cd "$SCRIPT_DIR"
 echo "=== Starting RR test server on :9090 ==="
-"$RR_TEST_BINARY" -listen :9090 &
-RR_PID=$!
-sleep 2
+start_rr
 
 echo "=== Test 1: ESI comment unwrapping ==="
 RESPONSE=$(curl -s http://localhost:9090/)
@@ -79,6 +89,30 @@ else
     echo "FAIL: Content-Type missing or wrong"
     echo "Content-Type: $CT"
     exit 1
+fi
+
+echo "--- Allowed Hosts Tests ---"
+
+echo "=== Test 6: allowed_hosts allows include from listed host ==="
+start_rr -allowed-hosts 127.0.0.1 -block-private-ips=false
+RESPONSE=$(curl -s http://localhost:9090/allowed)
+if echo "$RESPONSE" | grep -q "FRAGMENT_OK"; then
+    echo "PASS: allowed_hosts include from listed host resolved"
+else
+    echo "FAIL: allowed_hosts include from listed host blocked"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 7: allowed_hosts blocks include from unlisted host ==="
+start_rr -allowed-hosts other.example.com -block-private-ips=false
+RESPONSE=$(curl -s http://localhost:9090/allowed)
+if echo "$RESPONSE" | grep -q "FRAGMENT_OK"; then
+    echo "FAIL: allowed_hosts include from unlisted host resolved"
+    echo "Response: $RESPONSE"
+    exit 1
+else
+    echo "PASS: allowed_hosts include from unlisted host blocked"
 fi
 
 echo ""

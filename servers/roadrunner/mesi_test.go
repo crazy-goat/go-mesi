@@ -336,3 +336,140 @@ func TestBlockPrivateIPsFalseAllows(t *testing.T) {
 		t.Errorf("Expected private-IP include to be allowed when block_private_ips=false, got body: %s", rec.Body.String())
 	}
 }
+
+// newAllowedHostsTestServers spins up the same loopback fragment pair as
+// newBlockPrivateIPsTestServers and returns the include URL with the
+// hostname replaced by the caller-provided one, so hostname-based
+// allowed_hosts matching can be exercised without DNS. Callers MUST also
+// set block_private_ips=false: the loopback fragment is a private IP, and
+// AllowedHosts does NOT bypass the dial-time BlockPrivateIPs check by
+// design (defense-in-depth, see docs/features.md).
+func newAllowedHostsTestServers(t *testing.T, hostname string) (fragmentURL string, upstream http.Handler) {
+	t.Helper()
+
+	fragment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte("FRAGMENT_OK"))
+	}))
+	t.Cleanup(fragment.Close)
+
+	// 127.0.0.1 -> caller-provided hostname (e.g. "127.0.0.1" itself).
+	includeURL := "http://" + hostname + strings.TrimPrefix(fragment.URL, "http://127.0.0.1")
+
+	upstream = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(fmt.Sprintf("<html><body><esi:include src=\"%s/fragment\" /></body></html>", includeURL)))
+	})
+
+	return includeURL, upstream
+}
+
+// newAllowedHostsTestPlugin returns an initialized plugin with
+// block_private_ips=false and the given allowed_hosts list, ready to serve
+// the upstream handler.
+func newAllowedHostsTestPlugin(t *testing.T, allowedHosts []string) http.Handler {
+	t.Helper()
+
+	_, upstream := newAllowedHostsTestServers(t, "127.0.0.1")
+
+	block := false
+	config := CreateConfig()
+	config.BlockPrivateIPs = &block
+	config.AllowedHosts = allowedHosts
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	return p.Middleware(upstream)
+}
+
+func TestAllowedHostsDefaultAllows(t *testing.T) {
+	// Backward compatibility: absent/empty allowed_hosts keeps the legacy
+	// unrestricted behaviour once BlockPrivateIPs permits the dial.
+	handler := newAllowedHostsTestPlugin(t, nil)
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to be allowed with empty allowed_hosts, got body: %s", rec.Body.String())
+	}
+}
+
+func TestAllowedHostsListedHostAllows(t *testing.T) {
+	handler := newAllowedHostsTestPlugin(t, []string{"127.0.0.1"})
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to be allowed when the host is listed in allowed_hosts, got body: %s", rec.Body.String())
+	}
+}
+
+func TestAllowedHostsSuffixMatchAllows(t *testing.T) {
+	// Subdomain semantics through the plugin wiring: the core matches exact
+	// host or dot-boundary suffix (hostMatches in mesi/ssrf.go), so
+	// sub.example.com matches example.com. Exercised DNS-free here with an
+	// IP-literal suffix: "127.0.0.1" matches the allowed entry "0.0.1"
+	// (host[len(host)-len(allowed)-1] == '.').
+	handler := newAllowedHostsTestPlugin(t, []string{"0.0.1"})
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to be allowed via suffix match, got body: %s", rec.Body.String())
+	}
+}
+
+func TestAllowedHostsUnlistedHostBlocks(t *testing.T) {
+	handler := newAllowedHostsTestPlugin(t, []string{"example.com"})
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to be blocked when the host is NOT listed in allowed_hosts, got body: %s", rec.Body.String())
+	}
+	// Guard against a vacuous pass (ESI processing silently disabled): the
+	// raw <esi:include> tag must also be gone from the output.
+	if strings.Contains(rec.Body.String(), "esi:include") {
+		t.Errorf("Expected the <esi:include> tag to be processed away, got body: %s", rec.Body.String())
+	}
+}
+
+func TestAllowedHostsMultipleHostsAllows(t *testing.T) {
+	// A multi-entry allowed_hosts list: the include host matched by the
+	// second entry still resolves (ordering must not matter, and one
+	// unrelated entry must not break matching for the listed host).
+	handler := newAllowedHostsTestPlugin(t, []string{"someother.host", "127.0.0.1"})
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to be allowed when the host is listed (2nd entry) in allowed_hosts, got body: %s", rec.Body.String())
+	}
+}

@@ -41,12 +41,24 @@ type Config struct {
 	Timeout               string   `mapstructure:"timeout"`
 	IncludeErrorMarker    string   `mapstructure:"include_error_marker"`
 	BlockPrivateIPs       *bool    `mapstructure:"block_private_ips"`
+	AllowedHosts          []string `mapstructure:"allowed_hosts"`
 }
 
 func CreateConfig() *Config {
 	return &Config{
 		MaxDepth: 5,
 	}
+}
+
+// NewWithConfig returns a Plugin using the given config for programmatic
+// callers (e.g. embedded test harnesses). Normal RoadRunner deployments
+// configure the plugin from .rr.yaml and need no constructor.
+//
+// The caller must still call Init() on the returned Plugin to apply the
+// config defaults and initialize backing resources (shared transport,
+// cache); NewWithConfig only sets the config pointer.
+func NewWithConfig(config *Config) *Plugin {
+	return &Plugin{config: config}
 }
 
 type Plugin struct {
@@ -138,9 +150,10 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 				Context:            r.Context(),
 				MaxDepth:           uint(p.config.MaxDepth),
 				DefaultUrl:         middleware.GetDefaultUrl(r),
-			Timeout:            10 * time.Second,
-			BlockPrivateIPs:    p.blockPrivateIPs,
-			IncludeErrorMarker: p.config.IncludeErrorMarker,
+				Timeout:            10 * time.Second,
+				BlockPrivateIPs:    p.blockPrivateIPs,
+				AllowedHosts:       p.config.AllowedHosts,
+				IncludeErrorMarker: p.config.IncludeErrorMarker,
 			}
 
 			if p.cache != nil {

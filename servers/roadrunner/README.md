@@ -40,6 +40,7 @@ http:
 | `max_depth` | int | `5` | Maximum ESI nesting depth. Set to `0` to disable ESI processing. |
 | `shared_http_client` | bool | `false` | Reuse a single HTTP client for all ESI includes (SSRF-safe, connection pooling). |
 | `block_private_ips` | bool | `true` | Block ESI includes to private/reserved IPs (loopback, RFC 1918, CGNAT, link-local, cloud metadata `169.254.169.254`, benchmark/documentation ranges) at dial time. Set `false` to allow internal includes (e.g. service meshes). |
+| `allowed_hosts` | array | `[]` | Host whitelist restricting which ESI include destinations are fetched. Exact or subdomain-suffix match with a `.` boundary (rejects suffix injection); case-insensitive; ports ignored. Empty list = all hosts allowed (subject to `block_private_ips`). The whitelist check runs by hostname before the dial-time private-IP check and does NOT bypass it. |
 | `timeout` | string | `"10s"` | Maximum time for ESI processing (Go duration format). |
 | `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
 | `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`, `"memcached"`. |
@@ -69,6 +70,18 @@ http:
   middleware:
     mesi:
       block_private_ips: true
+```
+
+#### Allowed Hosts (SSRF protection)
+Restricts ESI includes to a host whitelist. Matching is exact or subdomain-suffix (`sub.backend` matches `backend`); the `.` boundary prevents suffix injection (`notbackend.com` does NOT match `backend`); ports are ignored. Empty/absent list allows all hosts (backward compatible, still subject to `block_private_ips`). The whitelist check runs by hostname before the dial-time private-IP check and does NOT bypass it — includes to private/reserved IPs still require `block_private_ips: false`.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      allowed_hosts:
+        - backend.internal
+        - cdn.trusted.com
 ```
 
 ### Cache backends
