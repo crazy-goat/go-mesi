@@ -41,6 +41,7 @@ http:
 | `shared_http_client` | bool | `false` | Reuse a single HTTP client for all ESI includes (SSRF-safe, connection pooling). |
 | `block_private_ips` | bool | `true` | Block ESI includes to private/reserved IPs (loopback, RFC 1918, CGNAT, link-local, cloud metadata `169.254.169.254`, benchmark/documentation ranges) at dial time. Set `false` to allow internal includes (e.g. service meshes). |
 | `allowed_hosts` | array | `[]` | Host whitelist restricting which ESI include destinations are fetched. Exact or subdomain-suffix match with a `.` boundary (rejects suffix injection); case-insensitive; ports ignored. Empty list = all hosts allowed (subject to `block_private_ips`). The whitelist check runs by hostname before the dial-time private-IP check and does NOT bypass it. |
+| `allow_private_ips_for_allowed_hosts` | bool | `false` | When `true`, hosts listed in `allowed_hosts` may resolve to private/reserved IPs (the dial-time block is bypassed for them). Only effective when `block_private_ips` is `true` AND `allowed_hosts` is non-empty; no effect under `shared_http_client` (the shared transport bakes `block_private_ips` at startup). **Trusts DNS** — a compromised entry in `allowed_hosts` can reach internal/private addresses. |
 | `timeout` | string | `"10s"` | Maximum time for ESI processing (Go duration format). |
 | `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
 | `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`, `"memcached"`. |
@@ -82,6 +83,34 @@ http:
       allowed_hosts:
         - backend.internal
         - cdn.trusted.com
+```
+
+#### Allowed Hosts with private-IP bypass
+
+For service meshes, `allow_private_ips_for_allowed_hosts: true` lifts the
+SSRF block for hosts that are BOTH listed in `allowed_hosts` AND resolve to a
+private/reserved IP. The hostname whitelist still applies — hosts outside
+`allowed_hosts` are blocked regardless of this flag. Only effective when
+`block_private_ips` is `true` (default) and `allowed_hosts` is non-empty.
+
+> **Security warning:** this option trusts DNS. Anyone who can control which
+> hostname an `<esi:include>` targets (or who can influence what an entry in
+> `allowed_hosts` resolves to) can reach internal/private addresses. Only
+> enable it when you control every hostname in `allowed_hosts`.
+
+> **Interaction with `shared_http_client`:** the shared client's SSRF-safe
+> transport is built once at startup and bakes in `block_private_ips`; the
+> per-host bypass does NOT apply to shared-client fetches. Disable
+> `shared_http_client` to use the bypass.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      allowed_hosts:
+        - backend.internal   # resolves to 10.x.x.x
+      block_private_ips: true
+      allow_private_ips_for_allowed_hosts: true  # backend.internal may hit 10.x.x.x
 ```
 
 ### Cache backends

@@ -115,5 +115,29 @@ else
     echo "PASS: allowed_hosts include from unlisted host blocked"
 fi
 
+echo "--- AllowPrivateIPsForAllowedHosts Tests ---"
+
+echo "=== Test 8: allow_private_ips_for_allowed_hosts bypass enables listed private host ==="
+start_rr -allowed-hosts 127.0.0.1 -allow-private-ips-for-allowed-hosts
+RESPONSE=$(curl -s http://localhost:9090/allowed)
+if echo "$RESPONSE" | grep -q "FRAGMENT_OK"; then
+    echo "PASS: listed private host resolved with bypass enabled"
+else
+    echo "FAIL: listed private host blocked despite bypass enabled"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 9: allow_private_ips_for_allowed_hosts default off blocks listed private host ==="
+start_rr -allowed-hosts 127.0.0.1
+RESPONSE=$(curl -s http://localhost:9090/allowed)
+if echo "$RESPONSE" | grep -q "FRAGMENT_OK"; then
+    echo "FAIL: listed private host resolved with bypass default off"
+    echo "Response: $RESPONSE"
+    exit 1
+else
+    echo "PASS: listed private host blocked with bypass default off"
+fi
+
 echo ""
 echo "=== All RoadRunner tests passed ==="

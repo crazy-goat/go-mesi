@@ -26,7 +26,7 @@ Support status of mESI features across all server integrations.
 | Global Timeout | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ |
 | SSRF (BlockPrivateIPs) | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ | ✅ | 🔒 | ✅ |
 | AllowedHosts | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| AllowPrivateIPsForAllowedHosts | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ |
+| AllowPrivateIPsForAllowedHosts | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ |
 | MaxResponseSize | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | MaxConcurrentRequests | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | MaxWorkers | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
@@ -60,6 +60,7 @@ Support status of mESI features across all server integrations.
 - **Proxy** – Accepts full `EsiParserConfig`; all features available when provided by calling code.
 - **AllowedHosts (CLI)** – Exposed via the `-allowedHosts` flag: a comma-separated host whitelist passed verbatim to `mesi.EsiParserConfig.AllowedHosts`. Matching is handled entirely by the shared core — exact or subdomain-suffix match with a `.` boundary that rejects suffix injection, case-insensitive, ports ignored. Unset/empty = all hosts allowed (backward compatible), subject to the dial-time private-IP block (`-allow-private-ips`); the whitelist check does NOT bypass `BlockPrivateIPs`. Entries are matched as written — separate hosts with commas only (#179).
 - **AllowedHosts (RoadRunner)** since #203 – Exposed via the `allowed_hosts` YAML list (`mesi.allowed_hosts: [backend.internal, cdn.trusted.com]`), passed verbatim to `mesi.EsiParserConfig.AllowedHosts`. Matching is handled entirely by the shared core — exact or subdomain-suffix match with a `.` boundary that rejects suffix injection, case-insensitive, ports ignored. Unset/empty list = all hosts allowed (backward compatible), subject to the dial-time `block_private_ips` check (default `true`); the whitelist check runs by hostname first and does NOT bypass `BlockPrivateIPs` — includes to private/reserved IPs still require `block_private_ips: false` (two-phase defense-in-depth). An entry that matches nothing (e.g. an accidental empty string) makes the list fail closed rather than open.
+- **AllowPrivateIPsForAllowedHosts (RoadRunner)** since #209 – Exposed via the `allow_private_ips_for_allowed_hosts` YAML bool (default `false`), passed verbatim to `mesi.EsiParserConfig.AllowPrivateIPsForAllowedHosts`. When `true`, hosts listed in `allowed_hosts` may resolve to private/reserved IPs (the dial-time block is bypassed for them); the whitelist check still runs first and the bypass is only effective when BOTH `block_private_ips: true` AND `allowed_hosts` non-empty are set — otherwise a no-op. **Trusts DNS** (same security profile as Apache `MesiAllowPrivateIPsForAllowedHosts` #168). No effect under `shared_http_client` — the shared transport bakes `block_private_ips` at startup, so the bypass is not consulted for shared-client fetches (documented limitation).
 - **IncludeErrorMarker (CLI)** – Can only be set programmatically (no CLI flag).
 - **`fetch-mode="ab"` (`ab-ratio`)** – Format requirements enforced since #315:
   - Exactly one `:` separator (`A:B`); leading and trailing whitespace is trimmed.

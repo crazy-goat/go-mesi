@@ -456,6 +456,109 @@ func TestAllowedHostsUnlistedHostBlocks(t *testing.T) {
 	}
 }
 
+// newBypassTestPlugin returns an initialized plugin exercising the
+// allow_private_ips_for_allowed_hosts path: BlockPrivateIPs is left at the
+// safe default (true), the include host must be in allowedHosts, and the
+// bypass flag is set to allowBypass. sharedHTTPClient optionally enables the
+// shared-client path (where the bypass is documented to have no effect).
+func newBypassTestPlugin(t *testing.T, allowedHosts []string, allowBypass, sharedHTTPClient bool) http.Handler {
+	t.Helper()
+
+	_, upstream := newAllowedHostsTestServers(t, "127.0.0.1")
+
+	config := CreateConfig()
+	config.AllowedHosts = allowedHosts
+	config.AllowPrivateIPsForAllowedHosts = allowBypass
+	config.SharedHTTPClient = sharedHTTPClient
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	return p.Middleware(upstream)
+}
+
+func TestAllowPrivateIPsForAllowedHostsBypassAllows(t *testing.T) {
+	// Bypass opt-in: a listed host may resolve to a private/reserved IP
+	// without tripping the dial-time block (block_private_ips stays true).
+	handler := newBypassTestPlugin(t, []string{"127.0.0.1"}, true, false)
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to be allowed via bypass for listed host, got body: %s", rec.Body.String())
+	}
+}
+
+func TestAllowPrivateIPsForAllowedHostsDefaultBlocks(t *testing.T) {
+	// Backward compatibility: flag absent/false (default) keeps the
+	// dial-time private-IP block for listed hosts.
+	handler := newBypassTestPlugin(t, []string{"127.0.0.1"}, false, false)
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to be blocked without the bypass flag, got body: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "esi:include") {
+		t.Errorf("Expected the <esi:include> tag to be processed away, got body: %s", rec.Body.String())
+	}
+}
+
+func TestAllowPrivateIPsForAllowedHostsUnlistedHostStillBlocked(t *testing.T) {
+	// The bypass only covers hosts present in allowed_hosts: a private host
+	// outside the whitelist stays blocked even with the flag on.
+	handler := newBypassTestPlugin(t, []string{"example.com"}, true, false)
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to private host outside allowed_hosts to stay blocked, got body: %s", rec.Body.String())
+	}
+	// Guard against a vacuous pass: the raw <esi:include> tag must also be gone.
+	if strings.Contains(rec.Body.String(), "esi:include") {
+		t.Errorf("Expected the <esi:include> tag to be processed away, got body: %s", rec.Body.String())
+	}
+}
+
+func TestAllowPrivateIPsForAllowedHostsSharedClientStillBlocks(t *testing.T) {
+	// Documented limitation: with shared_http_client the bypass is not
+	// consulted in the core (fetchClientForURL returns the wrapped shared
+	// client whose transport bakes block_private_ips at startup), so the
+	// include stays blocked even with the flag set.
+	handler := newBypassTestPlugin(t, []string{"127.0.0.1"}, true, true)
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
+		t.Errorf("Expected include to stay blocked under shared_http_client, got body: %s", rec.Body.String())
+	}
+	// Guard against a vacuous pass: the raw <esi:include> tag must also be gone.
+	if strings.Contains(rec.Body.String(), "esi:include") {
+		t.Errorf("Expected the <esi:include> tag to be processed away, got body: %s", rec.Body.String())
+	}
+}
+
 func TestAllowedHostsMultipleHostsAllows(t *testing.T) {
 	// A multi-entry allowed_hosts list: the include host matched by the
 	// second entry still resolves (ordering must not matter, and one

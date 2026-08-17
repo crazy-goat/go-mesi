@@ -28,20 +28,21 @@ const MaxCacheTTL = 24 * time.Hour
 const DefaultCacheSize = 10000
 
 type Config struct {
-	MaxDepth              int      `mapstructure:"max_depth"`
-	SharedHTTPClient      bool     `mapstructure:"shared_http_client"`
-	CacheBackend          string   `mapstructure:"cache_backend"`
-	CacheSize             int      `mapstructure:"cache_size"`
-	CacheTTL              string   `mapstructure:"cache_ttl"`
-	CacheKeyTemplate      string   `mapstructure:"cache_key_template"`
-	CacheRedisAddr        string   `mapstructure:"cache_redis_addr"`
-	CacheRedisPassword    string   `mapstructure:"cache_redis_password"`
-	CacheRedisDB          int      `mapstructure:"cache_redis_db"`
-	CacheMemcachedServers []string `mapstructure:"cache_memcached_servers"`
-	Timeout               string   `mapstructure:"timeout"`
-	IncludeErrorMarker    string   `mapstructure:"include_error_marker"`
-	BlockPrivateIPs       *bool    `mapstructure:"block_private_ips"`
-	AllowedHosts          []string `mapstructure:"allowed_hosts"`
+	MaxDepth                       int      `mapstructure:"max_depth"`
+	SharedHTTPClient               bool     `mapstructure:"shared_http_client"`
+	CacheBackend                   string   `mapstructure:"cache_backend"`
+	CacheSize                      int      `mapstructure:"cache_size"`
+	CacheTTL                       string   `mapstructure:"cache_ttl"`
+	CacheKeyTemplate               string   `mapstructure:"cache_key_template"`
+	CacheRedisAddr                 string   `mapstructure:"cache_redis_addr"`
+	CacheRedisPassword             string   `mapstructure:"cache_redis_password"`
+	CacheRedisDB                   int      `mapstructure:"cache_redis_db"`
+	CacheMemcachedServers          []string `mapstructure:"cache_memcached_servers"`
+	Timeout                        string   `mapstructure:"timeout"`
+	IncludeErrorMarker             string   `mapstructure:"include_error_marker"`
+	BlockPrivateIPs                *bool    `mapstructure:"block_private_ips"`
+	AllowedHosts                   []string `mapstructure:"allowed_hosts"`
+	AllowPrivateIPsForAllowedHosts bool     `mapstructure:"allow_private_ips_for_allowed_hosts"`
 }
 
 func CreateConfig() *Config {
@@ -147,13 +148,14 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 		contentType := customWriter.Header().Get("Content-Type")
 		if strings.HasPrefix(contentType, "text/html") {
 			config := mesi.EsiParserConfig{
-				Context:            r.Context(),
-				MaxDepth:           uint(p.config.MaxDepth),
-				DefaultUrl:         middleware.GetDefaultUrl(r),
-				Timeout:            10 * time.Second,
-				BlockPrivateIPs:    p.blockPrivateIPs,
-				AllowedHosts:       p.config.AllowedHosts,
-				IncludeErrorMarker: p.config.IncludeErrorMarker,
+				Context:                        r.Context(),
+				MaxDepth:                       uint(p.config.MaxDepth),
+				DefaultUrl:                     middleware.GetDefaultUrl(r),
+				Timeout:                        10 * time.Second,
+				BlockPrivateIPs:                p.blockPrivateIPs,
+				AllowedHosts:                   p.config.AllowedHosts,
+				AllowPrivateIPsForAllowedHosts: p.config.AllowPrivateIPsForAllowedHosts,
+				IncludeErrorMarker:             p.config.IncludeErrorMarker,
 			}
 
 			if p.cache != nil {

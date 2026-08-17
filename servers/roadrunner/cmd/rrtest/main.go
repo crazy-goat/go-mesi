@@ -16,6 +16,7 @@ func main() {
 	listen := flag.String("listen", ":8080", "Listen address")
 	allowedHosts := flag.String("allowed-hosts", "", "Comma-separated allowed hosts for <esi:include> (empty/unset = all hosts allowed)")
 	blockPrivateIPs := flag.Bool("block-private-ips", true, "Block ESI includes to private/reserved IPs at dial time")
+	allowPrivateIPsForAllowedHosts := flag.Bool("allow-private-ips-for-allowed-hosts", false, "Bypass the dial-time private-IP block for hosts listed in -allowed-hosts")
 	flag.Parse()
 
 	config := roadrunner.CreateConfig()
@@ -23,6 +24,7 @@ func main() {
 		config.AllowedHosts = strings.Split(*allowedHosts, ",")
 	}
 	config.BlockPrivateIPs = blockPrivateIPs
+	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
 
 	plugin := roadrunner.NewWithConfig(config)
 	if err := plugin.Init(); err != nil {
