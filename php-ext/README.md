@@ -99,6 +99,7 @@ $html = \mesi\parse_with_config(
 | `cache_memcached_servers` | `cache_backend = "memcached"` | array of strings | Each entry is `"host:port"`; non-empty list required |
 | `block_private_ips` | optional | bool | SSRF dial-time blocking of private/reserved IP ranges. Defaults to `true` (secure by default); pass `false` to allow includes from private IPs (e.g. loopback, RFC1918). A non-boolean value is rejected with `E_WARNING` |
 | `allowed_hosts` | optional | string | Space-separated hostname whitelist restricting which `<esi:include>` destinations are fetched (e.g. `'backend.internal cdn.example.com'`). Empty/absent = all hosts allowed (backward compatible). Non-string, control-character, or whitespace-only values are rejected with `E_WARNING` |
+| `allow_private_ips_for_allowed_hosts` | optional | bool | Per-host private-IP bypass: when `true`, hosts listed in `allowed_hosts` may resolve to private/reserved IPs (the dial-time block is bypassed for them). Defaults to `false` (no bypass). Only effective when BOTH `block_private_ips` is `true` AND `allowed_hosts` is a non-empty whitelist; otherwise a no-op. **Trusts DNS** — only use with internal/trusted DNS. A non-boolean value is rejected with `E_WARNING` |
 
 Validation is strict: an unknown `cache_backend`, mismatched Redis-vs-Memcached key, out-of-range numeric value, non-integer value, malformed `host:port`, or a non-string memcached server entry emits an `E_WARNING` and returns `false`. The function never silently degrades to "no cache" on a typo — a wrong host:port or empty memcached list surfaces as `E_WARNING`, matching the validation pattern in `parse_with_config()` for the in-memory backend and the equivalent `MesiCache*` directives in `servers/apache`. The same applies to `allowed_hosts`: a non-string or whitespace-only value is rejected (a whitespace-only list would silently tokenize to an empty allowlist = allow all hosts — the same fail-open typo nginx hardens against, #354). The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
 
@@ -211,11 +212,51 @@ Semantics (identical to Apache's `MesiAllowedHosts`, nginx's
   they would silently tokenize to an empty allowlist.
 - `allowed_hosts` does **not** bypass `block_private_ips`: includes to
   private/reserved IPs still require `block_private_ips => false` (a
-  dedicated `allow_private_ips_for_allowed_hosts` bypass is tracked in
-  #196).
+  dedicated `allow_private_ips_for_allowed_hosts` bypass is shipped since
+  #196 — see below).
 - The check runs by hostname before the dial-time private-IP check —
   two-phase defense-in-depth (redirect targets are re-validated on every
   hop by the shared core).
+
+#### Private-IP bypass for whitelisted hosts (`allow_private_ips_for_allowed_hosts`)
+
+Since #196. When `true`, hosts listed in `allowed_hosts` may resolve to
+private/reserved IP addresses (the dial-time block is bypassed for them) —
+the same security profile as Apache's `MesiAllowPrivateIPsForAllowedHosts`:
+
+```php
+// backend.internal is on a private IP; the whitelist lets it through
+// while everything NOT in allowed_hosts stays blocked.
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    [
+        'allowed_hosts'                      => 'backend.internal',
+        'block_private_ips'                  => true,
+        'allow_private_ips_for_allowed_hosts' => true,
+    ]
+);
+```
+
+Semantics:
+
+- Default `false` (no bypass) — backward compatible.
+- Only effective when BOTH `block_private_ips` is `true` AND `allowed_hosts`
+  is a non-empty whitelist naming the host; otherwise a no-op. Unlisted
+  hosts are rejected by the whitelist before any dial, even with the option
+  on.
+- **Security warning: trusts DNS.** An attacker able to influence what an
+  `allowed_hosts` entry resolves to (or to poison the resolver) can reach
+  internal/private addresses. Use only with internal DNS (Consul,
+  Kubernetes DNS, `/etc/hosts`).
+- Per-parse shared-client detachment: because the shared HTTP client's
+  transport bakes `block_private_ips` at startup, bypass-flagged parses use
+  per-request HTTP clients (no connection pooling for those fetches). All
+  other parses keep using the shared client unchanged.
+- A non-boolean (or non-integer) value is rejected with `E_WARNING` and
+  `parse_with_config()` returns `false` — a typo can never silently enable
+  a security bypass.
 
 ### Cache scope
 

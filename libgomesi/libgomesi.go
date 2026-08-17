@@ -83,11 +83,11 @@ func InitCache(backend *C.char, size C.int, ttlSeconds C.int) C.int {
 // Currently supported backends:
 //   - "memory":  no extra config required; configJSON may be "" or "{}".
 //   - "redis":   configJSON decodes to redisConfig struct
-//                ({"redisAddr":"host:port","redisPassword":"…","redisDB":N}).
-//                All fields are optional; defaults are localhost:6379,
-//                no password, DB 0.
+//     ({"redisAddr":"host:port","redisPassword":"…","redisDB":N}).
+//     All fields are optional; defaults are localhost:6379,
+//     no password, DB 0.
 //   - "memcached": configJSON decodes to memcachedConfig struct
-//                  ({"servers":["host:port",…]}). servers is required.
+//     ({"servers":["host:port",…]}). servers is required.
 //
 // Returns 0 on success, -1 if backend is unknown or config is malformed.
 // Use this in place of (or after) InitCache when you need redis/memcached
@@ -202,6 +202,13 @@ func ParseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedH
 // integrations that need the bypass; ParseWithConfig keeps its original
 // 5-argument signature so existing callers (nginx, php-ext) are unaffected.
 //
+// Bypass-flagged parses detach from the shared HTTP client (if one was
+// initialized with InitHTTPClient): its transport has blockPrivateIPs baked
+// in at startup, which would otherwise silently negate the per-host bypass
+// (the core's fetchClientForURL consults HTTPClient before the bypass
+// branch). Such parses therefore use per-request clients; the shared client
+// itself is untouched and still serves non-bypass parses.
+//
 //export ParseWithConfigEx
 func ParseWithConfigEx(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int) *C.char {
 	return parseWithConfig(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts)
@@ -219,14 +226,24 @@ func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedH
 	}
 
 	config := mesi.EsiParserConfig{
-		DefaultUrl:                    goDefaultUrl,
-		MaxDepth:                      uint(goMaxDepth),
-		Timeout:                       30 * time.Second,
-		AllowedHosts:                  hosts,
-		BlockPrivateIPs:               blockPrivateIPs != 0,
+		DefaultUrl:                     goDefaultUrl,
+		MaxDepth:                       uint(goMaxDepth),
+		Timeout:                        30 * time.Second,
+		AllowedHosts:                   hosts,
+		BlockPrivateIPs:                blockPrivateIPs != 0,
 		AllowPrivateIPsForAllowedHosts: allowPrivateIPsForAllowedHosts != 0,
 	}
 	applySharedConfig(&config)
+	if allowPrivateIPsForAllowedHosts != 0 {
+		// The shared client's transport has blockPrivateIPs baked in at
+		// InitHTTPClient time; attaching it here would silently negate the
+		// per-host bypass (fetchClientForURL returns the shared client
+		// before ever reaching the bypass branch). Bypass-flagged parses
+		// therefore fetch through per-request clients, exactly like the
+		// native-Go consumers without a shared client. The shared cache
+		// (applied above) stays attached.
+		config.HTTPClient = nil
+	}
 	result := mesi.MESIParse(goInput, config)
 	return C.CString(result)
 }
