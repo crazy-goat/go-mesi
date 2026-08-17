@@ -473,6 +473,34 @@ func TestCLI_allowedHostsFlagDefaultEmpty(t *testing.T) {
 	}
 }
 
+func TestCLI_allowPrivateIPsForAllowedHostsFlagInHelp(t *testing.T) {
+	stdout, stderr, _ := runCLI(t, "-h")
+	output := stdout + stderr
+	if !strings.Contains(output, "-allowPrivateIPsForAllowedHosts") {
+		t.Errorf("expected -allowPrivateIPsForAllowedHosts in help output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(output, "hosts listed in -allowedHosts") {
+		t.Errorf("expected -allowPrivateIPsForAllowedHosts description in help output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestCLI_allowPrivateIPsForAllowedHostsFlag(t *testing.T) {
+	// The bypass does not affect file-mode processing of static ESI
+	// comments (no includes fetched), but the flag must be accepted.
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello World-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, exitCode := runCLI(t, "-allowPrivateIPsForAllowedHosts", inputFile)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Hello World") {
+		t.Errorf("expected 'Hello World' in output, got %q", stdout)
+	}
+}
+
 func TestCLI_sharedHTTPClientFlagInHelp(t *testing.T) {
 	stdout, stderr, _ := runCLI(t, "-h")
 	output := stdout + stderr

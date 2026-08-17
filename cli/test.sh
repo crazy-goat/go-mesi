@@ -255,6 +255,33 @@ else
 fi
 
 echo ""
+echo "--- AllowPrivateIPsForAllowedHosts Tests ---"
+
+echo "Test 21: -allowPrivateIPsForAllowedHosts allows listed host on private IP (private block stays on)"
+RESULT=$("$CLI_BINARY" -allowedHosts=127.0.0.1 -allowPrivateIPsForAllowedHosts -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
+if echo "$RESULT" | grep -q "Hello World"; then
+	pass "Bypassed private-IP block for allowed host"
+else
+	fail "Bypass for allowed host" "Expected include resolved, got: $RESULT"
+fi
+
+echo "Test 22: without -allowPrivateIPsForAllowedHosts the private host stays blocked"
+RESULT=$("$CLI_BINARY" -allowedHosts=127.0.0.1 -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
+if echo "$RESULT" | grep -q "Hello World"; then
+	fail "Control (no bypass flag)" "Expected blocked include, got: $RESULT"
+else
+	pass "Private host still blocked without the bypass flag"
+fi
+
+echo "Test 23: -allowPrivateIPsForAllowedHosts does not bypass for hosts outside allowedHosts"
+RESULT=$("$CLI_BINARY" -allowedHosts=other.example.com -allowPrivateIPsForAllowedHosts -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
+if echo "$RESULT" | grep -q "Hello World"; then
+	fail "Unlisted host with bypass flag" "Expected blocked include, got: $RESULT"
+else
+	pass "Unlisted host stays blocked with the bypass flag"
+fi
+
+echo ""
 echo "--- Fixture Comparison (Inline Fixtures) ---"
 
 FIXTURE_PASS=0
