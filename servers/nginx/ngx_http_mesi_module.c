@@ -17,6 +17,7 @@ typedef struct {
   ngx_int_t  cache_redis_db;           // Redis database number (0-15)
   ngx_flag_t block_private_ips;        // SSRF: block private/reserved IPs (default ON)
   ngx_str_t  allowed_hosts;  // space-separated host whitelist ("" = no restriction)
+  ngx_flag_t allow_private_ips_for_allowed;  // private-IP bypass for allowed_hosts (default OFF)
 } ngx_http_mesi_loc_conf_t;
 
 typedef struct {
@@ -45,6 +46,7 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
 
 typedef char *(*ParseFunc)(char *, int, char *);
 typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
+typedef char *(*ParseWithConfigExFunc)(char *, int, char *, char *, int, int);
 typedef int (*InitCacheFunc)(char *, int, int);
 typedef int (*InitCacheWithConfigFunc)(char *, int, int, char *);
 typedef void (*FreeCacheFunc)(void);
@@ -52,6 +54,7 @@ typedef void (*FreeCacheFunc)(void);
 static void *go_module = NULL;
 static ParseFunc EsiParse = NULL;
 static ParseWithConfigFunc EsiParseWithConfig = NULL;
+static ParseWithConfigExFunc EsiParseWithConfigEx = NULL;
 static InitCacheFunc EsiInitCache = NULL;
 static InitCacheWithConfigFunc EsiInitCacheWithConfig = NULL;
 static FreeCacheFunc EsiFreeCache = NULL;
@@ -98,6 +101,10 @@ static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("mesi_allowed_hosts"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, allowed_hosts), NULL},
+
+    {ngx_string("mesi_allow_private_ips_for_allowed"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
+     ngx_conf_set_flag_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, allow_private_ips_for_allowed), NULL},
 
     ngx_null_command};
 
@@ -538,7 +545,24 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
                          : "";
 
   char *message;
-  if (EsiParseWithConfig != NULL) {
+  if (EsiParseWithConfigEx != NULL) {
+    // ParseWithConfigEx extends ParseWithConfig with the
+    // allowPrivateIPsForAllowedHosts parameter: hosts listed in
+    // allowed_hosts may bypass the dial-time private-IP block (only
+    // effective when block_private_ips is on AND allowed_hosts is
+    // non-empty; the core grants the bypass per-host only for hosts
+    // present in AllowedHosts).
+    message = EsiParseWithConfigEx(input_cstr, 5, base_url_cstr, hosts_cstr,
+                                   lcf->block_private_ips,
+                                   lcf->allow_private_ips_for_allowed);
+  } else if (EsiParseWithConfig != NULL) {
+    if (lcf->allow_private_ips_for_allowed) {
+      ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                    "mesi: mesi_allow_private_ips_for_allowed is On but "
+                    "libgomesi lacks ParseWithConfigEx — private-IP bypass "
+                    "for allowed hosts DISABLED, falling back to "
+                    "ParseWithConfig");
+    }
     // ParseWithConfig enables SSRF protection (blockPrivateIPs) and an
     // optional allowed-hosts whitelist (empty string = no restriction).
     message = EsiParseWithConfig(input_cstr, 5, base_url_cstr, hosts_cstr,
@@ -649,6 +673,16 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
                   "(fail closed) instead of being silently ignored");
   }
 
+  // ParseWithConfigEx is optional: it adds the allowPrivateIPsForAllowedHosts
+  // parameter. When present, the module uses it so the
+  // mesi_allow_private_ips_for_allowed directive takes effect. Older
+  // libgomesi builds without it fall back to ParseWithConfig (bypass
+  // disabled) — the directive is then a no-op with a logged warning.
+  EsiParseWithConfigEx = (ParseWithConfigExFunc)dlsym(go_module, "ParseWithConfigEx");
+  if (dlerror() != NULL) {
+    EsiParseWithConfigEx = NULL;
+  }
+
   EsiInitCache = (InitCacheFunc)dlsym(go_module, "InitCache");
   if (dlerror() != NULL) {
     EsiInitCache = NULL;
@@ -691,6 +725,7 @@ static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
   conf->cache_ttl = NGX_CONF_UNSET;
   conf->cache_redis_db = NGX_CONF_UNSET;
   conf->block_private_ips = NGX_CONF_UNSET;
+  conf->allow_private_ips_for_allowed = NGX_CONF_UNSET;
   return conf;
 }
 
@@ -713,6 +748,11 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   // Empty (unset) = no hostname restriction (backward compatible). A child
   // that sets its own hosts always overrides the parent's list.
   ngx_conf_merge_str_value(conf->allowed_hosts, prev->allowed_hosts, "");
+  // Default OFF: private IPs always blocked regardless of allowed_hosts
+  // membership unless the operator explicitly opts into the bypass (the
+  // same secure default as Apache's MesiAllowPrivateIPsForAllowedHosts).
+  ngx_conf_merge_value(conf->allow_private_ips_for_allowed,
+                       prev->allow_private_ips_for_allowed, 0);
   if (conf->allowed_hosts.len > 0) {
     // Reject whitespace-only allowlists: they would silently disable the
     // hostname restriction the operator intended to configure. libgomesi

@@ -497,6 +497,46 @@ if ! docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-a
 fi
 echo "PASS: valid mesi_allowed_hosts (leading/trailing whitespace, ASCII and Unicode separators between hosts) accepted by nginx -t"
 
+echo "=== Test 32: AllowPrivateIPsForAllowedHosts — directive on allows the listed private host ==="
+RESPONSE=$(curl -s http://localhost:18080/bypass-on/allowed.html)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: mesi_allow_private_ips_for_allowed on lets the listed host through (block_private_ips stays on)"
+else
+    echo "FAIL: allowed listed host on a private IP was not fetched with the bypass on"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 33: AllowPrivateIPsForAllowedHosts — default off blocks the listed private host ==="
+RESPONSE=$(curl -s http://localhost:18080/bypass-off/bypass_off.html)
+if echo "$RESPONSE" | grep -q "FALLBACK-BY-PASS-OFF"; then
+    if echo "$RESPONSE" | grep -q "included content from backend"; then
+        echo "FAIL: allowlisted private host leaked content despite the bypass being off"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+    echo "PASS: allowlisted host on a private IP blocked with the bypass off (default)"
+else
+    echo "FAIL: include did not fall back (was it fetched?)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 34: AllowPrivateIPsForAllowedHosts — directive on does NOT bypass for hosts outside allowed_hosts ==="
+RESPONSE=$(curl -s http://localhost:18080/bypass-unlisted/bypass_unlisted.html)
+if echo "$RESPONSE" | grep -q "FALLBACK-UNLISTED-BY-PASS"; then
+    if echo "$RESPONSE" | grep -q "included content from backend"; then
+        echo "FAIL: unlisted private host leaked content despite the bypass being on (bypass must only cover allowed_hosts)"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+    echo "PASS: private host NOT in allowed_hosts stays blocked even with the directive on"
+else
+    echo "FAIL: include did not fall back (was it fetched?)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
 docker compose down
 
 echo ""
