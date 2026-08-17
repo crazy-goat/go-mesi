@@ -79,9 +79,11 @@ static int frag_server_start(frag_server_t *s, int max_requests) {
 }
 
 static void frag_server_stop(frag_server_t *s) {
-    /* Closing the listening socket makes the blocked accept() return
-     * immediately (EBADF) instead of stalling on the RCVTIMEO when the
-     * include was blocked and no request ever arrived. */
+    /* NOTE: close() alone does NOT reliably wake a blocked accept() on all
+     * platforms (Linux > 5.14 and macOS accept() also honor SO_RCVTIMEO,
+     * set in frag_server_start — that bounded timeout is the real guarantee
+     * that the join cannot hang when the include was blocked and no request
+     * ever arrived). */
     close(s->sock);
     pthread_join(s->tid, NULL);
 }
@@ -404,7 +406,10 @@ int main(void) {
             }
             FreeString(r);
 
-            /* 21e: the shared client still serves plain, non-bypass work. */
+            /* 21e: ordinary (non-bypass) parses still work after bypass
+             * parses detached from the shared client (no-degradation smoke;
+             * this does NOT prove connection-pooling reuse, which cannot be
+             * observed from the C ABI). */
             r = ParseWithConfig("shared client intact", 5, "http://127.0.0.1/", "", 1);
             if (r == NULL) {
                 printf("  FAIL: ParseWithConfig returned NULL\n");
