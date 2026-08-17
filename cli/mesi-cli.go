@@ -59,6 +59,8 @@ func main() {
 	allowPrivateIPs := flag.Bool("allow-private-ips", false,
 		"Allow ESI includes to private/reserved IP ranges (for local testing)")
 	allowedHosts := flag.String("allowedHosts", "", "Comma-separated list of allowed hosts for ESI includes")
+	allowPrivateIPsForAllowedHosts := flag.Bool("allowPrivateIPsForAllowedHosts", false,
+		"Allow ESI includes to private/reserved IP ranges for hosts listed in -allowedHosts (trusts DNS)")
 	maxWorkers := flag.Int("max-workers", 0,
 		"Max concurrent ESI include goroutines (0 = NumCPU*4)")
 	sharedHTTPClient := flag.Bool("shared-http-client", false,
@@ -83,6 +85,7 @@ func main() {
 	config.Debug = *debug
 	config.BlockPrivateIPs = !*allowPrivateIPs
 	config.AllowedHosts = allowedHostsFromFlag(*allowedHosts)
+	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
 	config.MaxWorkers = *maxWorkers
 	config.IncludeErrorMarker = *includeErrorMarker
 
