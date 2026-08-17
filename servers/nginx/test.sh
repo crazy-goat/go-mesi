@@ -526,7 +526,7 @@ echo "=== Test 34: AllowPrivateIPsForAllowedHosts — directive on does NOT bypa
 RESPONSE=$(curl -s http://localhost:18080/bypass-unlisted/bypass_unlisted.html)
 if echo "$RESPONSE" | grep -q "FALLBACK-UNLISTED-BY-PASS"; then
     if echo "$RESPONSE" | grep -q "included content from backend"; then
-        echo "FAIL: unlisted private host leaked content despite the bypass being off"
+        echo "FAIL: unlisted private host leaked content despite the bypass being on (bypass must only cover allowed_hosts)"
         echo "Response: $RESPONSE"
         exit 1
     fi
