@@ -530,6 +530,10 @@ func TestAllowPrivateIPsForAllowedHostsUnlistedHostStillBlocked(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
 		t.Errorf("Expected include to private host outside allowed_hosts to stay blocked, got body: %s", rec.Body.String())
 	}
+	// Guard against a vacuous pass: the raw <esi:include> tag must also be gone.
+	if strings.Contains(rec.Body.String(), "esi:include") {
+		t.Errorf("Expected the <esi:include> tag to be processed away, got body: %s", rec.Body.String())
+	}
 }
 
 func TestAllowPrivateIPsForAllowedHostsSharedClientStillBlocks(t *testing.T) {
@@ -548,6 +552,10 @@ func TestAllowPrivateIPsForAllowedHostsSharedClientStillBlocks(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
 		t.Errorf("Expected include to stay blocked under shared_http_client, got body: %s", rec.Body.String())
+	}
+	// Guard against a vacuous pass: the raw <esi:include> tag must also be gone.
+	if strings.Contains(rec.Body.String(), "esi:include") {
+		t.Errorf("Expected the <esi:include> tag to be processed away, got body: %s", rec.Body.String())
 	}
 }
 
