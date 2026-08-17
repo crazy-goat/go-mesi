@@ -165,6 +165,58 @@ location / {
 }
 ```
 
+## AllowPrivateIPsForAllowedHosts
+
+The `mesi_allow_private_ips_for_allowed` directive lets hosts listed in
+`mesi_allowed_hosts` resolve to private/reserved IP addresses — the dial-time
+`mesi_block_private_ips` block is bypassed **only for them**. Operators in
+service meshes / internal networks no longer face the false dichotomy of
+"block all private IPs" (breaks internal includes) vs "disable SSRF
+protection entirely" (exposes everything).
+
+> **SECURITY WARNING**: this trusts DNS for the hosts in `mesi_allowed_hosts`.
+> If an attacker can control DNS for a listed host, they can resolve it to a
+> private IP (e.g. `169.254.169.254`) and bypass SSRF protection. Use only
+> with internal DNS you control (Consul, Kubernetes DNS, `/etc/hosts`).
+
+### Directive
+
+#### `mesi_allow_private_ips_for_allowed`
+
+- **Syntax:** `mesi_allow_private_ips_for_allowed on | off`
+- **Default:** `off` (private IPs always blocked regardless of
+  allowed-host membership)
+- **Context:** `location`
+
+Hosts listed in `mesi_allowed_hosts` may resolve to private/reserved IP
+addresses (the dial-time block is bypassed for them).
+
+The bypass is **only** effective when BOTH `mesi_block_private_ips on` AND a
+non-empty `mesi_allowed_hosts` are configured; otherwise it is a no-op:
+
+- `mesi_block_private_ips off` → there is no dial-time block to bypass
+- empty `mesi_allowed_hosts` → no host qualifies for the bypass
+- hosts NOT in `mesi_allowed_hosts` are always subject to the dial-time
+  block regardless of this directive — the whitelist check runs first (an
+  unlisted host is rejected pre-dial)
+
+Fallback: with a libgomesi build lacking the `ParseWithConfigEx` symbol
+(older than the Apache #168 release), the directive is a no-op and a warning
+is logged that the bypass is disabled; parsing continues with
+`ParseWithConfig` semantics.
+
+### Example
+
+```nginx
+location / {
+    enable_mesi on;
+    mesi_block_private_ips on;              # secure default stays on
+    mesi_allowed_hosts "backend.internal"; # trusted internal backend
+    mesi_allow_private_ips_for_allowed on;  # ... but allow it on its private IP
+    proxy_pass http://backend;
+}
+```
+
 ## Cache Backend
 
 The nginx module supports in-memory caching of ESI fragment responses. When enabled, duplicate `<esi:include>` URLs within the configured TTL are served from cache instead of fetching from the origin backend.
