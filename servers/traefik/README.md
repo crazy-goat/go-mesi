@@ -243,7 +243,7 @@ http:
 
 Cached entries are stored with key format: `mesi:<url>` when no template is set.
 
-With `cacheKeyTemplate` the key is the rendered template result (e.g. `pfx:http://backend/fragment:sfx`), plus an SSRF-policy fingerprint suffix (see `mesi/fetch.go:199`) so different policies never share a cache entry.
+With `cacheKeyTemplate` the key is the rendered template result (e.g. `pfx:http://backend/fragment:sfx`), plus an SSRF-policy fingerprint suffix (see `mesi/fetch.go:200`) so different policies never share a cache entry.
 
 Example: `mesi:http://backend/fragment`
 

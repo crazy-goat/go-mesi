@@ -269,11 +269,9 @@ func TestCacheKeyTemplatePluginEmptyFallsBackToDefault(t *testing.T) {
 	cfg.CacheKeyTemplate = ""
 	cfg.BlockPrivateIPs = false
 
-	r := httptest.NewRequest("GET", "http://example.com/", nil)
 	if got := mesi.DefaultCacheKey("http://example.com/frag"); got != "mesi:http://example.com/frag" {
 		t.Fatalf("DefaultCacheKey contract broken: %q", got)
 	}
-	_ = r
 
 	t.Run("same URL different headers share cache", func(t *testing.T) {
 		var hits atomic.Int32
