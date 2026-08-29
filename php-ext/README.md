@@ -100,6 +100,9 @@ $html = \mesi\parse_with_config(
 | `block_private_ips` | optional | bool | SSRF dial-time blocking of private/reserved IP ranges. Defaults to `true` (secure by default); pass `false` to allow includes from private IPs (e.g. loopback, RFC1918). A non-boolean value is rejected with `E_WARNING` |
 | `allowed_hosts` | optional | string | Space-separated hostname whitelist restricting which `<esi:include>` destinations are fetched (e.g. `'backend.internal cdn.example.com'`). Empty/absent = all hosts allowed (backward compatible). Non-string, control-character, or whitespace-only values are rejected with `E_WARNING` |
 | `allow_private_ips_for_allowed_hosts` | optional | bool | Per-host private-IP bypass: when `true`, hosts listed in `allowed_hosts` may resolve to private/reserved IPs (the dial-time block is bypassed for them). Defaults to `false` (no bypass). Only effective when BOTH `block_private_ips` is `true` AND `allowed_hosts` is a non-empty whitelist; otherwise a no-op. **Trusts DNS** — only use with internal/trusted DNS. A non-boolean value is rejected with `E_WARNING` |
+| `cache_key_template` | optional | string | Cache key template: `${url}`, `${header:Name}`, `${cookie:Name}`. Empty/absent = default URL-only key (`mesi.DefaultCacheKey`). Unknown placeholders stay literal. Case-insensitive header/cookie lookup via `mesi.BuildCacheKey`. Non-string / control-char / space-containing values are rejected with `E_WARNING`. Silently **ignored** when `cache_backend` is `""` (no cache — parity with CLI/Traefik #246). A template without `${url}` collapses all URLs to one entry |
+| `request_headers` | optional | array | String keys (header names) → string or array-of-strings values. Keys and all values must pass `mesi_is_safe_string` (no control chars, space/tab, DEL, `"` or `\`). Empty array = no headers. Only rendered when a non-empty `cache_key_template` is set and `cache_backend != ""` |
+| `request_cookies` | optional | array | String keys (cookie names, non-empty, no spaces/control) → string values (no control chars, `"` or `\`; spaces allowed in values). Empty array = no cookies. Only rendered when a non-empty `cache_key_template` is set and `cache_backend != ""` |
 
 Validation is strict: an unknown `cache_backend`, mismatched Redis-vs-Memcached key, out-of-range numeric value, non-integer value, malformed `host:port`, or a non-string memcached server entry emits an `E_WARNING` and returns `false`. The function never silently degrades to "no cache" on a typo — a wrong host:port or empty memcached list surfaces as `E_WARNING`, matching the validation pattern in `parse_with_config()` for the in-memory backend and the equivalent `MesiCache*` directives in `servers/apache`. The same applies to `allowed_hosts`: a non-string or whitespace-only value is rejected (a whitespace-only list would silently tokenize to an empty allowlist = allow all hosts — the same fail-open typo nginx hardens against, #354). The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
 
@@ -257,6 +260,50 @@ Semantics:
 - A non-boolean (or non-integer) value is rejected with `E_WARNING` and
   `parse_with_config()` returns `false` — a typo can never silently enable
   a security bypass.
+
+#### Cache key template (`cache_key_template` + `request_headers` / `request_cookies`)
+
+Since #238. When `cache_backend` is set, `cache_key_template` lets callers
+vary cache keys by request metadata (headers, cookies) via placeholders
+evaluated by `mesi.BuildCacheKey`:
+
+- `${url}` — the `<esi:include src>` URL.
+- `${header:Name}` — first value of request header `Name` (case-insensitive).
+- `${cookie:Name}` — value of cookie `Name` (case-insensitive).
+- Unknown placeholders (e.g. `${unknown:foo}`) are left literal.
+- Empty or absent template falls back to the default URL-only key
+  (`mesi.DefaultCacheKey`).
+- A template without `${url}` collapses all URLs to a single cache entry.
+- When `cache_backend` is `""` (no cache) the template is silently ignored
+  — no warning (parity with CLI/Traefik #246).
+- `request_headers` / `request_cookies` are only rendered into the Go
+  request context when a non-empty template is active and `cache_backend != ""`.
+
+```php
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    [
+        'cache_backend'      => 'memory',
+        'cache_size'         => 1000,
+        'cache_ttl'          => 60,
+        'cache_key_template' => 'mesi:${url}:${header:Accept-Language}',
+        'request_headers'    => ['Accept-Language' => 'pl'],
+        // or array-of-strings: ['Accept-Language' => ['pl', 'en']]
+        // 'request_cookies' => ['ab' => 'v1'], // matched by ${cookie:ab}
+    ]
+);
+```
+
+Validation is strict: `cache_key_template` must be a string passing
+`mesi_is_safe_string` (no control chars, spaces, `"` or `\`);
+`request_headers` keys/values and `request_cookies` keys/values are
+validated the same way (cookie values allow spaces but still reject control
+chars / `"` / `\`). Violations emit `E_WARNING` and return `false`.
+
+`CacheKeyFunc` Go function pointers are **not** supported from PHP/C —
+the template string is the only PHP-visible cache-key customization.
 
 ### Cache scope
 
