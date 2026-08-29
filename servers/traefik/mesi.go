@@ -25,6 +25,7 @@ type Config struct {
 	CacheRedisPassword             string   `json:"cacheRedisPassword" yaml:"cacheRedisPassword"`
 	CacheRedisDB                   int      `json:"cacheRedisDb" yaml:"cacheRedisDb"`
 	CacheMemcachedServers          []string `json:"cacheMemcachedServers" yaml:"cacheMemcachedServers"`
+	CacheKeyTemplate               string   `json:"cacheKeyTemplate" yaml:"cacheKeyTemplate"`
 	BlockPrivateIPs                bool     `json:"blockPrivateIPs" yaml:"blockPrivateIPs"`
 	AllowedHosts                   []string `json:"allowedHosts" yaml:"allowedHosts"`
 	AllowPrivateIPsForAllowedHosts bool     `json:"allowPrivateIPsForAllowedHosts" yaml:"allowPrivateIPsForAllowedHosts"`
@@ -110,6 +111,12 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		if p.cache != nil {
 			config.Cache = p.cache
 			config.CacheTTL = p.cacheTTL
+			if p.config.CacheKeyTemplate != "" {
+				tmpl := p.config.CacheKeyTemplate
+				config.CacheKeyFunc = func(url string) string {
+					return mesi.BuildCacheKey(url, tmpl, req)
+				}
+			}
 		}
 
 		if p.sharedTransport != nil {
