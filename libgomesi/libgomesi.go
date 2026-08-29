@@ -5,10 +5,10 @@ package main
 import "C"
 import (
 	"net/http"
-	"strings"
 	"time"
 	"unsafe"
 
+	"github.com/crazy-goat/go-mesi/libgomesi/internal/config"
 	"github.com/crazy-goat/go-mesi/mesi"
 )
 
@@ -220,10 +220,14 @@ func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedH
 	goDefaultUrl := C.GoString(defaultUrl)
 
 	hostsStr := C.GoString(allowedHosts)
-	var hosts []string
-	for _, h := range strings.Fields(hostsStr) {
-		hosts = append(hosts, h)
-	}
+	// The shared lib has no logger wiring in its C ABI, so the
+	// misconfiguration diagnostic for whitespace-only allowedHosts
+	// (#357) goes to stderr via mesi's default logger. It fires only
+	// for the pathological non-empty/zero-token input — normal parses
+	// stay silent — and platform modules that reject such values at
+	// their own config load (nginx #354, PHP extension #190) never
+	// reach this line at all.
+	hosts := config.AllowedHosts(hostsStr, mesi.DefaultLoggerNew())
 
 	config := mesi.EsiParserConfig{
 		DefaultUrl:                     goDefaultUrl,
