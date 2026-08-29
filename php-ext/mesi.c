@@ -470,11 +470,15 @@ PHP_FUNCTION(parse) {
  *                            backend != "".
  *   request_cookies:         optional array. String keys (cookie names,
  *                            non-empty, no spaces/control) => string values
- *                            (no control chars, no '"' or '\'). Violations
- *                            => E_WARNING + false. Empty array = no cookies.
- *                            Only rendered into requestCtxJSON when a
- *                            non-empty cache_key_template is set and backend
- *                            != "".
+ *                            (no control chars, no '"' or '\'). Values
+ *                            deliberately use mesi_is_safe_cookie_value so
+ *                            spaces are allowed in cookie values, unlike
+ *                            header names/values and cookie names which use
+ *                            the stricter mesi_is_safe_string set — do not
+ *                            "fix" the divergence. Violations => E_WARNING
+ *                            + false. Empty array = no cookies. Only
+ *                            rendered into requestCtxJSON when a non-empty
+ *                            cache_key_template is set and backend != "".
  *
  * Validation strictly mirrors libgomesi's InitCacheWithConfig contract —
  * we detect the same bad inputs libgomesi would silently ignore or silently

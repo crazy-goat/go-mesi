@@ -299,8 +299,17 @@ echo \mesi\parse_with_config(
 Validation is strict: `cache_key_template` must be a string passing
 `mesi_is_safe_string` (no control chars, spaces, `"` or `\`);
 `request_headers` keys/values and `request_cookies` keys/values are
-validated the same way (cookie values allow spaces but still reject control
-chars / `"` / `\`). Violations emit `E_WARNING` and return `false`.
+validated the same way, except cookie *values* deliberately use
+`mesi_is_safe_cookie_value` so spaces are allowed in cookie values,
+unlike header names/values and cookie names which use the stricter
+`mesi_is_safe_string` set — do not "fix" the divergence. Violations
+emit `E_WARNING` and return `false`.
+
+Key shape: an empty or absent template yields the default URL-only key
+(`mesi:` + url, identical to `mesi:${url}`), while any non-empty template
+makes the rendered template text itself the cache key — so `mesi:${url}`
+produces the same key as the default, and any other template (e.g.
+`mesi:${url}:${header:Accept-Language}`) produces a distinct namespace.
 
 `CacheKeyFunc` Go function pointers are **not** supported from PHP/C —
 the template string is the only PHP-visible cache-key customization.

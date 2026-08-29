@@ -86,6 +86,21 @@ echo "cookies_emptykey_warnings=".count($w)."\n";
 list($r,$w)=run(['cache_backend'=>'memory','cache_key_template'=>'mesi:${url}','request_headers'=>['Accept-Language'=>'pl'],'request_cookies'=>['ab'=>'v1']]);
 echo "valid_result=".($r===false?'false':'string')."\n";
 echo "valid_warnings=".count($w)."\n";
+
+// 15. NUL byte in template => E_WARNING + false
+list($r,$w)=run(['cache_backend'=>'memory','cache_key_template'=>"a\0b"]);
+echo "nul_result=".($r===false?'false':'string')."\n";
+echo "nul_warnings=".count($w)."\n";
+
+// 16. headers+cookies with EMPTY template and backend=memory => silently ignored
+list($r,$w)=run(['cache_backend'=>'memory','cache_key_template'=>'','request_headers'=>['Accept'=>'text/html'],'request_cookies'=>['ab'=>'v1']]);
+echo "empty_with_ctx_result=".($r===false?'false':'string')."\n";
+echo "empty_with_ctx_warnings=".count($w)."\n";
+
+// 17. valid headers array-of-strings with NON-empty template => exercises array branch
+list($r,$w)=run(['cache_backend'=>'memory','cache_key_template'=>'mesi:${url}','request_headers'=>['Accept'=>['text/html','application/json']]]);
+echo "array_header_result=".($r===false?'false':'string')."\n";
+echo "array_header_warnings=".count($w)."\n";
 ?>
 --EXPECT--
 int_result=false
@@ -117,3 +132,9 @@ cookies_emptykey_result=false
 cookies_emptykey_warnings=1
 valid_result=string
 valid_warnings=0
+nul_result=false
+nul_warnings=1
+empty_with_ctx_result=string
+empty_with_ctx_warnings=0
+array_header_result=string
+array_header_warnings=0
