@@ -204,8 +204,34 @@ http:
 | `cacheMemcachedServers` | []string | `[]` | Memcached server addresses (host:port) |
 | `allowedHosts` | []string | `[]` | ESI include host whitelist (exact or subdomain-suffix match); empty = allow all |
 | `allowPrivateIPsForAllowedHosts` | bool | `false` | Let `allowedHosts` entries resolve to private/reserved IPs when `blockPrivateIPs` is on (trusts DNS; no effect under `sharedHTTPClient`) |
+| `cacheKeyTemplate` | string | `""` | Custom cache key template: `${url}`, `${header:Name}`, `${cookie:Name}`; unknown placeholders left literal; empty = default URL-only key |
+
+### Custom cache key template
+
+Customize cache keys with placeholders substituted from the incoming request (mirrors Caddy `cache_key_template` and RoadRunner `cache_key_template`, backed by `mesi.BuildCacheKey`):
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          cacheBackend: memory
+          cacheTTL: "60s"
+          cacheKeyTemplate: "mesi:${url}:lang=${header:Accept-Language}"
+```
+
+| Placeholder | Substituted with |
+|---|---|
+| `${url}` | Full URL of the `<esi:include>` |
+| `${header:Name}` | Request header `Name` (case-insensitive) |
+| `${cookie:Name}` | Request cookie `Name` (case-insensitive) |
+
+- Unknown placeholders (e.g. `${unknown:foo}`) are left literal — no error.
+- Empty / absent `cacheKeyTemplate` = default URL-only key (`mesi.DefaultCacheKey`).
 
 #### Redis Features
+
 
 - **Cache sharing**: Share ESI fragments across multiple Traefik instances
 - **Persistence**: Cache survives Traefik restarts
