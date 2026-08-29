@@ -13,12 +13,12 @@ import (
 // into the parser's host whitelist. An empty string keeps the
 // documented "no restriction" semantics. A non-empty string that
 // tokenizes to zero hosts (whitespace-only input) can only come from a
-// misconfiguration — several callers (nginx, the PHP extension, Apache
-// after #358) reject it at their own config layer, but libgomesi itself
+// misconfiguration — some callers (nginx #354, the PHP extension
+// #190) reject it at their own config layer — but libgomesi itself
 // must never fail open silently (#357): the condition is reported
 // through the logger at Warn severity when the logger implements
 // mesi.LoggerWarn, and through Debug otherwise (the same contract as
-// mesi.EsiParserConfig.warn).
+// mesi.EsiParserConfig.warn). The logger must be non-nil.
 func AllowedHosts(hostsStr string, logger mesi.Logger) []string {
 	hosts := strings.Fields(hostsStr)
 	if hostsStr != "" && len(hosts) == 0 {

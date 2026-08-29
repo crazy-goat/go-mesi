@@ -220,13 +220,14 @@ func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedH
 	goDefaultUrl := C.GoString(defaultUrl)
 
 	hostsStr := C.GoString(allowedHosts)
-	// DiscardLogger: the shared lib is loaded by C module workers with
-	// no logger wiring; keep stdout/stderr clean. The misconfiguration
-	// diagnostic for whitespace-only allowedHosts (#357) lives in
-	// internal/config.AllowedHosts and is unit-tested there; C modules
-	// (nginx #354, Apache #358) reject such values at their own config
-	// load, so the parse-time path stays diagnostic-silent here.
-	hosts := config.AllowedHosts(hostsStr, mesi.DiscardLogger{})
+	// The shared lib has no logger wiring in its C ABI, so the
+	// misconfiguration diagnostic for whitespace-only allowedHosts
+	// (#357) goes to stderr via mesi's default logger. It fires only
+	// for the pathological non-empty/zero-token input — normal parses
+	// stay silent — and platform modules that reject such values at
+	// their own config load (nginx #354, PHP extension #190) never
+	// reach this line at all.
+	hosts := config.AllowedHosts(hostsStr, mesi.DefaultLoggerNew())
 
 	config := mesi.EsiParserConfig{
 		DefaultUrl:                     goDefaultUrl,
