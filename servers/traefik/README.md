@@ -229,6 +229,7 @@ http:
 
 - Unknown placeholders (e.g. `${unknown:foo}`) are left literal — no error.
 - Empty / absent `cacheKeyTemplate` = default URL-only key (`mesi.DefaultCacheKey`).
+- **Warning:** a template without `${url}` collapses all include URLs to a single cache key — different URLs will share the same cached body (cross-URL collision). Always include `${url}` unless you intentionally want one entry for every URL.
 
 #### Redis Features
 
@@ -240,7 +241,9 @@ http:
 
 #### Redis Key Format
 
-Cached entries are stored with key format: `mesi:<url>`
+Cached entries are stored with key format: `mesi:<url>` when no template is set.
+
+With `cacheKeyTemplate` the key is the rendered template result (e.g. `pfx:http://backend/fragment:sfx`), plus an SSRF-policy fingerprint suffix (see `mesi/fetch.go:199`) so different policies never share a cache entry.
 
 Example: `mesi:http://backend/fragment`
 

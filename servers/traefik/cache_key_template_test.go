@@ -93,13 +93,13 @@ func newCacheKeyTemplateTestServers(t *testing.T, hits *atomic.Int32) (string, h
 	fragment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := hits.Add(1)
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprintf(w, "FRAG-%d", n)
+		_, _ = fmt.Fprintf(w, "FRAG-%d", n)
 	}))
 	t.Cleanup(fragment.Close)
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `<html><body><esi:include src="%s/frag" /></body></html>`, fragment.URL)
+		_, _ = fmt.Fprintf(w, `<html><body><esi:include src="%s/frag" /></body></html>`, fragment.URL)
 	})
 	return fragment.URL, upstream
 }
@@ -114,14 +114,8 @@ func TestCacheKeyTemplatePluginHeaderIsolation(t *testing.T) {
 	cfg.CacheKeyTemplate = "k:${header:X-Lang}"
 	cfg.BlockPrivateIPs = false
 
-	p, err := New(context.Background(), upstream, cfg, "test")
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
 	t.Run("same header hits cache", func(t *testing.T) {
 		hits.Store(0)
-		// Use a fresh plugin instance so cache is empty at start of subtest
 		p2, err := New(context.Background(), upstream, cfg, "test")
 		if err != nil {
 			t.Fatalf("New failed: %v", err)
@@ -151,12 +145,13 @@ func TestCacheKeyTemplatePluginHeaderIsolation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New failed: %v", err)
 		}
-		// silence unused p (we use p2 for isolation)
-		_ = p
 		req1 := httptest.NewRequest("GET", "http://example.com/", nil)
 		req1.Header.Set("X-Lang", "en")
 		rec1 := httptest.NewRecorder()
 		p2.ServeHTTP(rec1, req1)
+		if rec1.Code != http.StatusOK {
+			t.Fatalf("first fetch status %d", rec1.Code)
+		}
 		if hits.Load() != 1 {
 			t.Fatalf("first fetch hits=%d, want 1", hits.Load())
 		}
@@ -164,11 +159,12 @@ func TestCacheKeyTemplatePluginHeaderIsolation(t *testing.T) {
 		req2.Header.Set("X-Lang", "pl")
 		rec2 := httptest.NewRecorder()
 		p2.ServeHTTP(rec2, req2)
+		if rec2.Code != http.StatusOK {
+			t.Fatalf("second fetch status %d", rec2.Code)
+		}
 		if hits.Load() != 2 {
 			t.Errorf("different header should miss cache, hits=%d want 2", hits.Load())
 		}
-		_ = rec1
-		_ = rec2
 	})
 }
 
@@ -192,6 +188,9 @@ func TestCacheKeyTemplatePluginCookieIsolation(t *testing.T) {
 		req1.AddCookie(&http.Cookie{Name: "sess", Value: "a"})
 		rec1 := httptest.NewRecorder()
 		p.ServeHTTP(rec1, req1)
+		if rec1.Code != http.StatusOK {
+			t.Fatalf("first fetch status %d", rec1.Code)
+		}
 		if hits.Load() != 1 {
 			t.Fatalf("first hits=%d want 1", hits.Load())
 		}
@@ -199,11 +198,12 @@ func TestCacheKeyTemplatePluginCookieIsolation(t *testing.T) {
 		req2.AddCookie(&http.Cookie{Name: "sess", Value: "b"})
 		rec2 := httptest.NewRecorder()
 		p.ServeHTTP(rec2, req2)
+		if rec2.Code != http.StatusOK {
+			t.Fatalf("second fetch status %d", rec2.Code)
+		}
 		if hits.Load() != 2 {
 			t.Errorf("different cookie should miss cache, hits=%d want 2", hits.Load())
 		}
-		_ = rec1
-		_ = rec2
 	})
 
 	t.Run("same cookie hits cache", func(t *testing.T) {
@@ -257,51 +257,179 @@ func TestCacheKeyTemplatePluginUnknownPassthrough(t *testing.T) {
 	if hits.Load() != 1 {
 		t.Errorf("unknown placeholder must be literal, so same URL with different headers should share cache; hits=%d want 1", hits.Load())
 	}
-	_ = rec1
-	_ = rec2
+	if rec1.Body.String() != rec2.Body.String() {
+		t.Errorf("expected same cached body, got %q vs %q", rec1.Body.String(), rec2.Body.String())
+	}
 }
 
 func TestCacheKeyTemplatePluginEmptyFallsBackToDefault(t *testing.T) {
-	var hits atomic.Int32
-	_, upstream := newCacheKeyTemplateTestServers(t, &hits)
-
 	cfg := CreateConfig()
 	cfg.CacheBackend = "memory"
 	cfg.CacheTTL = "60s"
 	cfg.CacheKeyTemplate = ""
 	cfg.BlockPrivateIPs = false
 
-	p, err := New(context.Background(), upstream, cfg, "test")
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	// Direct check: empty template must mean BuildCacheKey("", r) not used;
-	// plugin must fall back to DefaultCacheKey (url-only). Verify via
-	// mesi.DefaultCacheKey equivalence.
 	r := httptest.NewRequest("GET", "http://example.com/", nil)
 	if got := mesi.DefaultCacheKey("http://example.com/frag"); got != "mesi:http://example.com/frag" {
 		t.Fatalf("DefaultCacheKey contract broken: %q", got)
 	}
 	_ = r
 
-	req1 := httptest.NewRequest("GET", "http://example.com/", nil)
-	req1.Header.Set("X-Lang", "en")
-	rec1 := httptest.NewRecorder()
-	p.ServeHTTP(rec1, req1)
+	t.Run("same URL different headers share cache", func(t *testing.T) {
+		var hits atomic.Int32
+		frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := hits.Add(1)
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = fmt.Fprintf(w, "FRAG-%d", n)
+		}))
+		defer frag.Close()
+		upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `<html><body><esi:include src="%s/frag" /></body></html>`, frag.URL)
+		})
+		p, err := New(context.Background(), upstream, cfg, "test")
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		req1 := httptest.NewRequest("GET", "http://example.com/", nil)
+		req1.Header.Set("X-Lang", "en")
+		rec1 := httptest.NewRecorder()
+		p.ServeHTTP(rec1, req1)
+		req2 := httptest.NewRequest("GET", "http://example.com/", nil)
+		req2.Header.Set("X-Lang", "pl")
+		rec2 := httptest.NewRecorder()
+		p.ServeHTTP(rec2, req2)
+		if hits.Load() != 1 {
+			t.Errorf("empty template must be URL-only, so different headers with same URL should share cache; hits=%d want 1", hits.Load())
+		}
+		body1 := rec1.Body.String()
+		body2 := rec2.Body.String()
+		if !strings.Contains(body1, "FRAG-1") || !strings.Contains(body2, "FRAG-1") {
+			t.Errorf("expected both responses to contain cached FRAG-1, got %q and %q", body1, body2)
+		}
+	})
 
-	req2 := httptest.NewRequest("GET", "http://example.com/", nil)
-	req2.Header.Set("X-Lang", "pl")
-	rec2 := httptest.NewRecorder()
-	p.ServeHTTP(rec2, req2)
+	t.Run("different URLs must not share cache", func(t *testing.T) {
+		var hits atomic.Int32
+		fragA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := hits.Add(1)
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = fmt.Fprintf(w, "A-%d", n)
+		}))
+		defer fragA.Close()
+		fragB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := hits.Add(1)
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = fmt.Fprintf(w, "B-%d", n)
+		}))
+		defer fragB.Close()
 
-	if hits.Load() != 1 {
-		t.Errorf("empty template must be URL-only, so different headers with same URL should share cache; hits=%d want 1", hits.Load())
+		comboHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			if r.Header.Get("X-Target") == "B" {
+				_, _ = fmt.Fprintf(w, `<html><body><esi:include src="%s/frag" /></body></html>`, fragB.URL)
+			} else {
+				_, _ = fmt.Fprintf(w, `<html><body><esi:include src="%s/frag" /></body></html>`, fragA.URL)
+			}
+		})
+
+		p2, err := New(context.Background(), comboHandler, cfg, "test")
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		reqA := httptest.NewRequest("GET", "http://example.com/a", nil)
+		reqA.Header.Set("X-Target", "A")
+		reqA.Header.Set("X-Lang", "en")
+		recA := httptest.NewRecorder()
+		p2.ServeHTTP(recA, reqA)
+		if hits.Load() != 1 {
+			t.Fatalf("url1 hits=%d want 1", hits.Load())
+		}
+		if !strings.Contains(recA.Body.String(), "A-1") {
+			t.Fatalf("url1 expected A-1, got %q", recA.Body.String())
+		}
+		reqB := httptest.NewRequest("GET", "http://example.com/b", nil)
+		reqB.Header.Set("X-Target", "B")
+		reqB.Header.Set("X-Lang", "pl")
+		recB := httptest.NewRecorder()
+		p2.ServeHTTP(recB, reqB)
+		if hits.Load() != 2 {
+			t.Errorf("empty template with different URLs must hit backend again; hits=%d want 2 (cross-URL cache poisoning if guard deleted)", hits.Load())
+		}
+		if strings.Contains(recB.Body.String(), "A-1") {
+			t.Errorf("url2 must not return url1 body (poisoned cache), got %q", recB.Body.String())
+		}
+		if !strings.Contains(recB.Body.String(), "B-2") {
+			t.Errorf("url2 expected B-2, got %q", recB.Body.String())
+		}
+	})
+}
+
+func TestCacheKeyTemplatePluginUrlDistinctKeys(t *testing.T) {
+	var hits atomic.Int32
+	fragA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, "A-%d", n)
+	}))
+	defer fragA.Close()
+	fragB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, "B-%d", n)
+	}))
+	defer fragB.Close()
+
+	cfg := CreateConfig()
+	cfg.CacheBackend = "memory"
+	cfg.CacheTTL = "60s"
+	cfg.CacheKeyTemplate = "pfx:${url}:sfx"
+	cfg.BlockPrivateIPs = false
+
+	comboHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		if r.Header.Get("X-Target") == "B" {
+			_, _ = fmt.Fprintf(w, `<html><body><esi:include src="%s/frag" /></body></html>`, fragB.URL)
+		} else {
+			_, _ = fmt.Fprintf(w, `<html><body><esi:include src="%s/frag" /></body></html>`, fragA.URL)
+		}
+	})
+
+	p, err := New(context.Background(), comboHandler, cfg, "test")
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
 	}
-	body1 := rec1.Body.String()
-	body2 := rec2.Body.String()
-	if !strings.Contains(body1, "FRAG-1") || !strings.Contains(body2, "FRAG-1") {
-		t.Errorf("expected both responses to contain cached FRAG-1, got %q and %q", body1, body2)
+
+	reqA := httptest.NewRequest("GET", "http://example.com/a", nil)
+	reqA.Header.Set("X-Target", "A")
+	recA := httptest.NewRecorder()
+	p.ServeHTTP(recA, reqA)
+	if hits.Load() != 1 {
+		t.Fatalf("url1 hits=%d want 1", hits.Load())
+	}
+
+	reqB := httptest.NewRequest("GET", "http://example.com/b", nil)
+	reqB.Header.Set("X-Target", "B")
+	recB := httptest.NewRecorder()
+	p.ServeHTTP(recB, reqB)
+	if hits.Load() != 2 {
+		t.Errorf("${url} template: distinct URLs must be distinct keys; hits=%d want 2", hits.Load())
+	}
+	if strings.Contains(recB.Body.String(), "A-1") {
+		t.Errorf("url2 must not return url1 body, got %q", recB.Body.String())
+	}
+	reqA2 := httptest.NewRequest("GET", "http://example.com/a", nil)
+	reqA2.Header.Set("X-Target", "A")
+	recA2 := httptest.NewRecorder()
+	p.ServeHTTP(recA2, reqA2)
+	if hits.Load() != 2 {
+		t.Errorf("same url should hit cache; hits=%d want 2", hits.Load())
+	}
+	if !strings.Contains(recA2.Body.String(), "A-1") {
+		t.Errorf("cached url1 expected A-1, got %q", recA2.Body.String())
 	}
 }
 
@@ -317,11 +445,10 @@ func TestCacheKeyTemplatePluginUrlSubstitution(t *testing.T) {
 func TestCacheKeyTemplateWithoutCacheBackendNoPanic(t *testing.T) {
 	cfg := CreateConfig()
 	cfg.CacheKeyTemplate = "k:${url}"
-	// No cache backend — plugin must still start and ServeHTTP must not panic
 	p, err := New(context.Background(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html>ok</html>"))
+		_, _ = w.Write([]byte("<html>ok</html>"))
 	}), cfg, "test")
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
