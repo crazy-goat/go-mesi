@@ -5,10 +5,10 @@ package main
 import "C"
 import (
 	"net/http"
-	"strings"
 	"time"
 	"unsafe"
 
+	"github.com/crazy-goat/go-mesi/libgomesi/internal/config"
 	"github.com/crazy-goat/go-mesi/mesi"
 )
 
@@ -220,10 +220,13 @@ func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedH
 	goDefaultUrl := C.GoString(defaultUrl)
 
 	hostsStr := C.GoString(allowedHosts)
-	var hosts []string
-	for _, h := range strings.Fields(hostsStr) {
-		hosts = append(hosts, h)
-	}
+	// DiscardLogger: the shared lib is loaded by C module workers with
+	// no logger wiring; keep stdout/stderr clean. The misconfiguration
+	// diagnostic for whitespace-only allowedHosts (#357) lives in
+	// internal/config.AllowedHosts and is unit-tested there; C modules
+	// (nginx #354, Apache #358) reject such values at their own config
+	// load, so the parse-time path stays diagnostic-silent here.
+	hosts := config.AllowedHosts(hostsStr, mesi.DiscardLogger{})
 
 	config := mesi.EsiParserConfig{
 		DefaultUrl:                     goDefaultUrl,
