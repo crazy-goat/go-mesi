@@ -176,6 +176,67 @@ static int mesi_json_append_str(char *dst, size_t cap, size_t *pos, const char *
     return 1;
 }
 
+/* Cookie value validator: allow space (0x20) but reject control chars,
+ * DEL, '"' and '\'. Tab (0x09) is already <0x20 so rejected. */
+static int mesi_is_safe_cookie_value(const char *s) {
+    if (s == NULL) return 1;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p < 0x20) return 0;
+        if (*p == 0x7f) return 0;
+        if (*p == '"' || *p == '\\') return 0;
+    }
+    return 1;
+}
+
+/* Dynamic buffer helpers for requestCtxJSON — grow via realloc, never
+ * silently truncate. */
+static int mesi_dyn_ensure(char **buf, size_t *cap, size_t pos, size_t need) {
+    if (pos + need < *cap) return 1;
+    size_t new_cap = *cap ? *cap * 2 : 256;
+    while (pos + need >= new_cap) new_cap *= 2;
+    char *n = (char *)realloc(*buf, new_cap);
+    if (!n) return 0;
+    *buf = n;
+    *cap = new_cap;
+    return 1;
+}
+
+static int mesi_dyn_putc(char **buf, size_t *cap, size_t *pos, char c) {
+    if (!mesi_dyn_ensure(buf, cap, *pos, 2)) return 0;
+    (*buf)[(*pos)++] = c;
+    return 1;
+}
+
+static int mesi_dyn_json_append_escape(char **buf, size_t *cap, size_t *pos, const char *src) {
+    for (const unsigned char *p = (const unsigned char *)src; *p; p++) {
+        if (*p == '"') {
+            if (!mesi_dyn_putc(buf, cap, pos, '\\')) return 0;
+            if (!mesi_dyn_putc(buf, cap, pos, '"')) return 0;
+        } else if (*p == '\\') {
+            if (!mesi_dyn_putc(buf, cap, pos, '\\')) return 0;
+            if (!mesi_dyn_putc(buf, cap, pos, '\\')) return 0;
+        } else if (*p < 0x20) {
+            static const char hex[] = "0123456789abcdef";
+            if (!mesi_dyn_putc(buf, cap, pos, '\\')) return 0;
+            if (!mesi_dyn_putc(buf, cap, pos, 'u')) return 0;
+            if (!mesi_dyn_putc(buf, cap, pos, '0')) return 0;
+            if (!mesi_dyn_putc(buf, cap, pos, '0')) return 0;
+            if (!mesi_dyn_putc(buf, cap, pos, hex[(*p >> 4) & 0xf])) return 0;
+            if (!mesi_dyn_putc(buf, cap, pos, hex[*p & 0xf])) return 0;
+        } else {
+            if (!mesi_dyn_putc(buf, cap, pos, (char)*p)) return 0;
+        }
+    }
+    return 1;
+}
+
+static int mesi_dyn_json_append_str(char **buf, size_t *cap, size_t *pos, const char *src) {
+    if (!mesi_dyn_putc(buf, cap, pos, '"')) return 0;
+    if (!mesi_dyn_json_append_escape(buf, cap, pos, src)) return 0;
+    if (!mesi_dyn_putc(buf, cap, pos, '"')) return 0;
+    return 1;
+}
+
 /*
  * build_cache_config_json renders the validated PHP-side cache options
  * into a JSON blob that libgomesi's InitCacheWithConfig accepts.
@@ -385,6 +446,39 @@ PHP_FUNCTION(parse) {
  *                            keeps serving all other parses. Absent =>
  *                            false (no bypass). A non-boolean value is
  *                            rejected with E_WARNING.
+ *   cache_key_template:      string. Cache key template with placeholders
+ *                            ${url}, ${header:Name}, ${cookie:Name}.
+ *                            Empty/absent => default URL-only key
+ *                            (mesi.DefaultCacheKey). Non-string values are
+ *                            rejected with E_WARNING. Non-empty values must
+ *                            pass mesi_is_safe_string (no control chars,
+ *                            space/tab, DEL, '"' or '\') — same validator as
+ *                            cache_redis_addr. Unknown placeholders are left
+ *                            literal; case-insensitive header/cookie lookup
+ *                            via mesi.BuildCacheKey. Only meaningful with a
+ *                            cache backend; when cache_backend resolves to
+ *                            "" the template is silently IGNORED (no warning
+ *                            — parity with CLI/Traefik #246). Empty string
+ *                            = unset.
+ *   request_headers:         optional array. String keys (header names) =>
+ *                            string or array-of-string values. Keys and all
+ *                            values must pass mesi_is_safe_string. Any
+ *                            violation (wrong type, bad chars, non-string
+ *                            key) => E_WARNING + false. Empty array = no
+ *                            headers. Only rendered into requestCtxJSON when
+ *                            a non-empty cache_key_template is set and
+ *                            backend != "".
+ *   request_cookies:         optional array. String keys (cookie names,
+ *                            non-empty, no spaces/control) => string values
+ *                            (no control chars, no '"' or '\'). Values
+ *                            deliberately use mesi_is_safe_cookie_value so
+ *                            spaces are allowed in cookie values, unlike
+ *                            header names/values and cookie names which use
+ *                            the stricter mesi_is_safe_string set — do not
+ *                            "fix" the divergence. Violations => E_WARNING
+ *                            + false. Empty array = no cookies. Only
+ *                            rendered into requestCtxJSON when a non-empty
+ *                            cache_key_template is set and backend != "".
  *
  * Validation strictly mirrors libgomesi's InitCacheWithConfig contract —
  * we detect the same bad inputs libgomesi would silently ignore or silently
@@ -421,6 +515,10 @@ PHP_FUNCTION(parse_with_config) {
     /* allowed_hosts: hostname whitelist; empty (absent key) = all hosts
      * allowed. Passed verbatim to libgomesi ParseWithConfig. */
     const char *allowed_hosts = "";
+
+    const char *cache_key_template = NULL;
+    zval *request_headers = NULL;
+    zval *request_cookies = NULL;
 
     if (config != NULL && Z_TYPE_P(config) == IS_ARRAY) {
         zval *val;
@@ -673,6 +771,140 @@ PHP_FUNCTION(parse_with_config) {
             }
         }
 
+        /* cache_key_template: optional string; empty = unset. Must pass
+         * mesi_is_safe_string (no control chars, space/tab, DEL, '"' or '\').
+         * Non-string => E_WARNING. Empty string is treated as absent.
+         * When cache_backend == "" the template is silently ignored (no
+         * warning) — parity with CLI/Traefik #246; we still validate the
+         * string type/safe chars before ignoring so typos are not hidden
+         * when a backend is present, but a valid template with no backend
+         * is a no-op. */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "cache_key_template", sizeof("cache_key_template") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) != IS_STRING) {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): cache_key_template must be a string");
+                RETURN_FALSE;
+            }
+            const char *raw = Z_STRVAL_P(val);
+            size_t raw_len = Z_STRLEN_P(val);
+            if (raw_len == 0) {
+                cache_key_template = NULL;
+            } else {
+                if (memchr(raw, '\0', raw_len) != NULL) {
+                    php_error_docref(NULL, E_WARNING,
+                        "mesi\\parse_with_config(): cache_key_template contains a NUL byte");
+                    RETURN_FALSE;
+                }
+                if (!mesi_is_safe_string(raw)) {
+                    php_error_docref(NULL, E_WARNING,
+                        "mesi\\parse_with_config(): cache_key_template contains invalid characters "
+                        "(no control chars, spaces, '\"' or '\\\\' allowed)");
+                    RETURN_FALSE;
+                }
+                cache_key_template = raw;
+            }
+        }
+
+        /* request_headers: optional array, string keys => string or
+         * array-of-string values. Keys and all string values must pass
+         * mesi_is_safe_string. Empty array = no headers. */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "request_headers", sizeof("request_headers") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) != IS_ARRAY) {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): request_headers must be an array");
+                RETURN_FALSE;
+            }
+            HashTable *ht = Z_ARRVAL_P(val);
+            zend_string *k;
+            zval *hv;
+            ZEND_HASH_FOREACH_STR_KEY_VAL(ht, k, hv) {
+                if (k == NULL) {
+                    php_error_docref(NULL, E_WARNING,
+                        "mesi\\parse_with_config(): request_headers keys must be strings");
+                    RETURN_FALSE;
+                }
+                const char *key_str = ZSTR_VAL(k);
+                if (ZSTR_LEN(k) == 0 || !mesi_is_safe_string(key_str)) {
+                    php_error_docref(NULL, E_WARNING,
+                        "mesi\\parse_with_config(): request_headers key '%s' contains invalid characters "
+                        "(no control chars, spaces, '\"' or '\\\\' allowed, non-empty)", key_str);
+                    RETURN_FALSE;
+                }
+                if (Z_TYPE_P(hv) == IS_STRING) {
+                    if (!mesi_is_safe_string(Z_STRVAL_P(hv))) {
+                        php_error_docref(NULL, E_WARNING,
+                            "mesi\\parse_with_config(): request_headers value for '%s' contains invalid characters "
+                            "(no control chars, spaces, '\"' or '\\\\' allowed)", key_str);
+                        RETURN_FALSE;
+                    }
+                } else if (Z_TYPE_P(hv) == IS_ARRAY) {
+                    HashTable *inner = Z_ARRVAL_P(hv);
+                    zval *elt;
+                    ZEND_HASH_FOREACH_VAL(inner, elt) {
+                        if (Z_TYPE_P(elt) != IS_STRING) {
+                            php_error_docref(NULL, E_WARNING,
+                                "mesi\\parse_with_config(): request_headers array value for '%s' must contain only strings", key_str);
+                            RETURN_FALSE;
+                        }
+                        if (!mesi_is_safe_string(Z_STRVAL_P(elt))) {
+                            php_error_docref(NULL, E_WARNING,
+                                "mesi\\parse_with_config(): request_headers array value for '%s' contains invalid characters "
+                                "(no control chars, spaces, '\"' or '\\\\' allowed)", key_str);
+                            RETURN_FALSE;
+                        }
+                    } ZEND_HASH_FOREACH_END();
+                } else {
+                    php_error_docref(NULL, E_WARNING,
+                        "mesi\\parse_with_config(): request_headers value for '%s' must be a string or array of strings", key_str);
+                    RETURN_FALSE;
+                }
+            } ZEND_HASH_FOREACH_END();
+            request_headers = val;
+        }
+
+        /* request_cookies: optional array, string keys (cookie names,
+         * non-empty, no spaces/control) => string values (allow spaces but
+         * no control chars, '"' or '\'). */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "request_cookies", sizeof("request_cookies") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) != IS_ARRAY) {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): request_cookies must be an array");
+                RETURN_FALSE;
+            }
+            HashTable *ht = Z_ARRVAL_P(val);
+            zend_string *k;
+            zval *hv;
+            ZEND_HASH_FOREACH_STR_KEY_VAL(ht, k, hv) {
+                if (k == NULL) {
+                    php_error_docref(NULL, E_WARNING,
+                        "mesi\\parse_with_config(): request_cookies keys must be strings");
+                    RETURN_FALSE;
+                }
+                const char *key_str = ZSTR_VAL(k);
+                if (ZSTR_LEN(k) == 0 || !mesi_is_safe_string(key_str)) {
+                    php_error_docref(NULL, E_WARNING,
+                        "mesi\\parse_with_config(): request_cookies key '%s' contains invalid characters "
+                        "(no control chars, spaces, '\"' or '\\\\' allowed, non-empty)", key_str);
+                    RETURN_FALSE;
+                }
+                if (Z_TYPE_P(hv) != IS_STRING) {
+                    php_error_docref(NULL, E_WARNING,
+                        "mesi\\parse_with_config(): request_cookies value for '%s' must be a string", key_str);
+                    RETURN_FALSE;
+                }
+                if (!mesi_is_safe_cookie_value(Z_STRVAL_P(hv))) {
+                    php_error_docref(NULL, E_WARNING,
+                        "mesi\\parse_with_config(): request_cookies value for '%s' contains invalid characters "
+                        "(no control chars, '\"' or '\\\\' allowed)", key_str);
+                    RETURN_FALSE;
+                }
+            } ZEND_HASH_FOREACH_END();
+            request_cookies = val;
+        }
+
         /* Backend-specific requirements: redis requires addr; memcached
          * requires servers. Detected after per-key parsing so a stray
          * key doesn't by itself trigger the error. */
@@ -740,9 +972,116 @@ PHP_FUNCTION(parse_with_config) {
         g_http_block_private_ips = block_private_ips;
     }
 
-    char* result = ParseWithConfigEx(input, max_depth, default_url, (char*)allowed_hosts,
-                                     block_private_ips ? 1 : 0,
-                                     allow_private_ips_for_allowed_hosts ? 1 : 0);
+    /* Decide template and request context for ParseWithConfigCtx.
+     * When cache_backend == "" the template is silently IGNORED (parity
+     * with CLI/Traefik #246 — no warning). Otherwise render
+     * requestCtxJSON from request_headers/request_cookies. */
+    const char *tmpl_for_ctx = "";
+    char *ctx_json = NULL;
+    char *ctx_json_buf = NULL;
+
+    if (cache_key_template != NULL && cache_backend[0] != '\0') {
+        tmpl_for_ctx = cache_key_template;
+        /* Render {"headers":{...},"cookies":[...]} — grow/realloc, never
+         * truncate. On render failure emit E_WARNING + false (loud). */
+        char *buf = NULL;
+        size_t cap = 0, pos = 0;
+        buf = (char *)malloc(256);
+        if (!buf) {
+            php_error_docref(NULL, E_WARNING,
+                "mesi\\parse_with_config(): failed to allocate request context JSON");
+            RETURN_FALSE;
+        }
+        cap = 256; pos = 0;
+        if (!mesi_dyn_putc(&buf, &cap, &pos, '{')) goto ctx_oom;
+        /* headers */
+        {
+            if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
+            const char *hk = "headers"; for (const char*p=hk;*p;p++) if(!mesi_dyn_putc(&buf,&cap,&pos,*p)) goto ctx_oom;
+            if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
+            if (!mesi_dyn_putc(&buf, &cap, &pos, ':')) goto ctx_oom;
+            if (!mesi_dyn_putc(&buf, &cap, &pos, '{')) goto ctx_oom;
+            int first = 1;
+            if (request_headers) {
+                zend_string *k; zval *hv;
+                ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARRVAL_P(request_headers), k, hv) {
+                    const char *key_str = ZSTR_VAL(k);
+                    if (!first) { if (!mesi_dyn_putc(&buf, &cap, &pos, ',')) goto ctx_oom; }
+                    first = 0;
+                    if (!mesi_dyn_json_append_str(&buf, &cap, &pos, key_str)) goto ctx_oom;
+                    if (!mesi_dyn_putc(&buf, &cap, &pos, ':')) goto ctx_oom;
+                    if (Z_TYPE_P(hv) == IS_STRING) {
+                        if (!mesi_dyn_json_append_str(&buf, &cap, &pos, Z_STRVAL_P(hv))) goto ctx_oom;
+                    } else { /* array-of-string */
+                        if (!mesi_dyn_putc(&buf, &cap, &pos, '[')) goto ctx_oom;
+                        int inner_first = 1;
+                        HashTable *inner = Z_ARRVAL_P(hv);
+                        zval *elt;
+                        ZEND_HASH_FOREACH_VAL(inner, elt) {
+                            if (!inner_first) { if (!mesi_dyn_putc(&buf, &cap, &pos, ',')) goto ctx_oom; }
+                            inner_first = 0;
+                            if (!mesi_dyn_json_append_str(&buf, &cap, &pos, Z_STRVAL_P(elt))) goto ctx_oom;
+                        } ZEND_HASH_FOREACH_END();
+                        if (!mesi_dyn_putc(&buf, &cap, &pos, ']')) goto ctx_oom;
+                    }
+                } ZEND_HASH_FOREACH_END();
+            }
+            if (!mesi_dyn_putc(&buf, &cap, &pos, '}')) goto ctx_oom;
+        }
+        if (!mesi_dyn_putc(&buf, &cap, &pos, ',')) goto ctx_oom;
+        /* cookies */
+        {
+            if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
+            const char *ck = "cookies"; for (const char*p=ck;*p;p++) if(!mesi_dyn_putc(&buf,&cap,&pos,*p)) goto ctx_oom;
+            if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
+            if (!mesi_dyn_putc(&buf, &cap, &pos, ':')) goto ctx_oom;
+            if (!mesi_dyn_putc(&buf, &cap, &pos, '[')) goto ctx_oom;
+            int first = 1;
+            if (request_cookies) {
+                zend_string *k; zval *hv;
+                ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARRVAL_P(request_cookies), k, hv) {
+                    const char *key_str = ZSTR_VAL(k);
+                    if (!first) { if (!mesi_dyn_putc(&buf, &cap, &pos, ',')) goto ctx_oom; }
+                    first = 0;
+                    if (!mesi_dyn_putc(&buf, &cap, &pos, '{')) goto ctx_oom;
+                    if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
+                    const char *nk="name"; for(const char*p=nk;*p;p++) if(!mesi_dyn_putc(&buf,&cap,&pos,*p)) goto ctx_oom;
+                    if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
+                    if (!mesi_dyn_putc(&buf, &cap, &pos, ':')) goto ctx_oom;
+                    if (!mesi_dyn_json_append_str(&buf, &cap, &pos, key_str)) goto ctx_oom;
+                    if (!mesi_dyn_putc(&buf, &cap, &pos, ',')) goto ctx_oom;
+                    if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
+                    const char *vk="value"; for(const char*p=vk;*p;p++) if(!mesi_dyn_putc(&buf,&cap,&pos,*p)) goto ctx_oom;
+                    if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
+                    if (!mesi_dyn_putc(&buf, &cap, &pos, ':')) goto ctx_oom;
+                    if (!mesi_dyn_json_append_str(&buf, &cap, &pos, Z_STRVAL_P(hv))) goto ctx_oom;
+                    if (!mesi_dyn_putc(&buf, &cap, &pos, '}')) goto ctx_oom;
+                } ZEND_HASH_FOREACH_END();
+            }
+            if (!mesi_dyn_putc(&buf, &cap, &pos, ']')) goto ctx_oom;
+        }
+        if (!mesi_dyn_putc(&buf, &cap, &pos, '}')) goto ctx_oom;
+        if (!mesi_dyn_ensure(&buf, &cap, pos, 1)) goto ctx_oom;
+        buf[pos] = '\0';
+        ctx_json_buf = buf;
+        ctx_json = buf;
+        goto ctx_done;
+ctx_oom:
+        free(buf);
+        php_error_docref(NULL, E_WARNING,
+            "mesi\\parse_with_config(): failed to render request context JSON (allocation failure)");
+        RETURN_FALSE;
+ctx_done: ;
+    } else {
+        ctx_json = (char*)"";
+    }
+
+    char* result = ParseWithConfigCtx(input, max_depth, default_url, (char*)allowed_hosts,
+                                      block_private_ips ? 1 : 0,
+                                      allow_private_ips_for_allowed_hosts ? 1 : 0,
+                                      (char*)tmpl_for_ctx,
+                                      ctx_json && *ctx_json ? ctx_json : (char*)"");
+    if (ctx_json_buf) free(ctx_json_buf);
     RETVAL_STRING(result);
     FreeString(result);
 }

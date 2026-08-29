@@ -4,6 +4,8 @@ package main
 // #include <string.h>
 import "C"
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 	"unsafe"
@@ -214,22 +216,101 @@ func ParseWithConfigEx(input *C.char, maxDepth C.int, defaultUrl *C.char, allowe
 	return parseWithConfig(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts)
 }
 
-func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int) *C.char {
+// headerValue is a string or []string; when an array is provided the first
+// element is used as the header value (documented choice). This matches the
+// PHP extension's request_headers contract where a header may be a string or
+// array-of-string.
+type headerValue struct {
+	Values []string
+}
+
+func (h *headerValue) UnmarshalJSON(data []byte) error {
+	// Try string first.
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		h.Values = []string{s}
+		return nil
+	}
+	var arr []string
+	if err := json.Unmarshal(data, &arr); err == nil {
+		h.Values = arr
+		return nil
+	}
+	// Unknown or empty: treat as empty.
+	h.Values = nil
+	return nil
+}
+
+type cookieEntry struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type requestCtx struct {
+	Headers map[string]headerValue `json:"headers"`
+	Cookies []cookieEntry          `json:"cookies"`
+}
+
+func buildRequestFromJSON(jsonStr string) *http.Request {
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://dummy/", nil)
+	if req == nil {
+		return nil
+	}
+	if jsonStr == "" {
+		return req
+	}
+	var ctx requestCtx
+	if err := json.Unmarshal([]byte(jsonStr), &ctx); err != nil {
+		mesi.DefaultLoggerNew().Warn("request_ctx_json_malformed", "error", err.Error())
+		return req
+	}
+	for k, hv := range ctx.Headers {
+		if len(hv.Values) == 0 {
+			continue
+		}
+		// Use first element as documented.
+		v := hv.Values[0]
+		req.Header.Set(k, v)
+		// Also store additional values if present as separate header values
+		// so BuildCacheKey's vals[0] still reflects the first.
+		for _, extra := range hv.Values[1:] {
+			req.Header.Add(k, extra)
+		}
+	}
+	for _, c := range ctx.Cookies {
+		if c.Name == "" {
+			continue
+		}
+		req.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+	}
+	return req
+}
+
+// parseWithConfigInternal is the common implementation for ParseWithConfigEx
+// and ParseWithConfigCtx. When cacheKeyTemplate is non-empty it installs a
+// CacheKeyFunc that delegates to mesi.BuildCacheKey with a request built from
+// requestCtxJSON. When empty the behaviour is identical to ParseWithConfigEx.
+func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int, cacheKeyTemplate *C.char, requestCtxJSON *C.char) *C.char {
 	goInput := C.GoString(input)
 	goMaxDepth := int(maxDepth)
 	goDefaultUrl := C.GoString(defaultUrl)
 
-	hostsStr := C.GoString(allowedHosts)
-	// The shared lib has no logger wiring in its C ABI, so the
-	// misconfiguration diagnostic for whitespace-only allowedHosts
-	// (#357) goes to stderr via mesi's default logger. It fires only
-	// for the pathological non-empty/zero-token input — normal parses
-	// stay silent — and platform modules that reject such values at
-	// their own config load (nginx #354, PHP extension #190) never
-	// reach this line at all.
+	hostsStr := ""
+	if allowedHosts != nil {
+		hostsStr = C.GoString(allowedHosts)
+	}
 	hosts := config.AllowedHosts(hostsStr, mesi.DefaultLoggerNew())
 
-	config := mesi.EsiParserConfig{
+	tmpl := ""
+	if cacheKeyTemplate != nil {
+		tmpl = C.GoString(cacheKeyTemplate)
+	}
+	ctxJSON := ""
+	if requestCtxJSON != nil {
+		ctxJSON = C.GoString(requestCtxJSON)
+	}
+
+	cfg := mesi.EsiParserConfig{
 		DefaultUrl:                     goDefaultUrl,
 		MaxDepth:                       uint(goMaxDepth),
 		Timeout:                        30 * time.Second,
@@ -237,19 +318,37 @@ func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedH
 		BlockPrivateIPs:                blockPrivateIPs != 0,
 		AllowPrivateIPsForAllowedHosts: allowPrivateIPsForAllowedHosts != 0,
 	}
-	applySharedConfig(&config)
+	applySharedConfig(&cfg)
 	if allowPrivateIPsForAllowedHosts != 0 {
-		// The shared client's transport has blockPrivateIPs baked in at
-		// InitHTTPClient time; attaching it here would silently negate the
-		// per-host bypass (fetchClientForURL returns the shared client
-		// before ever reaching the bypass branch). Bypass-flagged parses
-		// therefore fetch through per-request clients, exactly like the
-		// native-Go consumers without a shared client. The shared cache
-		// (applied above) stays attached.
-		config.HTTPClient = nil
+		cfg.HTTPClient = nil
 	}
-	result := mesi.MESIParse(goInput, config)
+	if tmpl != "" {
+		req := buildRequestFromJSON(ctxJSON)
+		if req == nil {
+			req, _ = http.NewRequestWithContext(context.Background(), "GET", "http://dummy/", nil)
+		}
+		capturedTmpl := tmpl
+		capturedReq := req
+		cfg.CacheKeyFunc = func(url string) string {
+			return mesi.BuildCacheKey(url, capturedTmpl, capturedReq)
+		}
+	}
+	result := mesi.MESIParse(goInput, cfg)
 	return C.CString(result)
+}
+
+func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int) *C.char {
+	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, nil, nil)
+}
+
+// ParseWithConfigCtx extends ParseWithConfigEx with cache key templating.
+// Exact C param order: (char* input, int maxDepth, char* defaultUrl, char* allowedHosts, int blockPrivateIPs, int allowPrivateIPsForAllowedHosts, char* cacheKeyTemplate, char* requestCtxJSON).
+// Semantics: if cacheKeyTemplate is "" → behave EXACTLY like ParseWithConfigEx (do NOT set CacheKeyFunc). Otherwise decode requestCtxJSON as {"headers":{"Name":"value" or ["v1"]},"cookies":[{"name":"n","value":"v"}]} (case-insensitive, defensive, ignore unknown fields; malformed JSON is logged via mesi.DefaultLoggerNew() and treated as empty request). A synthetic GET http.Request is built from headers+cookies and CacheKeyFunc is set to func(url string) string { return mesi.BuildCacheKey(url, template, req) }.
+// The template text is part of the produced key, so distinct templates produce distinct keys — no extra fingerprint needed.
+//
+//export ParseWithConfigCtx
+func ParseWithConfigCtx(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int, cacheKeyTemplate *C.char, requestCtxJSON *C.char) *C.char {
+	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, cacheKeyTemplate, requestCtxJSON)
 }
 
 // FreeString frees memory allocated by Parse and ParseDefault.
