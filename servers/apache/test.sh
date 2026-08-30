@@ -424,55 +424,60 @@ fi
 docker compose down
 docker compose up -d --wait
 
-echo "=== Test 26: Cache key template - Accept-Language isolation (#177) ==="
-# 8084 has MesiCacheKeyTemplate "mesi:${url}:${header:Accept-Language}".
-# 8083 (no template) uses URL-only DefaultCacheKey — different Accept-Language
-# must still share one cache entry there. We prove isolation by using a
-# dedicated endpoint that echoes the request header back into the response
-# body via a backend that varies on Accept-Language, then verifying the
-# Apache cache returns the first variant for repeated same-header requests
-# but not across different headers. The backend at 8084 is the same python
-# http.server; we use a small inline Python handler mounted via the backend.
-# Fallback: prove at minimum that the directive does not break ESI and that
-# missing template (8083) still works (backward compat). The stronger
-# isolation assertion lives in test_directives.c unit tests plus the
-# libgomesi BuildCacheKey semantics shared with Caddy/Traefik/php-ext.
+echo "=== Test 26: Cache key template - header isolation (#177) ==="
+# Prove the directive does not break ESI at all.
 RESPONSE=$(curl -s -H "Accept-Language: pl" http://localhost:8084/index.html)
 if echo "$RESPONSE" | grep -q "included content from backend"; then
-    echo "PASS: Cache key template (pl) — ESI resolved with templated key"
+    echo "PASS: Cache key template (pl) — ESI resolved"
 else
     echo "FAIL: Cache key template (pl) — ESI not resolved"
     echo "Response: $RESPONSE"
     docker compose down
     exit 1
 fi
-RESPONSE_EN=$(curl -s -H "Accept-Language: en" http://localhost:8084/index.html)
-if echo "$RESPONSE_EN" | grep -q "included content from backend"; then
-    echo "PASS: Cache key template (en) — ESI resolved with distinct key"
+BASE=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /include.txt HTTP/1.1" || true)
+echo "  (backend GET /include.txt so far: $BASE)"
+
+echo "=== Test 26a: Same Accept-Language reuses cache (0-1 extra hits) ==="
+curl -s -H "Accept-Language: pl" http://localhost:8084/index.html > /dev/null
+AFTER_SAME=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /include.txt HTTP/1.1" || true)
+EXTRA_SAME=$((AFTER_SAME - BASE))
+if [ "$EXTRA_SAME" -ge 0 ] && [ "$EXTRA_SAME" -le 1 ]; then
+    echo "PASS: Same Accept-Language reused cache (extra hits: $EXTRA_SAME, allowed 0-1 for in-response race)"
 else
-    echo "FAIL: Cache key template (en) — ESI not resolved"
-    echo "Response: $RESPONSE_EN"
+    echo "FAIL: Same Accept-Language should reuse cache; extra hits: $EXTRA_SAME (expected 0-1)"
+    docker compose logs --no-color backend 2>&1 | grep "include.txt" | tail -10
     docker compose down
     exit 1
 fi
-# No template (8083) — backward compat: URL-only key still serves ESI.
-RESPONSE_NOTMPL=$(curl -s -H "Accept-Language: en" http://localhost:8083/index.html)
+
+echo "=== Test 26b: Different Accept-Language misses cache (1 extra hit) ==="
+curl -s -H "Accept-Language: en" http://localhost:8084/index.html > /dev/null
+AFTER_DIFF=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /include.txt HTTP/1.1" || true)
+EXTRA_DIFF=$((AFTER_DIFF - AFTER_SAME))
+if [ "$EXTRA_DIFF" -eq 1 ]; then
+    echo "PASS: Different Accept-Language produced distinct key (extra hits: 1)"
+else
+    echo "FAIL: Different Accept-Language should be a distinct key; extra hits: $EXTRA_DIFF (expected 1)"
+    echo "  AFTER_SAME=$AFTER_SAME AFTER_DIFF=$AFTER_DIFF BASE=$BASE"
+    docker compose logs --no-color backend 2>&1 | grep "include.txt" | tail -10
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 26c: No template (8083) — URL-only key is header-agnostic ==="
+RESPONSE_NOTMPL=$(curl -s -H "Accept-Language: pl" http://localhost:8083/shared-http-client.html)
 if echo "$RESPONSE_NOTMPL" | grep -q "shared fragment from backend"; then
     echo "PASS: No template (8083) — URL-only DefaultCacheKey still serves ESI (backward compat)"
 else
-    # 8083 serves shared-http-client.html, not index.html — accept either
-    RESPONSE_NOTMPL2=$(curl -s -H "Accept-Language: en" http://localhost:8083/shared-http-client.html)
-    if echo "$RESPONSE_NOTMPL2" | grep -q "shared fragment from backend"; then
-        echo "PASS: No template (8083) — URL-only DefaultCacheKey still serves ESI (backward compat)"
-    else
-        echo "FAIL: No template — backward-compat ESI broken"
-        echo "Response: $RESPONSE_NOTMPL"
-        docker compose down
-        exit 1
-    fi
+    echo "FAIL: No template (8083) — backward-compat ESI broken"
+    echo "Response: $RESPONSE_NOTMPL"
+    docker compose down
+    exit 1
 fi
 
 docker compose down
 
 echo ""
 echo "=== All tests passed ==="
+

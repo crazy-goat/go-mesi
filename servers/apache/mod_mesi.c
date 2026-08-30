@@ -1278,50 +1278,27 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     char *base_url = build_base_url(f->r, f->r->pool);
     char *esi = NULL;
 
-    // When a template is configured, prefer ParseWithConfigCtx so
-    // mesi.BuildCacheKey can vary keys by header/cookie. The context
-    // JSON is built from the incoming request's headers_in + Cookie.
-    // When EsiParseWithConfigCtx is unavailable (old libgomesi), fall
-    // back to Ex/legacy with URL-only keys and warn once.
+    if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && !EsiParseWithConfigCtx) {
+        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+            "mesi: MesiCacheKeyTemplate set but libgomesi lacks ParseWithConfigCtx; templated keys disabled. Upgrade libgomesi.so.");
+    }
     if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && EsiParseWithConfigCtx) {
         const char *ctx_json = build_request_ctx_json(f->r, conf, f->r->pool);
         esi = EsiParseWithConfigCtx(html, 5, base_url, allowed_hosts_str,
                                     block_private, allow_private_for_allowed,
                                     (char *)conf->cache_key_template, (char *)ctx_json);
-    } else if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && !EsiParseWithConfigCtx) {
-        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-            "mesi: MesiCacheKeyTemplate set but libgomesi lacks ParseWithConfigCtx; templated keys disabled. Upgrade libgomesi.so.");
-        if (EsiParseWithConfigEx) {
-            esi = EsiParseWithConfigEx(html, 5, base_url, allowed_hosts_str,
-                                       block_private, allow_private_for_allowed);
-        } else if (EsiParseWithConfig) {
-            if (allow_private_for_allowed) {
-                ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-                    "mesi: MesiAllowPrivateIPsForAllowedHosts set but libgomesi lacks ParseWithConfigEx; bypass disabled. Upgrade libgomesi.so.");
-            }
-            esi = EsiParseWithConfig(html, 5, base_url, allowed_hosts_str, block_private);
-        } else {
-            if (EsiParse) esi = EsiParse(html, 5, base_url);
-        }
     } else if (EsiParseWithConfigEx) {
-        // Extended entry point: honours MesiAllowPrivateIPsForAllowedHosts.
         esi = EsiParseWithConfigEx(html, 5, base_url, allowed_hosts_str,
                                    block_private, allow_private_for_allowed);
     } else if (EsiParseWithConfig) {
         if (allow_private_for_allowed) {
-            // Directive set but libgomesi lacks ParseWithConfigEx — the
-            // bypass cannot be honoured, so warn loudly instead of
-            // silently ignoring the operator's intent.
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-                "mesi: MesiAllowPrivateIPsForAllowedHosts set but libgomesi "
-                "lacks ParseWithConfigEx; bypass disabled. Upgrade libgomesi.so.");
+                "mesi: MesiAllowPrivateIPsForAllowedHosts set but libgomesi lacks ParseWithConfigEx; bypass disabled. Upgrade libgomesi.so.");
         }
         esi = EsiParseWithConfig(html, 5, base_url, allowed_hosts_str, block_private);
     } else {
-        // ParseWithConfig not available - check if security features are configured
         int has_security_config = (conf->allowed_hosts && conf->allowed_hosts->nelts > 0)
                                || (conf->block_private_ips != -1 && conf->block_private_ips == 1);
-
         if (has_security_config) {
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r,
                 "mesi: ParseWithConfig not found but security directives are configured. "
@@ -1332,10 +1309,8 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
             APR_BRIGADE_INSERT_TAIL(ctx->bb, apr_bucket_eos_create(ctx->bb->bucket_alloc));
             return ap_pass_brigade(f->next, ctx->bb);
         }
-
         ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
             "mesi: ParseWithConfig not found, falling back to Parse (no SSRF protection)");
-
         if (EsiParse) {
             esi = EsiParse(html, 5, base_url);
         }

@@ -1599,6 +1599,77 @@ TEST(merge_memcached_servers_child_inherits) {
                   "10.0.0.1:11211");
 }
 
+
+/* --- MesiCacheKeyTemplate directive tests (#177) --- */
+TEST(cache_key_template_default_null) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(conf.cache_key_template);
+}
+TEST(cache_key_template_valid_simple) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}"));
+    ASSERT_NOT_NULL(conf.cache_key_template);
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}");
+}
+TEST(cache_key_template_with_header) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${header:Accept-Language}"));
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${header:Accept-Language}");
+}
+TEST(cache_key_template_with_cookie) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${cookie:segment}"));
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${cookie:segment}");
+}
+TEST(cache_key_template_with_both) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${header:Accept-Language}:${cookie:segment}"));
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${header:Accept-Language}:${cookie:segment}");
+}
+TEST(cache_key_template_unknown_placeholder_literal) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${unknown:foo}"));
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${unknown:foo}");
+}
+TEST(cache_key_template_empty_clears) {
+    mesi_config conf; init_config(&conf);
+    conf.cache_key_template = "old";
+    ASSERT_NULL(set_cache_key_template(&conf, ""));
+    ASSERT_NULL(conf.cache_key_template);
+}
+TEST(cache_key_template_null_arg_rejected) {
+    mesi_config conf; init_config(&conf);
+    const char *err = set_cache_key_template(&conf, NULL);
+    ASSERT_NOT_NULL(err);
+}
+TEST(cache_key_template_control_rejected) {
+    mesi_config conf; init_config(&conf);
+    const char *err = set_cache_key_template(&conf, "mesi:\x01bad");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "control");
+}
+TEST(cache_key_template_too_long_rejected) {
+    mesi_config conf; init_config(&conf);
+    char big[MESI_MAX_CACHE_KEY_TEMPLATE+10];
+    memset(big, 'a', sizeof(big)-1); big[sizeof(big)-1]='\0';
+    const char *err = set_cache_key_template(&conf, big);
+    ASSERT_NOT_NULL(err);
+}
+TEST(merge_cache_key_template_child_overrides) {
+    mesi_config base, add, merged; init_config(&base); init_config(&add); init_config(&merged);
+    base.cache_key_template = "mesi:${url}";
+    add.cache_key_template = "mesi:${url}:${header:X}";
+    merge_configs(&base, &add, &merged);
+    ASSERT_STR_EQ(merged.cache_key_template, "mesi:${url}:${header:X}");
+}
+TEST(merge_cache_key_template_child_inherits) {
+    mesi_config base, add, merged; init_config(&base); init_config(&add); init_config(&merged);
+    base.cache_key_template = "mesi:${url}";
+    add.cache_key_template = NULL;
+    merge_configs(&base, &add, &merged);
+    ASSERT_STR_EQ(merged.cache_key_template, "mesi:${url}");
+}
+
 int main(int argc, char *argv[]) {
     printf("=== Apache Module Directive Unit Tests ===\n\n");
 
@@ -1768,76 +1839,6 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_cache_key_template_child_overrides);
     RUN_TEST(merge_cache_key_template_child_inherits);
 
-
-/* --- MesiCacheKeyTemplate directive tests (#177) --- */
-TEST(cache_key_template_default_null) {
-    mesi_config conf; init_config(&conf);
-    ASSERT_NULL(conf.cache_key_template);
-}
-TEST(cache_key_template_valid_simple) {
-    mesi_config conf; init_config(&conf);
-    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}"));
-    ASSERT_NOT_NULL(conf.cache_key_template);
-    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}");
-}
-TEST(cache_key_template_with_header) {
-    mesi_config conf; init_config(&conf);
-    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${header:Accept-Language}"));
-    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${header:Accept-Language}");
-}
-TEST(cache_key_template_with_cookie) {
-    mesi_config conf; init_config(&conf);
-    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${cookie:segment}"));
-    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${cookie:segment}");
-}
-TEST(cache_key_template_with_both) {
-    mesi_config conf; init_config(&conf);
-    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${header:Accept-Language}:${cookie:segment}"));
-    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${header:Accept-Language}:${cookie:segment}");
-}
-TEST(cache_key_template_unknown_placeholder_literal) {
-    mesi_config conf; init_config(&conf);
-    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${unknown:foo}"));
-    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${unknown:foo}");
-}
-TEST(cache_key_template_empty_clears) {
-    mesi_config conf; init_config(&conf);
-    conf.cache_key_template = "old";
-    ASSERT_NULL(set_cache_key_template(&conf, ""));
-    ASSERT_NULL(conf.cache_key_template);
-}
-TEST(cache_key_template_null_arg_rejected) {
-    mesi_config conf; init_config(&conf);
-    const char *err = set_cache_key_template(&conf, NULL);
-    ASSERT_NOT_NULL(err);
-}
-TEST(cache_key_template_control_rejected) {
-    mesi_config conf; init_config(&conf);
-    const char *err = set_cache_key_template(&conf, "mesi:\x01bad");
-    ASSERT_NOT_NULL(err);
-    ASSERT_STR_CONTAINS(err, "control");
-}
-TEST(cache_key_template_too_long_rejected) {
-    mesi_config conf; init_config(&conf);
-    char big[MESI_MAX_CACHE_KEY_TEMPLATE+10];
-    memset(big, 'a', sizeof(big)-1); big[sizeof(big)-1]='\0';
-    const char *err = set_cache_key_template(&conf, big);
-    ASSERT_NOT_NULL(err);
-}
-TEST(merge_cache_key_template_child_overrides) {
-    mesi_config base, add, merged; init_config(&base); init_config(&add); init_config(&merged);
-    base.cache_key_template = "mesi:${url}";
-    add.cache_key_template = "mesi:${url}:${header:X}";
-    merge_configs(&base, &add, &merged);
-    ASSERT_STR_EQ(merged.cache_key_template, "mesi:${url}:${header:X}");
-}
-TEST(merge_cache_key_template_child_inherits) {
-    mesi_config base, add, merged; init_config(&base); init_config(&add); init_config(&merged);
-    base.cache_key_template = "mesi:${url}";
-    add.cache_key_template = NULL;
-    merge_configs(&base, &add, &merged);
-    ASSERT_STR_EQ(merged.cache_key_template, "mesi:${url}");
-}
 
     apr_pool_destroy(pool);
 
