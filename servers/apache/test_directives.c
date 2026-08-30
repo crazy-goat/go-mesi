@@ -305,6 +305,12 @@ static const char *set_cache_key_template(mesi_config *conf, const char *arg) {
         if (uc < 0x20) return apr_psprintf(pool, "MesiCacheKeyTemplate contains control character 0x%02x", uc);
         if (uc == 0x7f) return apr_psprintf(pool, "MesiCacheKeyTemplate contains DEL character");
     }
+    if (strstr(arg, "::") != NULL) {
+        return apr_psprintf(pool, "MesiCacheKeyTemplate: Apache config interpolation replaced ${url} (AH00111); escape the dollar sign as $${url} in httpd.conf (got: %s)", arg);
+    }
+    if (arg[len - 1] == ':') {
+        return apr_psprintf(pool, "MesiCacheKeyTemplate: Apache config interpolation replaced ${url} (AH00111); escape the dollar sign as $${url} in httpd.conf (got: %s)", arg);
+    }
     conf->cache_key_template = apr_pstrdup(pool, arg);
     return NULL;
 }
@@ -1648,6 +1654,28 @@ TEST(cache_key_template_control_rejected) {
     ASSERT_NOT_NULL(err);
     ASSERT_STR_CONTAINS(err, "control");
 }
+TEST(cache_key_template_mangled_double_colon_rejected) {
+    mesi_config conf; init_config(&conf);
+    const char *err = set_cache_key_template(&conf, "mesi::${header:X}");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "AH00111");
+}
+TEST(cache_key_template_trailing_colon_rejected) {
+    mesi_config conf; init_config(&conf);
+    const char *err = set_cache_key_template(&conf, "mesi:${header:X}:");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "AH00111");
+}
+TEST(cache_key_template_escaped_dollar_accepted) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${header:Accept-Language}"));
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${header:Accept-Language}");
+}
+TEST(cache_key_template_mid_position_accepted) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${header:X}:${url}:${cookie:C}"));
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${header:X}:${url}:${cookie:C}");
+}
 TEST(cache_key_template_too_long_rejected) {
     mesi_config conf; init_config(&conf);
     char big[MESI_MAX_CACHE_KEY_TEMPLATE+10];
@@ -1835,6 +1863,10 @@ int main(int argc, char *argv[]) {
     RUN_TEST(cache_key_template_empty_clears);
     RUN_TEST(cache_key_template_null_arg_rejected);
     RUN_TEST(cache_key_template_control_rejected);
+    RUN_TEST(cache_key_template_mangled_double_colon_rejected);
+    RUN_TEST(cache_key_template_trailing_colon_rejected);
+    RUN_TEST(cache_key_template_escaped_dollar_accepted);
+    RUN_TEST(cache_key_template_mid_position_accepted);
     RUN_TEST(cache_key_template_too_long_rejected);
     RUN_TEST(merge_cache_key_template_child_overrides);
     RUN_TEST(merge_cache_key_template_child_inherits);
