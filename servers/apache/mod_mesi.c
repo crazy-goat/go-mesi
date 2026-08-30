@@ -1278,15 +1278,25 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     char *base_url = build_base_url(f->r, f->r->pool);
     char *esi = NULL;
 
-    if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && !EsiParseWithConfigCtx) {
+    // Apache's ap_resolve_env replaces undefined ${url} with "" (empty) before
+    // mod_mesi sees the value (e.g. "mesi:${url}:..." -> "mesi::..."). Normalize
+    // per-request without mutating the shared server config (pool is request-scoped).
+    const char *effective_template = conf->cache_key_template;
+    char *normalized = NULL;
+    if (effective_template && strstr(effective_template, "mesi::") == effective_template) {
+        const char *rest = effective_template + strlen("mesi::");
+        normalized = apr_psprintf(f->r->pool, "mesi:${url}:%s", rest);
+        effective_template = normalized;
+    }
+    if (effective_template && effective_template[0] != '\0' && !EsiParseWithConfigCtx) {
         ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
             "mesi: MesiCacheKeyTemplate set but libgomesi lacks ParseWithConfigCtx; templated keys disabled. Upgrade libgomesi.so.");
     }
-    if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && EsiParseWithConfigCtx) {
+    if (effective_template && effective_template[0] != '\0' && EsiParseWithConfigCtx) {
         const char *ctx_json = build_request_ctx_json(f->r, conf, f->r->pool);
         esi = EsiParseWithConfigCtx(html, 5, base_url, allowed_hosts_str,
                                     block_private, allow_private_for_allowed,
-                                    (char *)conf->cache_key_template, (char *)ctx_json);
+                                    (char *)effective_template, (char *)ctx_json);
     } else if (EsiParseWithConfigEx) {
         esi = EsiParseWithConfigEx(html, 5, base_url, allowed_hosts_str,
                                    block_private, allow_private_for_allowed);

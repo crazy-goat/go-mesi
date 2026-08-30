@@ -22,3 +22,5 @@
 !ssrf-allow-private-notallowed.html
 !shared-http-client.html
 !shared-fragment.txt
+!cache-key-template.html
+!cache-key-fragment.txt

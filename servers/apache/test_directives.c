@@ -1644,7 +1644,7 @@ TEST(cache_key_template_null_arg_rejected) {
 }
 TEST(cache_key_template_control_rejected) {
     mesi_config conf; init_config(&conf);
-    const char *err = set_cache_key_template(&conf, "mesi:\x01bad");
+    const char *err = set_cache_key_template(&conf, "mesi:\001bad");
     ASSERT_NOT_NULL(err);
     ASSERT_STR_CONTAINS(err, "control");
 }

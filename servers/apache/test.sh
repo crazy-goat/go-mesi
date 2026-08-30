@@ -425,9 +425,12 @@ docker compose down
 docker compose up -d --wait
 
 echo "=== Test 26: Cache key template - header isolation (#177) ==="
-# Prove the directive does not break ESI at all.
-RESPONSE=$(curl -s -H "Accept-Language: pl" http://localhost:8084/index.html)
-if echo "$RESPONSE" | grep -q "included content from backend"; then
+# 8084 (MesiCacheKeyTemplate "mesi:${url}:${header:Accept-Language}").
+# Uses a DEDICATED fixture cache-key-template.html -> cache-key-fragment.txt
+# so the backend counter is not polluted by healthchecks (which hit / -> index.html -> include.txt every 2s).
+# Mirrors Test 24 which counts cached-fragment.txt, not include.txt.
+RESPONSE=$(curl -s -H "Accept-Language: pl" http://localhost:8084/cache-key-template.html)
+if echo "$RESPONSE" | grep -q "cache-key dedicated fragment"; then
     echo "PASS: Cache key template (pl) — ESI resolved"
 else
     echo "FAIL: Cache key template (pl) — ESI not resolved"
@@ -435,32 +438,32 @@ else
     docker compose down
     exit 1
 fi
-BASE=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /include.txt HTTP/1.1" || true)
-echo "  (backend GET /include.txt so far: $BASE)"
+BASE=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /cache-key-fragment.txt HTTP/1.1" || true)
+echo "  (backend GET /cache-key-fragment.txt so far: $BASE)"
 
 echo "=== Test 26a: Same Accept-Language reuses cache (0-1 extra hits) ==="
-curl -s -H "Accept-Language: pl" http://localhost:8084/index.html > /dev/null
-AFTER_SAME=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /include.txt HTTP/1.1" || true)
+curl -s -H "Accept-Language: pl" http://localhost:8084/cache-key-template.html > /dev/null
+AFTER_SAME=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /cache-key-fragment.txt HTTP/1.1" || true)
 EXTRA_SAME=$((AFTER_SAME - BASE))
 if [ "$EXTRA_SAME" -ge 0 ] && [ "$EXTRA_SAME" -le 1 ]; then
     echo "PASS: Same Accept-Language reused cache (extra hits: $EXTRA_SAME, allowed 0-1 for in-response race)"
 else
     echo "FAIL: Same Accept-Language should reuse cache; extra hits: $EXTRA_SAME (expected 0-1)"
-    docker compose logs --no-color backend 2>&1 | grep "include.txt" | tail -10
+    docker compose logs --no-color backend 2>&1 | grep "cache-key-fragment" | tail -10
     docker compose down
     exit 1
 fi
 
 echo "=== Test 26b: Different Accept-Language misses cache (1 extra hit) ==="
-curl -s -H "Accept-Language: en" http://localhost:8084/index.html > /dev/null
-AFTER_DIFF=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /include.txt HTTP/1.1" || true)
+curl -s -H "Accept-Language: en" http://localhost:8084/cache-key-template.html > /dev/null
+AFTER_DIFF=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /cache-key-fragment.txt HTTP/1.1" || true)
 EXTRA_DIFF=$((AFTER_DIFF - AFTER_SAME))
 if [ "$EXTRA_DIFF" -eq 1 ]; then
     echo "PASS: Different Accept-Language produced distinct key (extra hits: 1)"
 else
     echo "FAIL: Different Accept-Language should be a distinct key; extra hits: $EXTRA_DIFF (expected 1)"
     echo "  AFTER_SAME=$AFTER_SAME AFTER_DIFF=$AFTER_DIFF BASE=$BASE"
-    docker compose logs --no-color backend 2>&1 | grep "include.txt" | tail -10
+    docker compose logs --no-color backend 2>&1 | grep "cache-key-fragment" | tail -10
     docker compose down
     exit 1
 fi
