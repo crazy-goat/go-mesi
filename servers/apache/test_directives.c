@@ -305,6 +305,24 @@ static const char *set_cache_key_template(mesi_config *conf, const char *arg) {
         if (uc < 0x20) return apr_psprintf(pool, "MesiCacheKeyTemplate contains control character 0x%02x", uc);
         if (uc == 0x7f) return apr_psprintf(pool, "MesiCacheKeyTemplate contains DEL character");
     }
+    char *norm = NULL;
+    if (strstr(arg, "$${") != NULL) {
+        size_t cnt = 0;
+        for (const char *q = arg; (q = strstr(q, "$${")) != NULL; q += 3) cnt++;
+        norm = apr_palloc(pool, strlen(arg) - cnt + 1);
+        char *w = norm;
+        const char *r = arg;
+        while (*r) {
+            if (r[0] == '$' && r[1] == '$' && r[2] == '{') {
+                *w++ = '$'; *w++ = '{'; r += 3;
+            } else {
+                *w++ = *r++;
+            }
+        }
+        *w = '\0';
+        arg = norm;
+        len = strlen(arg);
+    }
     if (strstr(arg, "::") != NULL) {
         return apr_psprintf(pool, "MesiCacheKeyTemplate: Apache config interpolation replaced ${url} (AH00111); escape the dollar sign as $${url} in httpd.conf (got: %s)", arg);
     }

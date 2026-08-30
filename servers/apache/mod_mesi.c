@@ -996,15 +996,34 @@ static const char *set_cache_key_template(cmd_parms *cmd, void *cfg, const char 
                 "MesiCacheKeyTemplate contains DEL character");
         }
     }
-    // Apache's ap_resolve_env replaces undefined ${VAR} with "" before the
-    // module sees the value (AH00111: Config variable ${url} is not defined).
-    // That silently mangles templates: every ${url} becomes empty, turning
-    // e.g. "mesi:${header:A}:${url}:${cookie:C}" into "mesi:${header:A}::${cookie:C}"
-    // or "k${url}ey" into "key" — all URLs collapse to one cache key.
-    // Fail loud so the operator escapes the dollar as $${url} in httpd.conf;
-    // Apache then delivers the literal ${url} (any position/repetition) and
-    // no normalization is needed. Keep ""→NULL; reject literal :: (the mangled
-    // shape) and trailing ":" (bare "${url}" → "" or "mesi:${url}:" -> "mesi::").
+    // Apache's ap_resolve_env (AH00111) replaces undefined ${VAR} with ""
+    // before delivery — but it treats "$${url}" as "$" + "${url}", so the
+    // second "${url}" is still seen and warned, and the stored value is the
+    // literal "$${url}" (verbatim, not collapsed). BuildCacheKey looks for
+    // "${url}" which is present at offset 1 with a stray "$" artifact
+    // ("mesi:$${url}:..." → keys contain "$<url>"). Normalize "$${" → "${"
+    // deterministically at config load so any position/repetition works and
+    // keys are clean. After normalization, a mangled single-dollar "${url}"
+    // would have become "::" or trailing ":" and is caught below.
+    char *norm = NULL;
+    if (strstr(arg, "$${") != NULL) {
+        // Count occurrences to size correctly (each "$${" -> "${" saves 1 byte)
+        size_t cnt = 0;
+        for (const char *q = arg; (q = strstr(q, "$${")) != NULL; q += 3) cnt++;
+        norm = apr_palloc(cmd->pool, strlen(arg) - cnt + 1);
+        char *w = norm;
+        const char *r = arg;
+        while (*r) {
+            if (r[0] == '$' && r[1] == '$' && r[2] == '{') {
+                *w++ = '$'; *w++ = '{'; r += 3;
+            } else {
+                *w++ = *r++;
+            }
+        }
+        *w = '\0';
+        arg = norm;
+        len = strlen(arg);
+    }
     if (strstr(arg, "::") != NULL) {
         return apr_psprintf(cmd->pool,
             "MesiCacheKeyTemplate: Apache config interpolation replaced ${url} (AH00111); escape the dollar sign as $${url} in httpd.conf (got: %s)", arg);
