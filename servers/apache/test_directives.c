@@ -48,6 +48,8 @@ typedef struct {
     int cache_redis_db;
     /* Memcached backend fields (#176) */
     apr_array_header_t *cache_memcached_servers;
+    /* Cache key template (#177) */
+    const char *cache_key_template;
 } mesi_config;
 
 /* Sentinel/constant values copied from mod_mesi.c */
@@ -57,6 +59,7 @@ typedef struct {
 #define MESI_MAX_REDIS_DB 15
 // Cap on Memcached server entries — mirrors MESI_MAX_MEMCACHED_SERVERS.
 #define MESI_MAX_MEMCACHED_SERVERS 64
+#define MESI_MAX_CACHE_KEY_TEMPLATE 4096
 
 /* Directive parsing functions (copied from mod_mesi.c for testing) */
 static const char *parse_allowed_hosts(mesi_config *conf, const char *arg) {
@@ -292,6 +295,44 @@ static const char *set_cache_redis_db(mesi_config *conf, const char *arg) {
  * Each entry must contain a ':'+port_in_[1,65535]. Tokens with
  * embedded control chars or JSON-meta characters are rejected.
  */
+static const char *set_cache_key_template(mesi_config *conf, const char *arg) {
+    if (!arg) return "MesiCacheKeyTemplate requires an argument";
+    if (arg[0] == '\0') { conf->cache_key_template = NULL; return NULL; }
+    size_t len = strlen(arg);
+    if (len > MESI_MAX_CACHE_KEY_TEMPLATE) return apr_psprintf(pool, "MesiCacheKeyTemplate exceeds maximum length %d (got %zu)", MESI_MAX_CACHE_KEY_TEMPLATE, len);
+    for (const char *c = arg; *c; c++) {
+        unsigned char uc = (unsigned char)*c;
+        if (uc < 0x20) return apr_psprintf(pool, "MesiCacheKeyTemplate contains control character 0x%02x", uc);
+        if (uc == 0x7f) return apr_psprintf(pool, "MesiCacheKeyTemplate contains DEL character");
+    }
+    char *norm = NULL;
+    if (strstr(arg, "$${") != NULL) {
+        size_t cnt = 0;
+        for (const char *q = arg; (q = strstr(q, "$${")) != NULL; q += 3) cnt++;
+        norm = apr_palloc(pool, strlen(arg) - cnt + 1);
+        char *w = norm;
+        const char *r = arg;
+        while (*r) {
+            if (r[0] == '$' && r[1] == '$' && r[2] == '{') {
+                *w++ = '$'; *w++ = '{'; r += 3;
+            } else {
+                *w++ = *r++;
+            }
+        }
+        *w = '\0';
+        arg = norm;
+        len = strlen(arg);
+    }
+    if (strstr(arg, "::") != NULL) {
+        return apr_psprintf(pool, "MesiCacheKeyTemplate: Apache config interpolation replaced ${url} (AH00111); escape the dollar sign as $${url} in httpd.conf (got: %s)", arg);
+    }
+    if (arg[len - 1] == ':') {
+        return apr_psprintf(pool, "MesiCacheKeyTemplate: Apache config interpolation replaced ${url} (AH00111); escape the dollar sign as $${url} in httpd.conf (got: %s)", arg);
+    }
+    conf->cache_key_template = apr_pstrdup(pool, arg);
+    return NULL;
+}
+
 static const char *set_cache_memcached_servers(mesi_config *conf, const char *arg) {
     if (!arg) {
         return "MesiCacheMemcachedServers requires space-separated host:port entries";
@@ -363,6 +404,7 @@ static void init_config(mesi_config *conf) {
     conf->cache_redis_password = NULL;
     conf->cache_redis_db = -1;
     conf->cache_memcached_servers = apr_array_make(pool, 2, sizeof(const char *));
+    conf->cache_key_template = NULL;
 }
 
 static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merged) {
@@ -384,6 +426,7 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
     merged->cache_memcached_servers = (add->cache_memcached_servers->nelts > 0)
                                       ? add->cache_memcached_servers
                                       : base->cache_memcached_servers;
+    merged->cache_key_template = add->cache_key_template ? add->cache_key_template : base->cache_key_template;
 }
 
 /* Test cases */
@@ -1580,6 +1623,99 @@ TEST(merge_memcached_servers_child_inherits) {
                   "10.0.0.1:11211");
 }
 
+
+/* --- MesiCacheKeyTemplate directive tests (#177) --- */
+TEST(cache_key_template_default_null) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(conf.cache_key_template);
+}
+TEST(cache_key_template_valid_simple) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}"));
+    ASSERT_NOT_NULL(conf.cache_key_template);
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}");
+}
+TEST(cache_key_template_with_header) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${header:Accept-Language}"));
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${header:Accept-Language}");
+}
+TEST(cache_key_template_with_cookie) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${cookie:segment}"));
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${cookie:segment}");
+}
+TEST(cache_key_template_with_both) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${header:Accept-Language}:${cookie:segment}"));
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${header:Accept-Language}:${cookie:segment}");
+}
+TEST(cache_key_template_unknown_placeholder_literal) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${unknown:foo}"));
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${unknown:foo}");
+}
+TEST(cache_key_template_empty_clears) {
+    mesi_config conf; init_config(&conf);
+    conf.cache_key_template = "old";
+    ASSERT_NULL(set_cache_key_template(&conf, ""));
+    ASSERT_NULL(conf.cache_key_template);
+}
+TEST(cache_key_template_null_arg_rejected) {
+    mesi_config conf; init_config(&conf);
+    const char *err = set_cache_key_template(&conf, NULL);
+    ASSERT_NOT_NULL(err);
+}
+TEST(cache_key_template_control_rejected) {
+    mesi_config conf; init_config(&conf);
+    const char *err = set_cache_key_template(&conf, "mesi:\001bad");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "control");
+}
+TEST(cache_key_template_mangled_double_colon_rejected) {
+    mesi_config conf; init_config(&conf);
+    const char *err = set_cache_key_template(&conf, "mesi::${header:X}");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "AH00111");
+}
+TEST(cache_key_template_trailing_colon_rejected) {
+    mesi_config conf; init_config(&conf);
+    const char *err = set_cache_key_template(&conf, "mesi:${header:X}:");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "AH00111");
+}
+TEST(cache_key_template_escaped_dollar_accepted) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${header:Accept-Language}"));
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${header:Accept-Language}");
+}
+TEST(cache_key_template_mid_position_accepted) {
+    mesi_config conf; init_config(&conf);
+    ASSERT_NULL(set_cache_key_template(&conf, "mesi:${header:X}:${url}:${cookie:C}"));
+    ASSERT_STR_EQ(conf.cache_key_template, "mesi:${header:X}:${url}:${cookie:C}");
+}
+TEST(cache_key_template_too_long_rejected) {
+    mesi_config conf; init_config(&conf);
+    char big[MESI_MAX_CACHE_KEY_TEMPLATE+10];
+    memset(big, 'a', sizeof(big)-1); big[sizeof(big)-1]='\0';
+    const char *err = set_cache_key_template(&conf, big);
+    ASSERT_NOT_NULL(err);
+}
+TEST(merge_cache_key_template_child_overrides) {
+    mesi_config base, add, merged; init_config(&base); init_config(&add); init_config(&merged);
+    base.cache_key_template = "mesi:${url}";
+    add.cache_key_template = "mesi:${url}:${header:X}";
+    merge_configs(&base, &add, &merged);
+    ASSERT_STR_EQ(merged.cache_key_template, "mesi:${url}:${header:X}");
+}
+TEST(merge_cache_key_template_child_inherits) {
+    mesi_config base, add, merged; init_config(&base); init_config(&add); init_config(&merged);
+    base.cache_key_template = "mesi:${url}";
+    add.cache_key_template = NULL;
+    merge_configs(&base, &add, &merged);
+    ASSERT_STR_EQ(merged.cache_key_template, "mesi:${url}");
+}
+
 int main(int argc, char *argv[]) {
     printf("=== Apache Module Directive Unit Tests ===\n\n");
 
@@ -1735,7 +1871,27 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_memcached_servers_child_overrides);
     RUN_TEST(merge_memcached_servers_child_inherits);
 
+    printf("\nTesting set_cache_key_template() (#177):\n");
+    RUN_TEST(cache_key_template_default_null);
+    RUN_TEST(cache_key_template_valid_simple);
+    RUN_TEST(cache_key_template_with_header);
+    RUN_TEST(cache_key_template_with_cookie);
+    RUN_TEST(cache_key_template_with_both);
+    RUN_TEST(cache_key_template_unknown_placeholder_literal);
+    RUN_TEST(cache_key_template_empty_clears);
+    RUN_TEST(cache_key_template_null_arg_rejected);
+    RUN_TEST(cache_key_template_control_rejected);
+    RUN_TEST(cache_key_template_mangled_double_colon_rejected);
+    RUN_TEST(cache_key_template_trailing_colon_rejected);
+    RUN_TEST(cache_key_template_escaped_dollar_accepted);
+    RUN_TEST(cache_key_template_mid_position_accepted);
+    RUN_TEST(cache_key_template_too_long_rejected);
+    RUN_TEST(merge_cache_key_template_child_overrides);
+    RUN_TEST(merge_cache_key_template_child_inherits);
+
+
     apr_pool_destroy(pool);
+
     apr_terminate();
 
     printf("\n=== Results: %d passed, %d failed ===\n", tests_passed, tests_failed);
