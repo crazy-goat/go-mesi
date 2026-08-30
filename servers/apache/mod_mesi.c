@@ -18,6 +18,7 @@
 typedef char *(*ParseFunc)(char *, int, char *);
 typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
 typedef char *(*ParseWithConfigExFunc)(char *, int, char *, char *, int, int);
+typedef char *(*ParseWithConfigCtxFunc)(char *, int, char *, char *, int, int, char *, char *);
 typedef void (*FreeFunc)(char *);
 typedef int (*InitCacheFunc)(char *, int, int);
 typedef int (*InitCacheWithConfigFunc)(char *, int, int, char *);
@@ -29,6 +30,7 @@ static void *go_module = NULL;
 static ParseFunc EsiParse = NULL;
 static ParseWithConfigFunc EsiParseWithConfig = NULL;
 static ParseWithConfigExFunc EsiParseWithConfigEx = NULL;
+static ParseWithConfigCtxFunc EsiParseWithConfigCtx = NULL;
 static FreeFunc EsiFreeString = NULL;
 static InitCacheFunc EsiInitCache = NULL;
 static InitCacheWithConfigFunc EsiInitCacheWithConfig = NULL;
@@ -89,6 +91,14 @@ typedef struct {
     // required "servers" key and libgomesi rejects — that's the same
     // fail-fast path the Redis directives already use for missing config.
     apr_array_header_t *cache_memcached_servers;
+    // Cache key template (#177). RSRC_CONF, NULL = use DefaultCacheKey
+    // (URL-only). When set, the value is passed to libgomesi's
+    // ParseWithConfigCtx together with a JSON request context (headers +
+    // cookies) so mesi.BuildCacheKey can evaluate ${url},
+    // ${header:Name} and ${cookie:Name} placeholders. Unknown
+    // placeholders stay literal; empty/NULL falls back to URL-only for
+    // backward compat.
+    const char *cache_key_template;  // NULL/empty = DefaultCacheKey
 } mesi_config;
 
 // Default memory cache size when MesiCacheSize is not set.
@@ -106,6 +116,9 @@ typedef struct {
 // 64 entries × ~30 ascii chars + JSON wrapping → ~2.5 KB, well under
 // MESI_MAX_CACHE_CONFIG_JSON (4 KB).
 #define MESI_MAX_MEMCACHED_SERVERS 64
+// Cache key template: 4 KB comfortably holds a template with several
+// placeholders (e.g. "mesi:${url}:${header:Accept-Language}").
+#define MESI_MAX_CACHE_KEY_TEMPLATE 4096
 
 static void *create_server_config(apr_pool_t *p, server_rec *s) {
     mesi_config *conf = apr_pcalloc(p, sizeof(*conf));
@@ -125,6 +138,7 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     // entries; an empty list at request time triggers the runtime
     // fail-fast error rather than silently picking some default server.
     conf->cache_memcached_servers = apr_array_make(p, 2, sizeof(const char *));
+    conf->cache_key_template = NULL;
     return conf;
 }
 
@@ -160,6 +174,7 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     conf->cache_memcached_servers = (add->cache_memcached_servers->nelts > 0)
                                     ? add->cache_memcached_servers
                                     : base->cache_memcached_servers;
+    conf->cache_key_template = add->cache_key_template ? add->cache_key_template : base->cache_key_template;
     return conf;
 }
 
@@ -178,6 +193,7 @@ static apr_status_t mesi_child_cleanup(void *data) {
     EsiParse = NULL;
     EsiParseWithConfig = NULL;
     EsiParseWithConfigEx = NULL;
+    EsiParseWithConfigCtx = NULL;
     EsiFreeString = NULL;
     EsiInitCache = NULL;
     EsiInitCacheWithConfig = NULL;
@@ -229,6 +245,16 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     EsiParseWithConfigEx = (ParseWithConfigExFunc)dlsym(go_module, "ParseWithConfigEx");
     if (dlerror() != NULL) {
         EsiParseWithConfigEx = NULL;
+        (void) dlerror();
+    }
+    // ParseWithConfigCtx is optional: it adds cache_key_template +
+    // requestCtxJSON. When present, the filter uses it so the
+    // MesiCacheKeyTemplate directive takes effect. Older libgomesi
+    // builds without it fall back to ParseWithConfigEx / ParseWithConfig
+    // (templated keys disabled) — template is ignored with no error.
+    EsiParseWithConfigCtx = (ParseWithConfigCtxFunc)dlsym(go_module, "ParseWithConfigCtx");
+    if (dlerror() != NULL) {
+        EsiParseWithConfigCtx = NULL;
         (void) dlerror();
     }
     EsiFreeString = (FreeFunc)dlsym(go_module, "FreeString");
@@ -917,6 +943,161 @@ static const char *set_cache_memcached_servers(cmd_parms *cmd, void *cfg, const 
     return NULL;
 }
 
+// MesiCacheKeyTemplate — template for cache keys. RSRC_CONF, take1.
+// Caches are process-wide/shared, so without a template duplicate
+// include URLs share one entry (URL-only DefaultCacheKey). When set,
+// the value is passed verbatim to libgomesi ParseWithConfigCtx where
+// mesi.BuildCacheKey evaluates ${url}, ${header:Name} (case-insensitive)
+// and ${cookie:Name} (case-insensitive); unknown placeholders stay
+// literal; NULL/empty falls back to DefaultCacheKey for backward compat.
+// Validation: reject NUL bytes and control chars; embedded '"' and
+// '\' are permitted (they are JSON-escaped in the request context,
+// not in the template — the template itself travels as a plain C string
+// to libgomesi). Length capped at MESI_MAX_CACHE_KEY_TEMPLATE to avoid
+// unbounded allocations.
+static const char *set_cache_key_template(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    if (!arg) {
+        return "MesiCacheKeyTemplate requires an argument";
+    }
+    // Empty string explicitly disables templating (backward compat — same
+    // as omitting the directive). Keep NULL sentinel so filter can
+    // distinguish "unset" from "set to empty" without extra flags.
+    if (arg[0] == '\0') {
+        conf->cache_key_template = NULL;
+        return NULL;
+    }
+    size_t len = strlen(arg);
+    if (len > MESI_MAX_CACHE_KEY_TEMPLATE) {
+        return apr_psprintf(cmd->pool,
+            "MesiCacheKeyTemplate exceeds maximum length %d (got %zu)",
+            MESI_MAX_CACHE_KEY_TEMPLATE, len);
+    }
+    // Reject NUL already handled by C string; reject control chars
+    // other than spaces that are part of the template syntax? Templates
+    // contain ':' and braces; spaces inside a template would be
+    // intentional (e.g. "mesi:${url} ${header:X}"), so spaces are
+    // allowed. Only reject controls < 0x20 except 	 is also control
+    // — but a template may reasonably contain a space for separation,
+    // so only reject 0x00-0x1F excluding 0x20. This matches the
+    // php-ext validator which calls mesi_is_safe_string (rejects
+    // controls and DEL) — but the template itself is not a header
+    // name, so we only guard against controls that could corrupt
+    // logging or confuse parsers. Allow '"' and '\' — they are
+    // harmless in the plain C string passed to CGo.
+    for (const char *c = arg; *c; c++) {
+        unsigned char uc = (unsigned char)*c;
+        if (uc < 0x20) {
+            return apr_psprintf(cmd->pool,
+                "MesiCacheKeyTemplate contains control character 0x%02x", uc);
+        }
+        if (uc == 0x7f) {
+            return apr_psprintf(cmd->pool,
+                "MesiCacheKeyTemplate contains DEL character");
+        }
+    }
+    conf->cache_key_template = apr_pstrdup(cmd->pool, arg);
+    return NULL;
+}
+
+static void json_grow(char **buf, apr_size_t *cap, apr_size_t need, apr_size_t pos, apr_pool_t *pool) {
+    if (pos + need < *cap) return;
+    apr_size_t ncap = *cap * 2;
+    while (pos + need >= ncap) ncap *= 2;
+    char *n = apr_palloc(pool, ncap);
+    memcpy(n, *buf, pos);
+    *buf = n;
+    *cap = ncap;
+}
+
+// JSON escaping for request context — mirrors php-ext mesi_dyn_json_append_escape
+static void json_escape_append(char **buf, apr_size_t *cap, apr_size_t *pos, const char *src, apr_pool_t *pool) {
+    for (const unsigned char *q = (const unsigned char *)src; *q; q++) {
+        if (*q == '"') {
+            json_grow(buf, cap, 2, *pos, pool);
+            (*buf)[(*pos)++] = '\\'; (*buf)[(*pos)++] = '"';
+        } else if (*q == '\\') {
+            json_grow(buf, cap, 2, *pos, pool);
+            (*buf)[(*pos)++] = '\\'; (*buf)[(*pos)++] = '\\';
+        } else if (*q < 0x20) {
+            static const char hex[] = "0123456789abcdef";
+            json_grow(buf, cap, 6, *pos, pool);
+            (*buf)[(*pos)++] = '\\'; (*buf)[(*pos)++] = 'u'; (*buf)[(*pos)++] = '0'; (*buf)[(*pos)++] = '0';
+            (*buf)[(*pos)++] = hex[(*q >> 4) & 0xf]; (*buf)[(*pos)++] = hex[*q & 0xf];
+        } else {
+            json_grow(buf, cap, 1, *pos, pool);
+            (*buf)[(*pos)++] = (char)*q;
+        }
+    }
+}
+
+static const char *build_request_ctx_json(request_rec *r, mesi_config *conf, apr_pool_t *pool) {
+    if (!conf->cache_key_template || conf->cache_key_template[0] == '\0') {
+        return "";
+    }
+    if (!strstr(conf->cache_key_template, "${header:") && !strstr(conf->cache_key_template, "${cookie:")) {
+        return "";
+    }
+    apr_size_t cap = 512;
+    char *buf = apr_palloc(pool, cap);
+    apr_size_t pos = 0;
+    buf[pos++] = '{';
+    buf[pos++] = '"'; memcpy(buf+pos, "headers", 7); pos+=7; buf[pos++] = '"'; buf[pos++] = ':'; buf[pos++] = '{';
+    int first_hdr = 1;
+    if (r->headers_in) {
+        const apr_array_header_t *arr = apr_table_elts(r->headers_in);
+        const apr_table_entry_t *elts = (const apr_table_entry_t *)arr->elts;
+        for (int i = 0; i < arr->nelts; i++) {
+            const char *k = elts[i].key;
+            const char *v = elts[i].val;
+            if (!k || !v) continue;
+            if (strcasecmp(k, "Cookie") == 0) continue;
+            if (!first_hdr) { json_grow(&buf, &cap, 1, pos, pool); buf[pos++] = ','; }
+            first_hdr = 0;
+            json_grow(&buf, &cap, 2, pos, pool); buf[pos++] = '"';
+            json_escape_append(&buf, &cap, &pos, k, pool);
+            json_grow(&buf, &cap, 3, pos, pool); buf[pos++] = '"'; buf[pos++] = ':'; buf[pos++] = '"';
+            json_escape_append(&buf, &cap, &pos, v, pool);
+            json_grow(&buf, &cap, 1, pos, pool); buf[pos++] = '"';
+        }
+    }
+    json_grow(&buf, &cap, 12, pos, pool); buf[pos++] = '}'; buf[pos++] = ','; buf[pos++] = '"'; memcpy(buf+pos, "cookies", 7); pos+=7; buf[pos++] = '"'; buf[pos++] = ':'; buf[pos++] = '[';
+    int first_cookie = 1;
+    const char *cookie_hdr = r->headers_in ? apr_table_get(r->headers_in, "Cookie") : NULL;
+    if (cookie_hdr) {
+        const char *c = cookie_hdr;
+        while (*c) {
+            while (*c == ' ' || *c == ';' || *c == '\t') c++;
+            if (!*c) break;
+            const char *name_start = c;
+            while (*c && *c != '=' && *c != ';') c++;
+            if (!*c || *c != '=') { while (*c && *c != ';') c++; continue; }
+            apr_size_t name_len = c - name_start;
+            c++;
+            const char *val_start = c;
+            while (*c && *c != ';') c++;
+            apr_size_t val_len = c - val_start;
+            while (name_len > 0 && (name_start[name_len-1] == ' ' || name_start[name_len-1] == '\t')) name_len--;
+            while (name_len > 0 && (*name_start == ' ' || *name_start == '\t')) { name_start++; name_len--; }
+            while (val_len > 0 && (val_start[val_len-1] == ' ' || val_start[val_len-1] == '\t')) val_len--;
+            while (val_len > 0 && (*val_start == ' ' || *val_start == '\t')) { val_start++; val_len--; }
+            if (name_len == 0) continue;
+            char *name = apr_pstrndup(pool, name_start, name_len);
+            char *val = apr_pstrndup(pool, val_start, val_len);
+            if (!first_cookie) { json_grow(&buf, &cap, 1, pos, pool); buf[pos++] = ','; }
+            first_cookie = 0;
+            json_grow(&buf, &cap, 20, pos, pool);
+            buf[pos++] = '{'; buf[pos++] = '"'; memcpy(buf+pos, "name",4); pos+=4; buf[pos++] = '"'; buf[pos++] = ':'; buf[pos++] = '"';
+            json_escape_append(&buf, &cap, &pos, name, pool);
+            json_grow(&buf, &cap, 11, pos, pool); buf[pos++] = '"'; buf[pos++] = ','; buf[pos++] = '"'; memcpy(buf+pos, "value",5); pos+=5; buf[pos++] = '"'; buf[pos++] = ':'; buf[pos++] = '"';
+            json_escape_append(&buf, &cap, &pos, val, pool);
+            json_grow(&buf, &cap, 3, pos, pool); buf[pos++] = '"'; buf[pos++] = '}';
+        }
+    }
+    json_grow(&buf, &cap, 3, pos, pool); buf[pos++] = ']'; buf[pos++] = '}'; buf[pos++] = '\0';
+    return buf;
+}
+
 static int mesi_request_handler(request_rec *r) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(r->server->module_config, &mesi_module);
     if (conf->enable_mesi) {
@@ -1097,7 +1278,32 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     char *base_url = build_base_url(f->r, f->r->pool);
     char *esi = NULL;
 
-    if (EsiParseWithConfigEx) {
+    // When a template is configured, prefer ParseWithConfigCtx so
+    // mesi.BuildCacheKey can vary keys by header/cookie. The context
+    // JSON is built from the incoming request's headers_in + Cookie.
+    // When EsiParseWithConfigCtx is unavailable (old libgomesi), fall
+    // back to Ex/legacy with URL-only keys and warn once.
+    if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && EsiParseWithConfigCtx) {
+        const char *ctx_json = build_request_ctx_json(f->r, conf, f->r->pool);
+        esi = EsiParseWithConfigCtx(html, 5, base_url, allowed_hosts_str,
+                                    block_private, allow_private_for_allowed,
+                                    (char *)conf->cache_key_template, (char *)ctx_json);
+    } else if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && !EsiParseWithConfigCtx) {
+        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+            "mesi: MesiCacheKeyTemplate set but libgomesi lacks ParseWithConfigCtx; templated keys disabled. Upgrade libgomesi.so.");
+        if (EsiParseWithConfigEx) {
+            esi = EsiParseWithConfigEx(html, 5, base_url, allowed_hosts_str,
+                                       block_private, allow_private_for_allowed);
+        } else if (EsiParseWithConfig) {
+            if (allow_private_for_allowed) {
+                ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+                    "mesi: MesiAllowPrivateIPsForAllowedHosts set but libgomesi lacks ParseWithConfigEx; bypass disabled. Upgrade libgomesi.so.");
+            }
+            esi = EsiParseWithConfig(html, 5, base_url, allowed_hosts_str, block_private);
+        } else {
+            if (EsiParse) esi = EsiParse(html, 5, base_url);
+        }
+    } else if (EsiParseWithConfigEx) {
         // Extended entry point: honours MesiAllowPrivateIPsForAllowedHosts.
         esi = EsiParseWithConfigEx(html, 5, base_url, allowed_hosts_str,
                                    block_private, allow_private_for_allowed);
@@ -1174,6 +1380,7 @@ static const command_rec mesi_directives[] = {
     AP_INIT_TAKE1("MesiCacheRedisPassword", set_cache_redis_password, NULL, RSRC_CONF, "Redis AUTH password (default: none). Used when MesiCacheBackend is redis"),
     AP_INIT_TAKE1("MesiCacheRedisDB", set_cache_redis_db, NULL, RSRC_CONF, "Redis database number (0..15). Default: 0. Used when MesiCacheBackend is redis"),
     AP_INIT_RAW_ARGS("MesiCacheMemcachedServers", set_cache_memcached_servers, NULL, RSRC_CONF, "Space-separated list of Memcached servers (host:port). Used when MesiCacheBackend is memcached"),
+    AP_INIT_TAKE1("MesiCacheKeyTemplate", set_cache_key_template, NULL, RSRC_CONF, "Cache key template: ${url}, ${header:Name}, ${cookie:Name} (default: mesi:${url}). Unknown placeholders stay literal."),
     {NULL}
 };
 

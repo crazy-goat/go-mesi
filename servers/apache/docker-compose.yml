@@ -9,6 +9,7 @@ services:
       - "8081:8081"
       - "8082:8082"
       - "8083:8083"
+      - "8084:8084"
     environment:
       - MESI_FORCE_FLATTEN_ERROR=${MESI_FORCE_FLATTEN_ERROR:-}
     volumes:
