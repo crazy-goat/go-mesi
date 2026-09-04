@@ -55,12 +55,14 @@ func main() {
 		testData, err := os.ReadFile(testFilePath)
 		if err != nil {
 			fmt.Printf("Error reading test file %s: %v\n", testFilePath, err)
+			failures++
 			continue
 		}
 
 		expectedData, err := os.ReadFile(expectedFilePath)
 		if err != nil {
 			fmt.Printf("Error reading expected file %s: %v\n", expectedFilePath, err)
+			failures++
 			continue
 		}
 
