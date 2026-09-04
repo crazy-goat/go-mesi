@@ -98,6 +98,7 @@ $html = \mesi\parse_with_config(
 | `cache_redis_db` | optional, `cache_backend = "redis"` | int | `[0, 15]`; omitted means Redis DB 0 |
 | `cache_memcached_servers` | `cache_backend = "memcached"` | array of strings | Each entry is `"host:port"`; non-empty list required |
 | `block_private_ips` | optional | bool | SSRF dial-time blocking of private/reserved IP ranges. Defaults to `true` (secure by default); pass `false` to allow includes from private IPs (e.g. loopback, RFC1918). A non-boolean value is rejected with `E_WARNING` |
+| `shared_http_client` | optional | bool | Use libgomesi's process-wide shared HTTP client (TCP/TLS connection pooling across parses in this worker). Defaults to `true` — backward compatible, the extension has always initialized the shared client in module init. `false` detaches the shared client and every include fetch builds its own client from the parse-time config (the historical per-parse behaviour; `block_private_ips` is then honoured per parse). The setting is process-wide state: the last value wins until changed. A non-boolean value is rejected with `E_WARNING` |
 | `allowed_hosts` | optional | string | Space-separated hostname whitelist restricting which `<esi:include>` destinations are fetched (e.g. `'backend.internal cdn.example.com'`). Empty/absent = all hosts allowed (backward compatible). Non-string, control-character, or whitespace-only values are rejected with `E_WARNING` |
 | `allow_private_ips_for_allowed_hosts` | optional | bool | Per-host private-IP bypass: when `true`, hosts listed in `allowed_hosts` may resolve to private/reserved IPs (the dial-time block is bypassed for them). Defaults to `false` (no bypass). Only effective when BOTH `block_private_ips` is `true` AND `allowed_hosts` is a non-empty whitelist; otherwise a no-op. **Trusts DNS** — only use with internal/trusted DNS. A non-boolean value is rejected with `E_WARNING` |
 | `cache_key_template` | optional | string | Cache key template: `${url}`, `${header:Name}`, `${cookie:Name}`. Empty/absent = default URL-only key (`mesi.DefaultCacheKey`). Unknown placeholders stay literal. Case-insensitive header/cookie lookup via `mesi.BuildCacheKey`. Non-string / control-char / space-containing values are rejected with `E_WARNING`. Silently **ignored** when `cache_backend` is `""` (no cache — parity with CLI/Traefik #246). A template without `${url}` collapses all URLs to one entry |
@@ -182,6 +183,41 @@ echo \mesi\parse_with_config(
 The shared HTTP client's transport is rebuilt only when the requested
 `block_private_ips` value changes between calls, so repeated calls with the
 same setting incur no extra setup cost.
+
+#### Shared HTTP client (`shared_http_client`)
+
+By default `parse_with_config()` routes all include fetches through
+libgomesi's **shared HTTP client** — one `http.Client` per worker process
+with a connection-pooling transport, initialized at module start. Pass
+`shared_http_client => false` to detach it; every include then builds its
+own client from the parse-time config (no connection pooling, but no
+shared state either):
+
+```php
+// Per-parse clients (historical behaviour before #242):
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    ['shared_http_client' => false]
+);
+```
+
+Semantics:
+
+- Default `true` — backward compatible (the extension has always
+  initialized the shared client in module init; unlike Apache
+  `MesiSharedHTTPClient` / Caddy `shared_http_client`, which default to
+  off, the PHP extension's pooling was already always-on before #242).
+- `false` detaches the shared client **process-wide** (like the cache
+  config, the last call wins until a `shared=true` call re-attaches it).
+  With no shared client, `block_private_ips` is honoured per parse by the
+  shared core, so SSRF protection is unchanged.
+- The legacy `\mesi\parse()` entrypoint uses the shared client whenever it
+  is attached — a `shared=false` call also switches `parse()` to
+  per-request clients until the shared client is re-attached.
+- A non-boolean (or non-integer) value is rejected with `E_WARNING` and
+  `parse_with_config()` returns `false`.
 
 #### Host whitelist (`allowed_hosts`)
 

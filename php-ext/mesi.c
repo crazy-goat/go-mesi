@@ -60,6 +60,17 @@ static mesi_cache_state_t g_cache_state = {"", -1, -1, {0}};
  */
 static int g_http_block_private_ips = 0;
 
+/*
+ * Track whether the shared HTTP client is currently initialized. MINIT
+ * calls InitHTTPClient(0), so the process starts with the shared client
+ * attached and every parse routes through it (connection pooling). A
+ * parse_with_config() call with shared_http_client => false detaches it
+ * (FreeHTTPClient) so that parse — and any others until a shared=true
+ * call re-attaches — uses per-request clients built by libgomesi's core
+ * from the parse-time config (block_private_ips honoured per parse).
+ */
+static int g_http_shared_client = 1;
+
 static int mesi_cache_state_matches(const char *backend, long size, long ttl,
                                     const char *cfg_json) {
     if (backend[0] == '\0' && g_cache_state.backend[0] == '\0') {
@@ -408,6 +419,20 @@ PHP_FUNCTION(parse) {
  *                            that blocks connections to private/reserved IP
  *                            ranges, preventing SSRF via DNS rebinding. A
  *                            non-boolean value is rejected with E_WARNING.
+ *   shared_http_client:       bool/int (0/1). When true (the default when
+ *                            the key is absent — backward compatible: the
+ *                            extension has always initialized the shared
+ *                            client in MINIT), the parse uses libgomesi's
+ *                            process-wide shared HTTP client (TCP/TLS
+ *                            connection pooling across parses in this
+ *                            worker). When false, the shared client is
+ *                            detached (FreeHTTPClient) and every include
+ *                            fetch builds its own client from the
+ *                            parse-time config — the historical
+ *                            per-parse behaviour. Note the setting is
+ *                            process-wide state, like the cache config:
+ *                            the last value wins until changed. A
+ *                            non-boolean value is rejected with E_WARNING.
  *   allowed_hosts:           string. Space-separated hostname whitelist
  *                            restricting which <esi:include> destinations
  *                            are fetched (e.g. "backend.internal
@@ -509,6 +534,9 @@ PHP_FUNCTION(parse_with_config) {
 
     /* block_private_ips: secure by default. Absent => true. */
     int block_private_ips = 1;
+    /* shared_http_client: shared client is initialized in MINIT, so the
+     * backward-compatible default is true (pooling, as before #242). */
+    int shared_http_client = 1;
     /* allow_private_ips_for_allowed_hosts: no bypass by default (false). */
     int allow_private_ips_for_allowed_hosts = 0;
 
@@ -698,6 +726,26 @@ PHP_FUNCTION(parse_with_config) {
                 php_error_docref(NULL, E_WARNING,
                     "mesi\\parse_with_config(): block_private_ips must be a boolean "
                     "(true/false) or integer (non-zero = block)");
+                RETURN_FALSE;
+            }
+        }
+
+        /* shared_http_client: whether the parse goes through libgomesi's
+         * process-wide shared HTTP client (connection pooling) or through
+         * per-request clients built from the parse-time config. Accepted
+         * as bool or int (0/1); any other type is rejected so a typo never
+         * silently flips the pooling mode. Absent => true (the extension
+         * has always run with the shared client since MINIT). */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "shared_http_client", sizeof("shared_http_client") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) == IS_TRUE || Z_TYPE_P(val) == IS_FALSE) {
+                shared_http_client = (Z_TYPE_P(val) == IS_TRUE);
+            } else if (Z_TYPE_P(val) == IS_LONG) {
+                shared_http_client = (Z_LVAL_P(val) != 0);
+            } else {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): shared_http_client must be a boolean "
+                    "(true/false) or integer (non-zero = enabled)");
                 RETURN_FALSE;
             }
         }
@@ -963,13 +1011,30 @@ PHP_FUNCTION(parse_with_config) {
         mesi_cache_state_record(cache_backend, cache_size, cache_ttl, config_json);
     }
 
-    /* (Re)build the shared HTTP client's SSRF-safe transport only when the
-     * requested block_private_ips value differs from the one currently in
-     * effect. InitHTTPClient swaps in a fresh transport, so we avoid doing
-     * it on every call — mirroring the cache-state tracking above. */
-    if (block_private_ips != g_http_block_private_ips) {
-        InitHTTPClient(block_private_ips ? 1 : 0);
-        g_http_block_private_ips = block_private_ips;
+    /* Manage the shared HTTP client lifecycle to match the requested
+     * shared_http_client setting.
+     *
+     * shared=true: (re)build the shared client when it is not currently
+     * attached, or when the requested block_private_ips value differs from
+     * the one its transport was built with (InitHTTPClient swaps in a fresh
+     * transport, so we avoid doing it on every call — mirroring the
+     * cache-state tracking above).
+     *
+     * shared=false: detach the shared client (FreeHTTPClient is idempotent).
+     * Subsequent parses then build per-request clients inside libgomesi's
+     * core from the parse-time config, which honours block_private_ips
+     * per parse — the historical per-parse behaviour. The detach is
+     * process-wide state (like the cache config): the last call wins until
+     * a shared=true call re-attaches the client. */
+    if (shared_http_client) {
+        if (!g_http_shared_client || block_private_ips != g_http_block_private_ips) {
+            InitHTTPClient(block_private_ips ? 1 : 0);
+            g_http_block_private_ips = block_private_ips;
+            g_http_shared_client = 1;
+        }
+    } else if (g_http_shared_client) {
+        FreeHTTPClient();
+        g_http_shared_client = 0;
     }
 
     /* Decide template and request context for ParseWithConfigCtx.
@@ -1093,6 +1158,7 @@ PHP_MINIT_FUNCTION(mesi) {
 
 PHP_MSHUTDOWN_FUNCTION(mesi) {
     FreeHTTPClient();
+    g_http_shared_client = 0;
     FreeCache();
     /* g_cache_state will be re-initialised on next module load. */
     g_cache_state.backend[0] = '\0';
