@@ -537,6 +537,137 @@ else
     exit 1
 fi
 
+echo "=== Test 35: Cache key template — Accept-Language variants get distinct cache entries ==="
+# The ESI include fetch does not forward the parent request's headers
+# (libgomesi fetches with its own HTTP client), so the dedicated
+# /langcount backend endpoint returns a fresh number per fetch: each
+# Accept-Language variant's FIRST request is a cache miss that pins that
+# number, and every later request for the same language must replay it.
+# The counter stands in for the language-specific variant content a real
+# backend would serve (mirrors the Apache #177 hit-count approach).
+PL1=$(curl -s -H "Accept-Language: pl" http://localhost:18080/cache-key-template/cache_key_template.html | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
+PL2=$(curl -s -H "Accept-Language: pl" http://localhost:18080/cache-key-template/cache_key_template.html | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
+EN1=$(curl -s -H "Accept-Language: en" http://localhost:18080/cache-key-template/cache_key_template.html | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
+EN2=$(curl -s -H "Accept-Language: en" http://localhost:18080/cache-key-template/cache_key_template.html | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
+if [ -z "$PL1" ] || [ -z "$PL2" ] || [ -z "$EN1" ] || [ -z "$EN2" ]; then
+    echo "FAIL: could not extract counter values (PL1=$PL1 PL2=$PL2 EN1=$EN1 EN2=$EN2)"
+    exit 1
+fi
+if [ "$PL1" = "$PL2" ]; then
+    echo "PASS: same Accept-Language (pl) reuses its cache entry (both $PL1)"
+else
+    echo "FAIL: same Accept-Language (pl) should reuse the cache entry ($PL1 vs $PL2)"
+    exit 1
+fi
+if [ "$EN1" != "$PL1" ]; then
+    echo "PASS: different Accept-Language (en) is a distinct cache entry ($EN1 vs $PL1)"
+else
+    echo "FAIL: different Accept-Language (en) must NOT reuse the pl entry ($EN1 vs $PL1)"
+    exit 1
+fi
+if [ "$EN1" = "$EN2" ]; then
+    echo "PASS: same Accept-Language (en) reuses its cache entry (both $EN1)"
+else
+    echo "FAIL: same Accept-Language (en) should reuse the cache entry ($EN1 vs $EN2)"
+    exit 1
+fi
+
+echo "=== Test 36: No template — URL-only cache key is header-agnostic ==="
+# Control location: memory cache WITHOUT mesi_cache_key_template — the
+# URL-only DefaultCacheKey must ignore Accept-Language entirely.
+NT1=$(curl -s -H "Accept-Language: pl" http://localhost:18080/cache-key-notemplate/cache_key_template.html | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
+NT2=$(curl -s -H "Accept-Language: en" http://localhost:18080/cache-key-notemplate/cache_key_template.html | grep -oE '^\s*[0-9]+\s*$' | tr -d ' ' | head -1)
+if [ -n "$NT1" ] && [ -n "$NT2" ]; then
+    if [ "$NT1" = "$NT2" ]; then
+        echo "PASS: without a template both Accept-Language values share one cache entry (both $NT1)"
+    else
+        echo "FAIL: without a template the cache key must be header-agnostic ($NT1 vs $NT2)"
+        exit 1
+    fi
+else
+    echo "FAIL: could not extract counter values (NT1=$NT1 NT2=$NT2)"
+    exit 1
+fi
+
+echo "=== Test 37: Config validation — mesi_cache_key_template control chars / oversize rejected ==="
+# (a) a control character (tab) inside the template must fail nginx -t —
+#     it would otherwise end up verbatim in cache keys and logs.
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_cache_key_template "mesi:${url}\t${header:X}";' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-cache-key-template.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-cache-key-template.conf' < /tmp/nginx-cache-key-template.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-cache-key-template.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q "mesi_cache_key_template"; then
+    echo "PASS: mesi_cache_key_template with a control character rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject the mesi_cache_key_template control character"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+# (b) a template longer than the module's 4096-byte cap (MESI_MAX_CACHE_KEY_
+#     TEMPLATE, mirroring Apache) fails nginx -t at nginx's own parser guard:
+#     "too long parameter" — nginx caps a single quoted argument at ~4090
+#     bytes, tighter than the module cap, so an absurd template can never
+#     load. The module-level cap is defense-in-depth for parser changes.
+LONG_TEMPLATE=$(printf 'a%.0s' $(seq 1 4100))
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+      "mesi_cache_key_template \"${LONG_TEMPLATE}\";" \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-cache-key-template.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-cache-key-template.conf' < /tmp/nginx-cache-key-template.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-cache-key-template.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q "too long parameter"; then
+    echo "PASS: oversize mesi_cache_key_template (4100 bytes) rejected by nginx -t (parser guard)"
+else
+    echo "FAIL: nginx did not reject the oversize mesi_cache_key_template"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+# (c) a valid template (incl. the placeholder syntax) must still pass.
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_cache_key_template "mesi:${url}:${header:Accept-Language}:${cookie:segment}";' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-cache-key-template.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-cache-key-template.conf' < /tmp/nginx-cache-key-template.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-cache-key-template.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q "syntax is ok"; then
+    echo "PASS: valid mesi_cache_key_template accepted by nginx -t"
+else
+    echo "FAIL: nginx rejected a valid mesi_cache_key_template"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
 docker compose down
 
 echo ""

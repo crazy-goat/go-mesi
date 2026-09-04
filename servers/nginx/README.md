@@ -338,4 +338,48 @@ location / {
 
 Estimated memory: `cache_size × average_include_body_size`. A 10,000-entry cache with 10 KB average entries uses ~100 MB. Plan capacity accordingly.
 
+## Cache Key Template
+
+The `mesi_cache_key_template` directive controls how cache keys are derived when a cache backend is enabled. By default every include URL maps to the URL-only `DefaultCacheKey` (`"mesi:" + url`), so a fragment that renders differently per request header or cookie (e.g. localised content selected by `Accept-Language`) would serve the first-rendered variant to everyone. With a template, the key is composed from the incoming request's context, so each variant gets its own cache entry.
+
+### Directive
+
+#### `mesi_cache_key_template`
+
+- **Syntax:** `mesi_cache_key_template <template>`
+- **Default:** empty (URL-only `DefaultCacheKey`)
+- **Context:** `location`
+
+Template placeholders, evaluated by the shared `mesi.BuildCacheKey` helper in libgomesi (the same helper Caddy/RoadRunner/Traefik/Apache/PHP extension use, so all platforms behave identically):
+
+- `${url}` — the include URL (verbatim)
+- `${header:Name}` — request header value (**case-insensitive** lookup — `Accept-Language`, `accept-language` and `ACCEPT-LANGUAGE` all match)
+- `${cookie:Name}` — cookie value (case-insensitive lookup)
+
+Unknown placeholders stay literal. nginx takes the template **verbatim** — unlike Apache (whose `ap_resolve_env` interpolates `${VAR}` in `httpd.conf` and needs `$$` escaping), nginx performs no variable interpolation of directive arguments, so no escaping is needed. Validation at config load (`nginx -t` fails): at most 4096 bytes; control characters and DEL are rejected.
+
+The header/cookie values are collected from the incoming request (serialised as a JSON context `{"headers":{…},"cookies":[{"name":…,"value":…}]}`) and passed to libgomesi `ParseWithConfigCtx`; when the template uses no `${header:…}`/`${cookie:…}` placeholder the request context is not collected at all. With an older `libgomesi.so` that lacks `ParseWithConfigCtx`, the template is ignored with a logged warning (`mesi: mesi_cache_key_template is set but libgomesi lacks ParseWithConfigCtx …`) and the URL-only `DefaultCacheKey` is used — never silently a wrong key.
+
+### Example
+
+```nginx
+location / {
+    enable_mesi on;
+    mesi_cache_backend memory;
+    mesi_cache_ttl 60;
+    mesi_cache_key_template "mesi:${url}:${header:Accept-Language}";
+    proxy_pass http://backend;
+}
+```
+
+With this configuration `curl -H "Accept-Language: pl" …` and `curl -H "Accept-Language: en" …` resolve the same `<esi:include>` URL to two separate cache entries, each replaying the variant its own first fetch produced.
+
+### Limitations
+
+- **Template without a cache backend has no effect** (there is no cache to key into; no warning is logged — the same convention as CLI/Traefik/Apache).
+- **No function-pointer `CacheKeyFunc` from nginx**: `mesi.EsiParserConfig.CacheKeyFunc` is a Go function pointer and cannot be passed from C — the template is the C-integration compromise. Operators needing full `CacheKeyFunc` flexibility should use a Go-based proxy (Traefik/Caddy/RoadRunner) or the standalone proxy server.
+- A template without `${url}` collapses all include URLs into one entry (cross-URL collision) — always include `${url}` unless that is intended.
+- Header values are substituted raw (no hashing/URL-encoding) — values containing spaces or special characters end up in the key verbatim, exactly as on the other platforms.
+- `mesi.BuildCacheKey` uses the **first** value of a repeated header/cookie.
+
 [Here](nginx.conf) you can find full example configuration
