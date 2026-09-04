@@ -107,7 +107,7 @@ func main() {
 			Password: *cacheRedisPassword,
 			DB:       *cacheRedisDB,
 		})
-		defer rdb.Close()
+		defer func() { _ = rdb.Close() }()
 		config.Cache = cache_redis.NewRedisCache(rdb, *cacheTTL)
 		config.CacheTTL = *cacheTTL
 	case "memcached":
@@ -158,7 +158,7 @@ func main() {
 			return
 		}
 
-		if !(mesi.IsEsiResponse(content) || config.ParseOnHeader == false) {
+		if !(mesi.IsEsiResponse(content) || !config.ParseOnHeader) {
 			fmt.Println("Error response missing Edge-control header:")
 			return
 		}
