@@ -31,6 +31,18 @@ jobs:
           skip-cache: true
           args: ./mesi/...
 
+      - name: Download CLI dependencies
+        run: cd cli && go mod download
+
+      - name: Run golangci-lint (cli)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          only-new-issues: false
+          skip-cache: true
+          working-directory: cli
+          args: ./...
+
   test:
     name: Test
     runs-on: ubuntu-latest
