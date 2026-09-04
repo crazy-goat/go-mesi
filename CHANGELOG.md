@@ -25,6 +25,7 @@
 
 ### Fixed
 - `tests/e2e.go` fixture harness now exits with status 1 when any fixture mismatches (or times out). Previously it printed `fail` plus the diff but always exited 0, so nothing downstream (including CI) could react to fixture drift. Output format is unchanged; `tests/Makefile` builds only (#351).
+- `tests/e2e.go` now counts fixture ReadFile errors as failures (missing/unreadable `.html` or `.expected` files no longer skip uncounted). `tests/run-test.sh` captures the harness exit status and propagates it after killing the test server so `make test-e2e` can fail (#378).
 - Apache README: remove incorrect "Mutex around Parse()" claim for MPM Worker/Event. The mutex was never implemented; `dlopen`/`dlsym` already runs in `child_init` (before threads start), and libgomesi is built with Go's goroutine-safe runtime. The MPM Compatibility table now accurately describes the actual thread-safety model (#94).
 
 ### Added
