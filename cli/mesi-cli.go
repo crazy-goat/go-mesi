@@ -21,7 +21,7 @@ func isURL(input string) bool {
 	return strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://")
 }
 
-// allowedHostsFromFlag converts the -allowedHosts flag value into the
+// allowedHostsFromFlag converts the -allowed-hosts flag value into the
 // config allowlist. An empty value keeps the default nil allowlist (all
 // hosts allowed, subject to BlockPrivateIPs) — backward compatible with
 // the pre-flag behaviour. Entries are passed verbatim to the shared-core
@@ -58,9 +58,9 @@ func main() {
 		"Custom cache key template with placeholders: ${url}, ${header:Name}, ${cookie:Name}")
 	allowPrivateIPs := flag.Bool("allow-private-ips", false,
 		"Allow ESI includes to private/reserved IP ranges (for local testing)")
-	allowedHosts := flag.String("allowedHosts", "", "Comma-separated list of allowed hosts for ESI includes")
+	allowedHosts := flag.String("allowed-hosts", "", "Comma-separated list of allowed hosts for ESI includes")
 	allowPrivateIPsForAllowedHosts := flag.Bool("allowPrivateIPsForAllowedHosts", false,
-		"Allow ESI includes to private/reserved IP ranges for hosts listed in -allowedHosts (trusts DNS)")
+		"Allow ESI includes to private/reserved IP ranges for hosts listed in -allowed-hosts (trusts DNS)")
 	maxWorkers := flag.Int("max-workers", 0,
 		"Max concurrent ESI include goroutines (0 = NumCPU*4)")
 	sharedHTTPClient := flag.Bool("shared-http-client", false,
