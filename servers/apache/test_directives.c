@@ -98,29 +98,31 @@ static const char *parse_shared_http_client(mesi_config *conf, int flag) {
 /* Parse helper copied verbatim from mod_mesi.c — verifies the
  * validator rejects malformed integers silently rather than falling
  * back to a default.
- * Parses an NUL-terminated integer (TAKE1 directive shapes). */
+ * Parses an NUL-terminated integer (TAKE1 directive shapes).
+ * `directive` is the Apache directive name used in every error string. */
 static const char *parse_nonneg_int(apr_pool_t *pool_arg, const char *arg,
+                                    const char *directive,
                                     int min, int max, int *out) {
     const char *p = arg ? arg : "";
     while (*p == ' ' || *p == '\t') p++;
     if (*p == '\0') {
         return apr_psprintf(pool_arg,
-            "MesiCache* requires a non-negative integer argument");
+            "%s requires a non-negative integer argument", directive);
     }
     const char *digits = p;
     while (*p >= '0' && *p <= '9') p++;
     if (*p != '\0') {
         return apr_psprintf(pool_arg,
-            "MesiCache* must be a non-negative integer (got: %s)", arg);
+            "%s must be a non-negative integer (got: %s)", directive, arg);
     }
     if (digits == p) {
         return apr_psprintf(pool_arg,
-            "MesiCache* must contain at least one digit (got: %s)", arg);
+            "%s must contain at least one digit (got: %s)", directive, arg);
     }
     size_t n = (size_t)(p - digits);
     if (n > 9) {
         return apr_psprintf(pool_arg,
-            "MesiCache* value %s exceeds maximum allowed (%d)", arg, max);
+            "%s value %s exceeds maximum allowed (%d)", directive, arg, max);
     }
     long val = 0;
     for (size_t i = 0; i < n; i++) {
@@ -128,7 +130,7 @@ static const char *parse_nonneg_int(apr_pool_t *pool_arg, const char *arg,
     }
     if (val < min || val > max) {
         return apr_psprintf(pool_arg,
-            "MesiCache* value %s out of range [%d, %d]", arg, min, max);
+            "%s value %s out of range [%d, %d]", directive, arg, min, max);
     }
     *out = (int)val;
     return NULL;
@@ -140,32 +142,33 @@ static const char *parse_nonneg_int(apr_pool_t *pool_arg, const char *arg,
  * mistakenly consume digits past the colon. */
 static const char *parse_nonneg_int_bounded(apr_pool_t *pool_arg,
                                             const char *arg, const char *end,
+                                            const char *directive,
                                             int min, int max, int *out) {
     if (!arg || !end || arg >= end) {
         return apr_psprintf(pool_arg,
-            "MesiCache* requires a non-negative integer argument");
+            "%s requires a non-negative integer argument", directive);
     }
     const char *p = arg;
     while (p < end && (*p == ' ' || *p == '\t')) p++;
     if (p >= end) {
         return apr_psprintf(pool_arg,
-            "MesiCache* requires a non-negative integer argument");
+            "%s requires a non-negative integer argument", directive);
     }
     const char *digits = p;
     while (p < end && *p >= '0' && *p <= '9') p++;
     if (p != end) {
         return apr_psprintf(pool_arg,
-            "MesiCache* must be a non-negative integer (got: %.*s)",
-            (int)(end - arg), arg);
+            "%s must be a non-negative integer (got: %.*s)",
+            directive, (int)(end - arg), arg);
     }
     if (digits == p) {
         return apr_psprintf(pool_arg,
-            "MesiCache* must contain at least one digit");
+            "%s must contain at least one digit", directive);
     }
     size_t n = (size_t)(p - digits);
     if (n > 9) {
         return apr_psprintf(pool_arg,
-            "MesiCache* value exceeds maximum allowed (%d)", max);
+            "%s value exceeds maximum allowed (%d)", directive, max);
     }
     long val = 0;
     for (size_t i = 0; i < n; i++) {
@@ -173,7 +176,7 @@ static const char *parse_nonneg_int_bounded(apr_pool_t *pool_arg,
     }
     if (val < min || val > max) {
         return apr_psprintf(pool_arg,
-            "MesiCache* value out of range [%d, %d]", min, max);
+            "%s value out of range [%d, %d]", directive, min, max);
     }
     *out = (int)val;
     return NULL;
@@ -183,15 +186,13 @@ static const char *parse_nonneg_int_bounded(apr_pool_t *pool_arg,
  * into mesi_config correctly and reject invalid values without
  * silent-default substitution. */
 /* MesiMaxDepth — mirrors set_max_depth in mod_mesi.c. Uses
- * parse_nonneg_int (never atoi). Error text is remapped so
- * operators see MesiMaxDepth, not the shared parser's MesiCache* prefix. */
+ * parse_nonneg_int (never atoi). Helper errors already name MesiMaxDepth. */
 static const char *set_max_depth(mesi_config *conf, const char *arg) {
     int v = 0;
-    const char *err = parse_nonneg_int(pool, arg, 0, MESI_MAX_MAX_DEPTH, &v);
+    const char *err = parse_nonneg_int(pool, arg, "MesiMaxDepth",
+                                       0, MESI_MAX_MAX_DEPTH, &v);
     if (err) {
-        return apr_psprintf(pool,
-            "MesiMaxDepth must be a non-negative integer in [0, %d] (got: %s)",
-            MESI_MAX_MAX_DEPTH, arg ? arg : "");
+        return err;
     }
     conf->max_depth = v;
     return NULL;
@@ -225,7 +226,8 @@ static const char *set_cache_backend(mesi_config *conf, const char *arg) {
 
 static const char *set_cache_size(mesi_config *conf, const char *arg) {
     int v = 0;
-    const char *err = parse_nonneg_int(pool, arg, 1, MESI_MAX_CACHE_SIZE, &v);
+    const char *err = parse_nonneg_int(pool, arg, "MesiCacheSize",
+                                       1, MESI_MAX_CACHE_SIZE, &v);
     if (err) {
         return err;
     }
@@ -235,7 +237,8 @@ static const char *set_cache_size(mesi_config *conf, const char *arg) {
 
 static const char *set_cache_ttl(mesi_config *conf, const char *arg) {
     int v = 0;
-    const char *err = parse_nonneg_int(pool, arg, 0, MESI_MAX_CACHE_TTL_SECONDS, &v);
+    const char *err = parse_nonneg_int(pool, arg, "MesiCacheTTL",
+                                       0, MESI_MAX_CACHE_TTL_SECONDS, &v);
     if (err) {
         return err;
     }
@@ -268,7 +271,8 @@ static const char *set_cache_redis_addr(mesi_config *conf, const char *arg) {
             "MesiCacheRedisAddr: must be host:port (got: %s)", arg);
     }
     int port = 0;
-    const char *err = parse_nonneg_int(pool, colon + 1, 1, 65535, &port);
+    const char *err = parse_nonneg_int(pool, colon + 1, "MesiCacheRedisAddr",
+                                       1, 65535, &port);
     if (err) {
         return apr_psprintf(pool,
             "MesiCacheRedisAddr: port invalid: %s", arg);
@@ -300,10 +304,10 @@ static const char *set_cache_redis_password(mesi_config *conf, const char *arg) 
 /* MesiCacheRedisDB — Redis logical DB number. 0..15 (Redis default). */
 static const char *set_cache_redis_db(mesi_config *conf, const char *arg) {
     int v = -1;
-    const char *err = parse_nonneg_int(pool, arg, 0, MESI_MAX_REDIS_DB, &v);
+    const char *err = parse_nonneg_int(pool, arg, "MesiCacheRedisDB",
+                                       0, MESI_MAX_REDIS_DB, &v);
     if (err) {
-        return apr_psprintf(pool,
-            "MesiCacheRedisDB: %s", err);
+        return err;
     }
     conf->cache_redis_db = v;
     return NULL;
@@ -389,6 +393,7 @@ static const char *set_cache_memcached_servers(mesi_config *conf, const char *ar
         }
         int port = 0;
         const char *err = parse_nonneg_int_bounded(pool, colon + 1, arg,
+                                                    "MesiCacheMemcachedServers",
                                                     1, 65535, &port);
         if (err) {
             return apr_psprintf(pool,
