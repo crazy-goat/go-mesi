@@ -99,6 +99,10 @@ typedef struct {
     // placeholders stay literal; empty/NULL falls back to URL-only for
     // backward compat.
     const char *cache_key_template;  // NULL/empty = DefaultCacheKey
+    // ESI nesting depth (#166). -1 = unset (filter uses 5). Explicit 0
+    // is valid passthrough (no ESI fetch). Range [0, MESI_MAX_MAX_DEPTH]
+    // matches mesi.MaxMaxDepth / Caddy.
+    int max_depth;  // -1=unset, >=0 = configured
 } mesi_config;
 
 // Default memory cache size when MesiCacheSize is not set.
@@ -119,6 +123,9 @@ typedef struct {
 // Cache key template: 4 KB comfortably holds a template with several
 // placeholders (e.g. "mesi:${url}:${header:Accept-Language}").
 #define MESI_MAX_CACHE_KEY_TEMPLATE 4096
+// Global ESI nesting depth (#166). Matches mesi.MaxMaxDepth (10,000).
+#define MESI_MAX_MAX_DEPTH 10000
+#define MESI_DEFAULT_MAX_DEPTH 5
 
 static void *create_server_config(apr_pool_t *p, server_rec *s) {
     mesi_config *conf = apr_pcalloc(p, sizeof(*conf));
@@ -139,6 +146,7 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     // fail-fast error rather than silently picking some default server.
     conf->cache_memcached_servers = apr_array_make(p, 2, sizeof(const char *));
     conf->cache_key_template = NULL;
+    conf->max_depth = -1;  // -1 = unset, default 5 applied in filter
     return conf;
 }
 
@@ -175,6 +183,9 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
                                     ? add->cache_memcached_servers
                                     : base->cache_memcached_servers;
     conf->cache_key_template = add->cache_key_template ? add->cache_key_template : base->cache_key_template;
+    // Max depth: child wins when explicitly set; -1 sentinel inherits.
+    // Explicit 0 (passthrough) is a configured value and must win.
+    conf->max_depth = (add->max_depth != -1) ? add->max_depth : base->max_depth;
     return conf;
 }
 
@@ -657,6 +668,24 @@ static const char *parse_nonneg_int(apr_pool_t *pool, const char *arg, int min, 
             "MesiCache* value %s out of range [%d, %d]", arg, min, max);
     }
     *out = (int)val;
+    return NULL;
+}
+
+// MesiMaxDepth — ESI nesting depth. Uses parse_nonneg_int so "abc",
+// "3foo", empty, decimals, and overflow are rejected (atoi would
+// silently coerce those). Error text is remapped: parse_nonneg_int
+// labels failures "MesiCache*" because it was written for cache
+// directives; operators must see MesiMaxDepth, not a cache name.
+static const char *set_max_depth(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    int v = 0;
+    const char *err = parse_nonneg_int(cmd->pool, arg, 0, MESI_MAX_MAX_DEPTH, &v);
+    if (err) {
+        return apr_psprintf(cmd->pool,
+            "MesiMaxDepth must be a non-negative integer in [0, %d] (got: %s)",
+            MESI_MAX_MAX_DEPTH, arg ? arg : "");
+    }
+    conf->max_depth = v;
     return NULL;
 }
 
@@ -1301,6 +1330,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     int block_private = (conf->block_private_ips != -1) ? conf->block_private_ips : 1;
     int allow_private_for_allowed = (conf->allow_private_ips_for_allowed != -1)
         ? conf->allow_private_ips_for_allowed : 0;
+    int depth = (conf->max_depth != -1) ? conf->max_depth : MESI_DEFAULT_MAX_DEPTH;
 
     if (!EsiParse && !EsiParseWithConfig) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r, "mesi: libgomesi not loaded");
@@ -1320,18 +1350,18 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     }
     if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && EsiParseWithConfigCtx) {
         const char *ctx_json = build_request_ctx_json(f->r, conf, f->r->pool);
-        esi = EsiParseWithConfigCtx(html, 5, base_url, allowed_hosts_str,
+        esi = EsiParseWithConfigCtx(html, depth, base_url, allowed_hosts_str,
                                     block_private, allow_private_for_allowed,
                                     (char *)conf->cache_key_template, (char *)ctx_json);
     } else if (EsiParseWithConfigEx) {
-        esi = EsiParseWithConfigEx(html, 5, base_url, allowed_hosts_str,
+        esi = EsiParseWithConfigEx(html, depth, base_url, allowed_hosts_str,
                                    block_private, allow_private_for_allowed);
     } else if (EsiParseWithConfig) {
         if (allow_private_for_allowed) {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
                 "mesi: MesiAllowPrivateIPsForAllowedHosts set but libgomesi lacks ParseWithConfigEx; bypass disabled. Upgrade libgomesi.so.");
         }
-        esi = EsiParseWithConfig(html, 5, base_url, allowed_hosts_str, block_private);
+        esi = EsiParseWithConfig(html, depth, base_url, allowed_hosts_str, block_private);
     } else {
         int has_security_config = (conf->allowed_hosts && conf->allowed_hosts->nelts > 0)
                                || (conf->block_private_ips != -1 && conf->block_private_ips == 1);
@@ -1348,7 +1378,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
             "mesi: ParseWithConfig not found, falling back to Parse (no SSRF protection)");
         if (EsiParse) {
-            esi = EsiParse(html, 5, base_url);
+            esi = EsiParse(html, depth, base_url);
         }
     }
 
@@ -1380,6 +1410,7 @@ static void register_hooks(apr_pool_t *p) {
 
 static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("EnableMesi", set_enable_mesi, NULL, RSRC_CONF, "Enable or disable the Mesi module"),
+    AP_INIT_TAKE1("MesiMaxDepth", set_max_depth, NULL, RSRC_CONF, "Maximum ESI nesting depth (0..10000). Unset=5. 0=passthrough"),
     AP_INIT_RAW_ARGS("MesiAllowedHosts", set_allowed_hosts, NULL, RSRC_CONF, "Space-separated list of allowed hostnames for ESI includes"),
     AP_INIT_FLAG("MesiBlockPrivateIPs", set_block_private_ips, NULL, RSRC_CONF, "Enable or disable private IP blocking (default: On)"),
     AP_INIT_FLAG("MesiAllowPrivateIPsForAllowedHosts", set_allow_private_for_allowed, NULL, RSRC_CONF, "Allow private IP access for hosts in MesiAllowedHosts when MesiBlockPrivateIPs is On (default: Off)"),

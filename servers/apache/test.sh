@@ -479,6 +479,38 @@ else
     exit 1
 fi
 
+echo "=== Test 27: MesiMaxDepth 1 — inner nest not processed (#166) ==="
+# 8085: MesiMaxDepth 1. /nested.html includes nested.txt, which itself
+# includes include.txt. Depth 1 fetches nested.txt but must NOT process
+# its inner <esi:include>, so the response still contains the tag and
+# must not contain the inner fragment body.
+RESPONSE=$(curl -s http://localhost:8085/nested.html)
+if echo "$RESPONSE" | grep -q '<esi:include'; then
+    if echo "$RESPONSE" | grep -q "included content from backend"; then
+        echo "FAIL: MesiMaxDepth 1 processed the inner include (should leave <esi:include>)"
+        echo "Response: $RESPONSE"
+        docker compose down
+        exit 1
+    fi
+    echo "PASS: MesiMaxDepth 1 left inner <esi:include> unprocessed"
+else
+    echo "FAIL: MesiMaxDepth 1 response missing unprocessed <esi:include> from nested.txt"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 28: MesiMaxDepth 5 — both nest levels processed (#166) ==="
+RESPONSE=$(curl -s http://localhost:8086/nested.html)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: MesiMaxDepth 5 processed both nest levels"
+else
+    echo "FAIL: MesiMaxDepth 5 did not process inner include"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
 docker compose down
 
 echo ""
