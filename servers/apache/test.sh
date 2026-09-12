@@ -479,6 +479,36 @@ else
     exit 1
 fi
 
+echo "=== Test 27: MesiMaxDepth 1 — inner nest not processed (#166) ==="
+# 8085: MesiMaxDepth 1. /nested.html includes nested.txt, which itself
+# includes include.txt. Depth 1 fetches nested.txt then re-parses it
+# with MaxDepth=0 (ParseOnly), so the inner tag is replaced with the
+# empty IncludeErrorMarker — same contract as Caddy TestMaxDepthExplicit.
+# Chrome must remain; the inner fragment body must not; leftover
+# <esi:include> means the filter never ran.
+RESPONSE=$(curl -s http://localhost:8085/nested.html)
+if echo "$RESPONSE" | grep -q "Nested ESI Test" \
+    && ! echo "$RESPONSE" | grep -q "included content from backend" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: MesiMaxDepth 1 fetched the outer include and stripped the inner tag"
+else
+    echo "FAIL: MesiMaxDepth 1 did not match depth-1 contract (chrome, no inner body, no leftover tag)"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 28: MesiMaxDepth 5 — both nest levels processed (#166) ==="
+RESPONSE=$(curl -s http://localhost:8086/nested.html)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: MesiMaxDepth 5 processed both nest levels"
+else
+    echo "FAIL: MesiMaxDepth 5 did not process inner include"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
 docker compose down
 
 echo ""

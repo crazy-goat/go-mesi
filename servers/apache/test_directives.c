@@ -50,6 +50,8 @@ typedef struct {
     apr_array_header_t *cache_memcached_servers;
     /* Cache key template (#177) */
     const char *cache_key_template;
+    /* ESI nesting depth (#166). -1 = unset (filter uses 5). */
+    int max_depth;
 } mesi_config;
 
 /* Sentinel/constant values copied from mod_mesi.c */
@@ -60,6 +62,8 @@ typedef struct {
 // Cap on Memcached server entries — mirrors MESI_MAX_MEMCACHED_SERVERS.
 #define MESI_MAX_MEMCACHED_SERVERS 64
 #define MESI_MAX_CACHE_KEY_TEMPLATE 4096
+#define MESI_MAX_MAX_DEPTH 10000
+#define MESI_DEFAULT_MAX_DEPTH 5
 
 /* Directive parsing functions (copied from mod_mesi.c for testing) */
 static const char *parse_allowed_hosts(mesi_config *conf, const char *arg) {
@@ -178,6 +182,21 @@ static const char *parse_nonneg_int_bounded(apr_pool_t *pool_arg,
 /* Set functions copied from mod_mesi.c — verify they wire directives
  * into mesi_config correctly and reject invalid values without
  * silent-default substitution. */
+/* MesiMaxDepth — mirrors set_max_depth in mod_mesi.c. Uses
+ * parse_nonneg_int (never atoi). Error text is remapped so
+ * operators see MesiMaxDepth, not the shared parser's MesiCache* prefix. */
+static const char *set_max_depth(mesi_config *conf, const char *arg) {
+    int v = 0;
+    const char *err = parse_nonneg_int(pool, arg, 0, MESI_MAX_MAX_DEPTH, &v);
+    if (err) {
+        return apr_psprintf(pool,
+            "MesiMaxDepth must be a non-negative integer in [0, %d] (got: %s)",
+            MESI_MAX_MAX_DEPTH, arg ? arg : "");
+    }
+    conf->max_depth = v;
+    return NULL;
+}
+
 static const char *set_cache_backend(mesi_config *conf, const char *arg) {
     if (!arg) {
         return "MesiCacheBackend requires an argument (use empty string to disable)";
@@ -405,6 +424,7 @@ static void init_config(mesi_config *conf) {
     conf->cache_redis_db = -1;
     conf->cache_memcached_servers = apr_array_make(pool, 2, sizeof(const char *));
     conf->cache_key_template = NULL;
+    conf->max_depth = -1;
 }
 
 static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merged) {
@@ -427,6 +447,7 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
                                       ? add->cache_memcached_servers
                                       : base->cache_memcached_servers;
     merged->cache_key_template = add->cache_key_template ? add->cache_key_template : base->cache_key_template;
+    merged->max_depth = (add->max_depth != -1) ? add->max_depth : base->max_depth;
 }
 
 /* Test cases */
@@ -1716,6 +1737,143 @@ TEST(merge_cache_key_template_child_inherits) {
     ASSERT_STR_EQ(merged.cache_key_template, "mesi:${url}");
 }
 
+/* --- MesiMaxDepth directive tests (#166) --- */
+
+TEST(max_depth_default_unset) {
+    /* A freshly-created config has the sentinel -1 (unset → 5 in filter). */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_EQ(conf.max_depth, -1);
+}
+
+TEST(max_depth_three_accepted) {
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_depth(&conf, "3"));
+    ASSERT_EQ(conf.max_depth, 3);
+}
+
+TEST(max_depth_zero_accepted) {
+    /* Explicit 0 is valid passthrough (no ESI fetch). */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_depth(&conf, "0"));
+    ASSERT_EQ(conf.max_depth, 0);
+}
+
+TEST(max_depth_hundred_accepted) {
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_depth(&conf, "100"));
+    ASSERT_EQ(conf.max_depth, 100);
+}
+
+TEST(max_depth_max_accepted) {
+    /* Boundary: MESI_MAX_MAX_DEPTH (10000) is accepted. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_depth(&conf, "10000"));
+    ASSERT_EQ(conf.max_depth, MESI_MAX_MAX_DEPTH);
+}
+
+TEST(max_depth_negative_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_depth(&conf, "-1");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxDepth");
+    /* config must NOT silently retain a non-negative value */
+    ASSERT_EQ(conf.max_depth, -1);
+}
+
+TEST(max_depth_alpha_rejected) {
+    /* atoi("abc") → 0 would silently become passthrough. Reject. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_depth(&conf, "abc");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxDepth");
+    ASSERT_EQ(conf.max_depth, -1);
+}
+
+TEST(max_depth_trailing_garbage_rejected) {
+    /* atoi("3foo") → 3 would silently accept. Reject. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_depth(&conf, "3foo");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxDepth");
+    ASSERT_EQ(conf.max_depth, -1);
+}
+
+TEST(max_depth_empty_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_depth(&conf, "");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxDepth");
+    ASSERT_EQ(conf.max_depth, -1);
+}
+
+TEST(max_depth_decimal_rejected) {
+    /* Decimals must fail-fast — no silent truncation. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_depth(&conf, "3.5");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxDepth");
+    ASSERT_EQ(conf.max_depth, -1);
+}
+
+TEST(max_depth_oversize_rejected) {
+    /* Boundary: MESI_MAX_MAX_DEPTH+1 (10001) must be rejected. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_depth(&conf, "10001");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxDepth");
+    ASSERT_EQ(conf.max_depth, -1);
+}
+
+TEST(merge_max_depth_child_overrides) {
+    /* Child 3 / parent unset → 3 */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.max_depth = -1;
+    add.max_depth = 3;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_depth, 3);
+}
+
+TEST(merge_max_depth_child_inherits) {
+    /* Child unset / parent 10 → 10 */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.max_depth = 10;
+    add.max_depth = -1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_depth, 10);
+}
+
+TEST(merge_max_depth_child_zero_overrides) {
+    /* Explicit 0 must win over parent — 0 is configured, not unset. */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.max_depth = 5;
+    add.max_depth = 0;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_depth, 0);
+}
+
 int main(int argc, char *argv[]) {
     printf("=== Apache Module Directive Unit Tests ===\n\n");
 
@@ -1888,6 +2046,22 @@ int main(int argc, char *argv[]) {
     RUN_TEST(cache_key_template_too_long_rejected);
     RUN_TEST(merge_cache_key_template_child_overrides);
     RUN_TEST(merge_cache_key_template_child_inherits);
+
+    printf("\nTesting set_max_depth() (#166):\n");
+    RUN_TEST(max_depth_default_unset);
+    RUN_TEST(max_depth_three_accepted);
+    RUN_TEST(max_depth_zero_accepted);
+    RUN_TEST(max_depth_hundred_accepted);
+    RUN_TEST(max_depth_max_accepted);
+    RUN_TEST(max_depth_negative_rejected);
+    RUN_TEST(max_depth_alpha_rejected);
+    RUN_TEST(max_depth_trailing_garbage_rejected);
+    RUN_TEST(max_depth_empty_rejected);
+    RUN_TEST(max_depth_decimal_rejected);
+    RUN_TEST(max_depth_oversize_rejected);
+    RUN_TEST(merge_max_depth_child_overrides);
+    RUN_TEST(merge_max_depth_child_inherits);
+    RUN_TEST(merge_max_depth_child_zero_overrides);
 
 
     apr_pool_destroy(pool);

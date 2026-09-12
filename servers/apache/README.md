@@ -81,6 +81,12 @@ MesiCacheTTL 60
 ### Directives
 
 - `EnableMesi on|off` — Enable/disable ESI processing. Default: off.
+- `MesiMaxDepth N` — Maximum ESI nesting depth. Unset (default) uses `5`.
+  Must be a non-negative integer in `[0, 10000]` (`mesi.MaxMaxDepth`).
+  Explicit `0` is valid passthrough (no ESI fetch; includes are not
+  expanded). `1` processes one include level (inner ESI is not
+  processed). Negatives, empty values, non-digits, decimals, and
+  values above `10000` are rejected at config load.
 - `MesiAllowedHosts host1 host2 …` — Space-separated list of hostnames
   allowed in `<esi:include src=…>`. Matches `isURLSafe` from libgomesi.
 - `MesiBlockPrivateIPs on|off` — Enable/disable SSRF dial-time private-IP
