@@ -10,3 +10,8 @@ build:
 
 run: build
 	./frankenphp run --config Caddyfile
+
+test: ## Run integration tests
+	./test.sh
+
+.PHONY: build run test

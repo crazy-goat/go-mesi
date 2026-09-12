@@ -11,6 +11,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check for committed generated artifacts
+        run: ./scripts/check-no-generated-artifacts.sh
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -18,7 +21,7 @@ jobs:
           cache: true
 
       - name: Build libgomesi
-        run: cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go
+        run: cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go cache_config.go
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
@@ -27,6 +30,18 @@ jobs:
           only-new-issues: false
           skip-cache: true
           args: ./mesi/...
+
+      - name: Download CLI dependencies
+        run: cd cli && go mod download
+
+      - name: Run golangci-lint (cli)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          only-new-issues: false
+          skip-cache: true
+          working-directory: cli
+          args: ./...
 
   test:
     name: Test
@@ -48,9 +63,375 @@ jobs:
       - name: Run tests
         run: go test -v ./mesi/...
 
+  apache-test:
+    name: Apache Integration Test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Build libgomesi
+        run: cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go cache_config.go
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Apache Docker image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: servers/apache/Dockerfile
+          push: false
+          load: true
+          tags: go-mesi-apache-test:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Apache tests
+        run: cd servers/apache && ./test.sh
+
+      - name: Cleanup
+        if: always()
+        run: cd servers/apache && docker compose down -v 2>/dev/null || true
+
+  yaegi-check:
+    name: Yaegi Compatibility
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Run Yaegi compatibility test
+        working-directory: servers/traefik
+        run: go test -run TestYaegiCompatibility -v -count=1 .
+
+  traefik-test:
+    name: Traefik Integration Test
+    runs-on: ubuntu-latest
+    needs: [test, yaegi-check]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Traefik Docker image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: servers/traefik/Dockerfile
+          push: false
+          load: true
+          tags: go-mesi-traefik-test:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Traefik tests
+        run: cd servers/traefik && ./test.sh
+
+      - name: Cleanup
+        if: always()
+        run: cd servers/traefik && docker compose down -v 2>/dev/null || true
+
+  cli-test:
+    name: CLI Unit Test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Download CLI dependencies
+        run: cd cli && go mod download
+
+      - name: Run CLI unit tests
+        run: cd cli && go test -v -count=1 ./...
+
+  cli-e2e-test:
+    name: CLI E2E Test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Download CLI dependencies
+        run: cd cli && go mod download
+
+      - name: Run CLI E2E tests
+        run: cd cli && bash test.sh
+
+      - name: Cleanup
+        if: always()
+        run: pkill -9 mesi-test-server 2>/dev/null || true
+
+  proxy-test:
+    name: Proxy Integration Test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Download proxy dependencies
+        run: cd servers/proxy && go mod download
+
+      - name: Run proxy unit tests
+        run: cd servers/proxy && go test -v -count=1 ./...
+
+      - name: Run proxy E2E tests
+        run: cd servers/proxy && bash test.sh
+
+      - name: Cleanup
+        if: always()
+        run: pkill -9 mesi-proxy-test 2>/dev/null || true; pkill -9 mesi-test-server 2>/dev/null || true
+
+  nginx-test:
+    name: Nginx Integration Test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Build libgomesi
+        run: cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go cache_config.go
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Nginx Docker image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: servers/nginx/Dockerfile
+          push: false
+          load: true
+          tags: go-mesi-nginx-test:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Nginx tests
+        run: cd servers/nginx && ./test.sh
+
+      - name: Cleanup
+        if: always()
+        run: cd servers/nginx && docker compose down -v 2>/dev/null || true
+
+  caddy-test:
+    name: Caddy Integration Test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Run Caddy tests
+        run: cd servers/caddy && ./test.sh
+
+      - name: Cleanup
+        if: always()
+        run: cd servers/caddy && docker compose down -v 2>/dev/null || true
+
+  frankenphp-test:
+    name: FrankenPHP Integration Test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Run FrankenPHP tests
+        run: cd servers/frankenphp && ./test.sh
+
+      - name: Cleanup
+        if: always()
+        run: cd servers/frankenphp && docker compose down -v 2>/dev/null || true
+
+  roadrunner-test:
+    name: RoadRunner Integration Test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Download roadrunner dependencies
+        run: cd servers/roadrunner && go mod download
+
+      - name: Run RoadRunner tests
+        run: cd servers/roadrunner && bash test.sh
+
+      - name: Cleanup
+        if: always()
+        run: pkill -9 rrtest 2>/dev/null || true; pkill -9 test-server 2>/dev/null || true
+
+  php-ext-test:
+    name: PHP Extension Test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Build libgomesi
+        run: cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go cache_config.go
+
+      - name: Setup PHP with dev tools
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: phpize
+
+      - name: Build PHP extension
+        run: |
+          cd php-ext
+          phpize
+          ./configure --with-gomesi=../libgomesi
+          make -f Makefile
+          sudo make -f Makefile install
+
+      - name: Run extension unit tests
+        run: |
+          echo "=== Extension loaded ==="
+          php -d extension=mesi -m | grep mesi
+          echo "=== Basic functionality test ==="
+          php -d extension=mesi -r '
+            $result = \mesi\parse("<!--esi Hello, world!-->", 5, "http://localhost/");
+            assert(trim($result) === "Hello, world!", "Basic unwrap failed: " . $result);
+            echo "PASS: Basic ESI comment unwrap\n";
+          '
+          echo "=== ESI remove test ==="
+          php -d extension=mesi -r '
+            $result = \mesi\parse("<p>keep</p><esi:remove>drop</esi:remove>", 5, "http://localhost/");
+            assert($result === "<p>keep</p>", "ESI remove failed: " . $result);
+            echo "PASS: ESI remove\n";
+          '
+          echo "=== Empty input test ==="
+          php -d extension=mesi -r '
+            $result = \mesi\parse("", 5, "http://localhost/");
+            assert($result === "", "Empty input failed");
+            echo "PASS: Empty input\n";
+          '
+          echo "=== Plain HTML passthrough test ==="
+          php -d extension=mesi -r '
+            $input = "<html><body><p>plain</p></body></html>";
+            $result = \mesi\parse($input, 5, "http://localhost/");
+            assert($result === $input, "Plain HTML passthrough failed");
+            echo "PASS: Plain HTML passthrough\n";
+          '
+          echo "=== UTF-8 test ==="
+          php -d extension=mesi -r '
+            $result = \mesi\parse("<!--esi Café français ✓-->", 5, "http://localhost/");
+            echo "PASS: UTF-8 output: [" . trim($result) . "]\n";
+          '
+
+      - name: Build test-server
+        run: |
+          cd servers/test-server && go build -o test-server test-server.go
+
+      - name: Run integration tests
+        run: |
+          MESI_TEST_SERVER_PORT=8081 ./servers/test-server/test-server &
+          TS_PID=$!
+          echo "test-server PID: $TS_PID"
+          for i in $(seq 1 10); do
+            if curl -s -o /dev/null http://localhost:8081/; then
+              echo "test-server ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          export MESI_BACKEND_URL='http://localhost:8081/'
+          php -d extension=mesi -S 0.0.0.0:8080 php-ext/tests/router.php > /dev/null 2>&1 &
+          PHP_PID=$!
+          echo "PHP server PID: $PHP_PID"
+          sleep 2
+          cd php-ext && bash test.sh
+
+      - name: Cleanup
+        if: always()
+        run: pkill -9 test-server 2>/dev/null || true; pkill -f "php -S 0.0.0.0:8080" 2>/dev/null || true
+
   ci:
     name: CI
-    needs: [lint, test]
+    needs: [lint, test, yaegi-check, apache-test, traefik-test, nginx-test, caddy-test, frankenphp-test, php-ext-test, proxy-test, cli-test, cli-e2e-test, roadrunner-test]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -58,3 +439,13 @@ jobs:
         run: |
           if [ "${{ needs.lint.result }}" != "success" ]; then exit 1; fi
           if [ "${{ needs.test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.apache-test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.traefik-test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.nginx-test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.caddy-test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.frankenphp-test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.php-ext-test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.proxy-test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.cli-test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.cli-e2e-test.result }}" != "success" ]; then exit 1; fi
+          if [ "${{ needs.roadrunner-test.result }}" != "success" ]; then exit 1; fi

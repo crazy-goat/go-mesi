@@ -54,3 +54,22 @@ Finally, you can start the FrankenPHP server with the command:
 ```shell
 frankenphp run --config Caddyfile
 ```
+
+## Testing
+
+Integration tests verify ESI processing for both static HTML and PHP-generated content:
+
+```shell
+make test
+```
+
+This uses `docker compose` to build a FrankenPHP image with the mesi module, starts a test backend server, and runs curl-based tests against the following scenarios:
+
+- Module loaded: `http.handlers.mesi` registered
+- ESI include in static HTML and PHP-generated HTML
+- ESI comment unwrapping (`<!--esi ... -->`)
+- ESI remove (`<esi:remove>`)
+- Surrogate-Capability header presence
+- Non-HTML content bypass (text/plain, application/json)
+- Content-Length correctness
+- Content-Type preservation

@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>ESI AllowedHosts Suffix-Injection Test</title>
+</head>
+<body>
+    <h1>ESI AllowedHosts Suffix-Injection Test Page</h1>
+    <esi:include src="http://attacker-example.com:8000/include.txt">FALLBACK-ATTACKER</esi:include>
+    <esi:include src="http://example.com.evil.com:8000/include.txt">FALLBACK-SUFFIX</esi:include>
+    <p>After include</p>
+</body>
+</html>

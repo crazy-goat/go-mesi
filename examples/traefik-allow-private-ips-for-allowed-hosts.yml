@@ -1,0 +1,51 @@
+# Traefik AllowPrivateIPsForAllowedHosts Configuration Example
+#
+# This example shows how to let whitelisted hosts resolve to private/reserved
+# IP addresses while the dial-time private-IP block stays ON for everything
+# else (service-mesh / internal-backend scenario).
+#
+# Semantics (same as Apache MesiAllowPrivateIPsForAllowedHosts #168):
+#   - Only effective when BOTH blockPrivateIPs: true AND a non-empty
+#     allowedHosts; otherwise a no-op.
+#   - The whitelist check runs first: unlisted hosts and empty allowlists can
+#     never bypass (fail closed).
+#   - No effect under sharedHTTPClient: the shared transport bakes
+#     blockPrivateIPs at startup.
+#   - Yaegi note: the dial-time IP-blocking transport is stubbed under the
+#     interpreted plugin, so the bypass is not active in functional tests;
+#     URL-level allowedHosts is the effective control there.
+#
+# SECURITY: the bypass TRUSTS DNS for hosts in allowedHosts — only use with
+# internal DNS (Consul, Kubernetes DNS, /etc/hosts).
+#
+# Usage:
+#   Include this in your Traefik dynamic configuration (esi-configuration.yml)
+#   or in your Docker/Kubernetes Traefik config.
+
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          maxDepth: 5
+          # Keep the dial-time private-IP block ON (default true).
+          blockPrivateIPs: true
+          # Internal backends live on private IPs inside the mesh; they are
+          # whitelisted by hostname and permitted to resolve privately.
+          allowedHosts:
+            - backend.internal
+          # Allow the whitelisted hosts above to resolve to private IPs.
+          allowPrivateIPsForAllowedHosts: true
+
+  routers:
+    my-app:
+      middlewares:
+        - mesi
+      service: my-app
+      rule: Host(`example.com`)
+
+  services:
+    my-app:
+      loadBalancer:
+        servers:
+          - url: http://backend:8080

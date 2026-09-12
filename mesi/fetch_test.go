@@ -1,0 +1,1886 @@
+package mesi
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestSingleFetchUrlSchemeValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		url       string
+		wantErr   bool
+		errSubstr string
+	}{
+		{"http scheme valid", "http://example.com", false, ""},
+		{"https scheme valid", "https://example.com", false, ""},
+		{"httpx scheme invalid", "httpx://example.com", true, "invalid url scheme"},
+		{"httpfoo scheme invalid", "httpfoo://example.com", true, "invalid url scheme"},
+		{"httpss scheme invalid", "httpss://example.com", true, "invalid url scheme"},
+		{"ftp scheme invalid", "ftp://example.com", true, "invalid url scheme"},
+		{"file scheme invalid", "file:///etc/passwd", true, "invalid url scheme"},
+		{"javascript scheme invalid", "javascript:alert(1)", true, "invalid url scheme"},
+	}
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := singleFetchUrl(tt.url, config)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errSubstr)
+				} else if tt.errSubstr != "" && !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.errSubstr)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestSingleFetchUrlRelativeUrl(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(r.URL.Path))
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/base/",
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl("relative/path", config)
+	if err != nil {
+		t.Errorf("relative URL should resolve to %s/base/relative/path, got error: %v", server.URL, err)
+	}
+}
+
+func TestSingleFetchUrlWithServer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ok" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("OK"))
+		} else if r.URL.Path == "/esi" {
+			w.Header().Set("Edge-control", "dca=esi")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ESI_CONTENT"))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("NOT_FOUND"))
+		}
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        5,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	t.Run("successful fetch", func(t *testing.T) {
+		data, isEsi, err := singleFetchUrl(server.URL+"/ok", config)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if data != "OK" {
+			t.Errorf("expected 'OK', got %q", data)
+		}
+		if isEsi {
+			t.Errorf("expected isEsi=false for non-ESI response")
+		}
+	})
+
+	t.Run("ESI response detection", func(t *testing.T) {
+		data, isEsi, err := singleFetchUrl(server.URL+"/esi", config)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if data != "ESI_CONTENT" {
+			t.Errorf("expected 'ESI_CONTENT', got %q", data)
+		}
+		if !isEsi {
+			t.Errorf("expected isEsi=true for ESI response")
+		}
+	})
+
+	t.Run("404 error", func(t *testing.T) {
+		_, _, err := singleFetchUrl(server.URL+"/notexist", config)
+		if err == nil {
+			t.Errorf("expected error for 404")
+		}
+	})
+
+	t.Run("error message does not leak response body", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			statusCode int
+			body       string
+		}{
+			{"500 internal error", http.StatusInternalServerError, "INTERNAL_ERROR_SECRET_DATA"},
+			{"404 not found", http.StatusNotFound, "SECRET_NOT_FOUND_DETAILS"},
+			{"403 forbidden", http.StatusForbidden, "SECRET_FORBIDDEN_REASON"},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(tt.statusCode)
+					_, _ = w.Write([]byte(tt.body))
+				}))
+				defer server.Close()
+
+				_, _, err := singleFetchUrl(server.URL+"/secret", config)
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if strings.Contains(err.Error(), tt.body) {
+					t.Errorf("error message leaks response body: %q", err.Error())
+				}
+				if !strings.Contains(err.Error(), strconv.Itoa(tt.statusCode)) {
+					t.Errorf("error message should contain status code: %q", err.Error())
+				}
+			})
+		}
+	})
+}
+
+func TestSingleFetchUrlEdgeCases(t *testing.T) {
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	t.Run("empty URL with no default", func(t *testing.T) {
+		noDefaultConfig := EsiParserConfig{
+			DefaultUrl:      "",
+			MaxDepth:        1,
+			Timeout:         1 * time.Second,
+			BlockPrivateIPs: false,
+		}
+		_, _, err := singleFetchUrl("", noDefaultConfig)
+		if err == nil {
+			t.Errorf("expected error for empty URL")
+		}
+	})
+
+	t.Run("URL with no host", func(t *testing.T) {
+		_, _, err := singleFetchUrl("http://", config)
+		if err == nil {
+			t.Errorf("expected error for URL with no host")
+		}
+	})
+
+	t.Run("backslash in relative URL", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(r.URL.Path))
+		}))
+		defer server.Close()
+
+		testConfig := EsiParserConfig{
+			DefaultUrl:      server.URL + "/",
+			MaxDepth:        1,
+			Timeout:         1 * time.Second,
+			BlockPrivateIPs: false,
+		}
+
+		_, _, err := singleFetchUrl("..\\..\\etc\\passwd", testConfig)
+		if err != nil {
+			t.Errorf("unexpected error for backslash path: %v", err)
+		}
+	})
+}
+
+func TestSingleFetchUrlWithContextCancellation(t *testing.T) {
+	requestReceived := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestReceived)
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(5 * time.Second):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("SHOULD NOT SEE THIS"))
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	config := EsiParserConfig{
+		Context:         ctx,
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	go func() {
+		<-requestReceived
+		cancel()
+	}()
+
+	_, _, err := singleFetchUrl(server.URL+"/slow", config)
+
+	if err == nil {
+		t.Error("expected context cancelled error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "context") {
+		t.Errorf("expected error containing 'context', got: %v", err)
+	}
+}
+
+func TestSingleFetchUrlWithContextTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("DONE"))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	config := EsiParserConfig{
+		Context:         ctx,
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	_, _, err := singleFetchUrl(server.URL+"/slow", config)
+
+	if err == nil {
+		t.Error("expected timeout error, got nil")
+	}
+}
+
+func TestSingleFetchUrlWithNilContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		Context:         nil,
+		DefaultUrl:      server.URL,
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	data, _, err := singleFetchUrl(server.URL+"/ok", config)
+	if err != nil {
+		t.Errorf("unexpected error with nil context: %v", err)
+	}
+	if data != "OK" {
+		t.Errorf("expected 'OK', got %q", data)
+	}
+}
+
+func TestMESIParseContextPropagation(t *testing.T) {
+	handlerReached := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(handlerReached)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	html := `<html><body><esi:include src="` + server.URL + `/slow"/></body></html>`
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	config := EsiParserConfig{
+		Context:         ctx,
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        5,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	cancel()
+
+	result := MESIParse(html, config)
+
+	select {
+	case <-handlerReached:
+		t.Error("handler was reached despite cancelled context")
+	default:
+	}
+
+	if result == "" {
+		t.Log("result is empty (expected with cancelled context)")
+	}
+}
+
+func TestMESIParseContextCancellationStopsAllGoroutines(t *testing.T) {
+	handlerReached := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(handlerReached)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	html := `<html><body><esi:include src="` + server.URL + `/slow"/><esi:include src="` + server.URL + `/slow"/></body></html>`
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	config := EsiParserConfig{
+		Context:         ctx,
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        5,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	cancel()
+
+	result := MESIParse(html, config)
+
+	select {
+	case <-handlerReached:
+		t.Error("handler was reached despite cancelled context")
+	default:
+	}
+
+	_ = result
+}
+
+func TestMESIParseContextCancellationMidParse(t *testing.T) {
+	handlerReached := make(chan struct{})
+
+	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case handlerReached <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	defer slowServer.Close()
+
+	fastServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("FAST"))
+	}))
+	defer fastServer.Close()
+
+	html := `<html><body>` +
+		`<esi:include src="` + slowServer.URL + `/slow"/>` +
+		`<esi:include src="` + fastServer.URL + `/fast"/>` +
+		`<esi:include src="` + slowServer.URL + `/slow2"/>` +
+		`</body></html>`
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	config := EsiParserConfig{
+		Context:         ctx,
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        5,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	done := make(chan string)
+	go func() {
+		result := MESIParse(html, config)
+		done <- result
+	}()
+
+	<-handlerReached
+	cancel()
+
+	result := <-done
+	_ = result
+}
+
+func TestFetchConcurrentBothSucceed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/primary" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("PRIMARY"))
+		} else if r.URL.Path == "/alt" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ALT"))
+		}
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	html := `<html><esi:include src="` + server.URL + `/primary" alt="` + server.URL + `/alt" fetch-mode="concurrent" /></html>`
+
+	result := MESIParse(html, config)
+	if !strings.Contains(result, "PRIMARY") && !strings.Contains(result, "ALT") {
+		t.Errorf("expected PRIMARY or ALT in output, got %q", result)
+	}
+}
+
+func TestFetchConcurrentPrimaryFailsAltSucceeds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/primary" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("NOT_FOUND"))
+		} else if r.URL.Path == "/alt" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ALT_RESPONSE"))
+		}
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	html := `<html><esi:include src="` + server.URL + `/primary" alt="` + server.URL + `/alt" fetch-mode="concurrent" /></html>`
+
+	result := MESIParse(html, config)
+	if !strings.Contains(result, "ALT_RESPONSE") {
+		t.Errorf("expected ALT_RESPONSE in output (alt finishes first), got %q", result)
+	}
+}
+
+func TestFetchConcurrentPrimaryFailsImmediatelyAltSucceeds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/primary" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("PRIMARY_ERROR"))
+		} else if r.URL.Path == "/alt" {
+			time.Sleep(50 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ALT_RESPONSE"))
+		}
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	html := `<html><esi:include src="` + server.URL + `/primary" alt="` + server.URL + `/alt" fetch-mode="concurrent" /></html>`
+
+	result := MESIParse(html, config)
+	if !strings.Contains(result, "ALT_RESPONSE") {
+		t.Errorf("expected ALT_RESPONSE in output (should wait for success), got %q", result)
+	}
+}
+
+func TestFetchConcurrentBothFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	html := `<html><esi:include src="` + server.URL + `/fail1" alt="` + server.URL + `/fail2" fetch-mode="concurrent" /></html>`
+
+	result := MESIParse(html, config)
+	if strings.Contains(result, "500") || strings.Contains(result, "error") {
+		t.Errorf("error details leaked into output: %q", result)
+	}
+}
+
+func TestFetchConcurrentNoAltShortCircuit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/single" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("SINGLE"))
+		}
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	html := `<html><esi:include src="` + server.URL + `/single" fetch-mode="concurrent" /></html>`
+
+	result := MESIParse(html, config)
+	if !strings.Contains(result, "SINGLE") {
+		t.Errorf("expected SINGLE in output, got %q", result)
+	}
+}
+
+func TestFetchConcurrentContextCancellation(t *testing.T) {
+	handlerBlock := make(chan struct{})
+
+	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-handlerBlock:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("OK"))
+		}
+	}))
+	defer slowServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	config := EsiParserConfig{
+		Context:         ctx,
+		DefaultUrl:      slowServer.URL + "/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: false,
+	}
+
+	html := `<html><esi:include src="` + slowServer.URL + `/slow1" alt="` + slowServer.URL + `/slow2" fetch-mode="concurrent" /></html>`
+	result := MESIParse(html, config)
+
+	if strings.Contains(result, "OK") {
+		t.Errorf("expected empty result due to context cancellation, got %q", result)
+	}
+}
+
+func TestAllowPrivateIPsForAllowedHosts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("test response"))
+	}))
+	defer server.Close()
+
+	serverURL, _ := url.Parse(server.URL)
+	serverHost := serverURL.Hostname()
+
+	t.Run("blocked when flag is false", func(t *testing.T) {
+		config := EsiParserConfig{
+			BlockPrivateIPs:                true,
+			AllowPrivateIPsForAllowedHosts: false,
+			AllowedHosts:                   []string{serverHost},
+			Timeout:                        5 * time.Second,
+		}
+
+		_, _, err := singleFetchUrlWithContext(server.URL, config, context.Background())
+		if err == nil {
+			t.Error("expected error for private IP when flag is false")
+		}
+	})
+
+	t.Run("allowed when flag is true", func(t *testing.T) {
+		config := EsiParserConfig{
+			BlockPrivateIPs:                true,
+			AllowPrivateIPsForAllowedHosts: true,
+			AllowedHosts:                   []string{serverHost},
+			Timeout:                        5 * time.Second,
+		}
+
+		result, _, err := singleFetchUrlWithContext(server.URL, config, context.Background())
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if result != "test response" {
+			t.Errorf("expected 'test response', got: %q", result)
+		}
+	})
+
+	t.Run("blocked when host not in AllowedHosts", func(t *testing.T) {
+		config := EsiParserConfig{
+			BlockPrivateIPs:                true,
+			AllowPrivateIPsForAllowedHosts: true,
+			AllowedHosts:                   []string{"other.example.com"},
+			Timeout:                        5 * time.Second,
+		}
+
+		_, _, err := singleFetchUrlWithContext(server.URL, config, context.Background())
+		if err == nil {
+			t.Error("expected error for host not in AllowedHosts")
+		}
+	})
+}
+
+func TestIsEsiResponse(t *testing.T) {
+	tests := []struct {
+		name           string
+		edgeControl    string
+		expectedResult bool
+	}{
+		{"dca=esi header", "dca=esi", true},
+		{"dca=esi with other directives", "no-store, dca=esi, max-age=3600", true},
+		{"dca=esi case insensitive", "DCA=ESI", true},
+		{"no dca=esi", "no-store, max-age=3600", false},
+		{"empty header", "", false},
+		{"partial match dca", "dca=esionly", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{
+				Header: http.Header{},
+			}
+			if tt.edgeControl != "" {
+				resp.Header.Set("Edge-control", tt.edgeControl)
+			}
+			result := IsEsiResponse(resp)
+			if result != tt.expectedResult {
+				t.Errorf("IsEsiResponse() = %v, expected %v", result, tt.expectedResult)
+			}
+		})
+	}
+}
+
+func TestSingleFetchUrlExceedsTimeBudget(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout time.Duration
+	}{
+		{"zero timeout", 0},
+		{"negative timeout", -1 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := EsiParserConfig{
+				DefaultUrl:      "http://example.com/",
+				MaxDepth:        1,
+				Timeout:         tt.timeout,
+				BlockPrivateIPs: false,
+				Logger:          DiscardLogger{},
+			}
+
+			_, _, err := singleFetchUrl("http://example.com/test", config)
+			if err == nil {
+				t.Error("expected error for timeout <= 0")
+			}
+			if !strings.Contains(err.Error(), "exceeded time budget") {
+				t.Errorf("expected 'exceeded time budget' error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestFetchSemaphoreWaitBoundedByTimeout(t *testing.T) {
+	upstreamStarted := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseUpstream) }) }
+	defer release()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(upstreamStarted)
+		<-releaseUpstream
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("DONE"))
+	}))
+	defer server.Close()
+
+	sem := make(chan struct{}, 1)
+	newConfig := func(timeout time.Duration) EsiParserConfig {
+		return (EsiParserConfig{
+			DefaultUrl:      server.URL,
+			MaxDepth:        1,
+			Timeout:         timeout,
+			BlockPrivateIPs: false,
+			Logger:          DiscardLogger{},
+		}).setSemaphore(sem)
+	}
+
+	// First include occupies the only slot and blocks on the slow upstream
+	// long past the queued call's budget.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _, _ = singleFetchUrlWithContext(server.URL+"/slow", newConfig(time.Minute), context.Background())
+	}()
+	<-upstreamStarted
+
+	// The queued include must be aborted by its own deadline: it errors at
+	// ~budget instead of waiting for the slow upstream to free the slot.
+	const budget = 300 * time.Millisecond
+	start := time.Now()
+	_, _, err := singleFetchUrlWithContext(server.URL+"/slow", newConfig(budget), context.Background())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Error("queued include: expected timeout error, got nil")
+	} else if !errors.Is(err, ErrTimeBudgetExceeded) {
+		t.Errorf("queued include: expected ErrTimeBudgetExceeded, got %v", err)
+	}
+	if elapsed > 2*budget {
+		t.Errorf("queued include waited %v — semaphore wait not bounded by the timeout", elapsed)
+	}
+
+	release()
+	wg.Wait()
+}
+
+func TestFetchSameKeyDedupSingleUpstreamHit(t *testing.T) {
+	var hitCount atomic.Int32
+	slowStart := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	defer closeRelease()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitCount.Add(1)
+		close(slowStart)
+		<-release
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("DEDUP"))
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL,
+		MaxDepth:        1,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+		Cache:           NewMemoryCache(100, time.Hour),
+		CacheKeyFunc:    func(url string) string { return "dedup:" + url },
+		Logger:          DiscardLogger{},
+	}
+	url := server.URL + "/dedup"
+
+	type result struct {
+		out string
+		err error
+	}
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		out, _, err := singleFetchUrlWithContext(url, config, context.Background())
+		results <- result{out, err}
+	}()
+	<-slowStart
+
+	// Give the first goroutine time to hold the inflight slot and block on
+	// the upstream before the second goroutine queues behind it.
+	time.Sleep(50 * time.Millisecond)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		out, _, err := singleFetchUrlWithContext(url, config, context.Background())
+		results <- result{out, err}
+	}()
+
+	// Free the upstream: the owner caches the body, then the queued goroutine
+	// acquires the slot, double-checks the cache and serves from it.
+	closeRelease()
+	wg.Wait()
+	close(results)
+
+	for res := range results {
+		if res.err != nil {
+			t.Errorf("unexpected error: %v", res.err)
+		}
+		if res.out != "DEDUP" {
+			t.Errorf("unexpected output %q", res.out)
+		}
+	}
+	if got := hitCount.Load(); got != 1 {
+		t.Fatalf("expected exactly one upstream hit, got %d", got)
+	}
+}
+
+func TestFetchSemaphoreWaiterUnblockedByCancel(t *testing.T) {
+	upstreamStarted := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(upstreamStarted)
+		<-release
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("DONE"))
+	}))
+	defer server.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL,
+		MaxDepth:        1,
+		Timeout:         30 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+	// One slot only, held by the first include.
+	config = config.setSemaphore(make(chan struct{}, 1))
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_, _, _ = singleFetchUrlWithContext(server.URL+"/slow", config, ctx)
+	}()
+	<-upstreamStarted
+
+	waiterDone := make(chan struct{})
+	var waiterErr error
+	go func() {
+		defer close(waiterDone)
+		_, _, waiterErr = singleFetchUrlWithContext(server.URL+"/slow", config, ctx)
+	}()
+	time.Sleep(100 * time.Millisecond) // let the waiter queue on the semaphore
+
+	start := time.Now()
+	cancel()
+	<-waiterDone
+	elapsed := time.Since(start)
+
+	if waiterErr == nil {
+		t.Error("waiter: expected error after context cancellation, got nil")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("waiter took %v to unblock — semaphore wait is not context-aware", elapsed)
+	}
+	<-firstDone
+}
+
+func TestParseWithConfigAllowedHostsAndBlockPrivateIPs(t *testing.T) {
+	log := &recordingLogger{}
+
+	out := MESIParse(`<esi:include src="http://evil.com/test" />`, EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        5,
+		Timeout:         30 * time.Second,
+		AllowedHosts:    []string{"allowed.com"},
+		BlockPrivateIPs: true,
+		Logger:          log,
+	})
+	if out != "" {
+		t.Fatalf("expected empty output for blocked include, got %q", out)
+	}
+	if !log.containsMsg("include_failed") {
+		t.Fatal("expected include_failed log for allowed-host block")
+	}
+
+	log.entries = nil
+
+	out = MESIParse(`<esi:include src="http://127.0.0.1/test" />`, EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        5,
+		Timeout:         30 * time.Second,
+		BlockPrivateIPs: true,
+		Logger:          log,
+	})
+	if out != "" {
+		t.Fatalf("expected empty output for blocked include, got %q", out)
+	}
+	if !log.containsMsg("include_failed") {
+		t.Fatal("expected include_failed log for private IP block")
+	}
+}
+
+func TestSingleFetchUrlInvalidRequest(t *testing.T) {
+	config := EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl("http://\x00invalid/test", config)
+	if err == nil {
+		t.Fatal("expected error for invalid URL in request creation")
+	}
+	if !strings.Contains(err.Error(), "invalid url") {
+		t.Errorf("expected 'invalid url' error, got: %v", err)
+	}
+}
+
+func TestSingleFetchUrlWithContext_ResponseUnderLimit(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(make([]byte, 1024))
+	}))
+	defer ts.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxResponseSize = 10 * 1024
+	config.Timeout = 5 * time.Second
+	config.BlockPrivateIPs = false
+
+	data, _, err := singleFetchUrlWithContext(ts.URL, config, context.Background())
+	if err != nil {
+		t.Errorf("Expected no error for response under limit, got: %v", err)
+	}
+	if len(data) != 1024 {
+		t.Errorf("Expected 1024 bytes, got %d", len(data))
+	}
+}
+
+func TestSingleFetchUrlWithContext_ResponseExceedsLimit(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(make([]byte, 20*1024))
+	}))
+	defer ts.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxResponseSize = 10 * 1024
+	config.Timeout = 5 * time.Second
+	config.BlockPrivateIPs = false
+
+	_, _, err := singleFetchUrlWithContext(ts.URL, config, context.Background())
+	if err == nil {
+		t.Error("Expected error for response exceeding limit, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum allowed size") {
+		t.Errorf("Expected error message about size limit, got: %v", err)
+	}
+}
+
+func TestSingleFetchUrlWithContext_ZeroLimitNoRestriction(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(make([]byte, 100*1024))
+	}))
+	defer ts.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxResponseSize = 0
+	config.Timeout = 5 * time.Second
+	config.BlockPrivateIPs = false
+
+	data, _, err := singleFetchUrlWithContext(ts.URL, config, context.Background())
+	if err != nil {
+		t.Errorf("Expected no error with zero limit, got: %v", err)
+	}
+	if len(data) != 100*1024 {
+		t.Errorf("Expected 100KB data, got %d bytes", len(data))
+	}
+}
+
+func TestSingleFetchUrlWithContext_ExactLimit(t *testing.T) {
+	limit := int64(1024)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(make([]byte, limit))
+	}))
+	defer ts.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxResponseSize = limit
+	config.Timeout = 5 * time.Second
+	config.BlockPrivateIPs = false
+
+	data, _, err := singleFetchUrlWithContext(ts.URL, config, context.Background())
+	if err != nil {
+		t.Errorf("Expected no error for response at exact limit, got: %v", err)
+	}
+	if int64(len(data)) != limit {
+		t.Errorf("Expected %d bytes, got %d", limit, len(data))
+	}
+}
+
+func TestFetchWithCache(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("cached content"))
+	}))
+	defer server.Close()
+
+	cache := NewMemoryCache(100, time.Hour)
+	config := CreateDefaultConfig()
+	config.Cache = cache
+	config.CacheKeyFunc = func(url string) string { return "test:" + url }
+	config.BlockPrivateIPs = false
+
+	url := server.URL + "/test"
+	_, _, _ = singleFetchUrlWithContext(url, config, context.Background())
+	if callCount != 1 {
+		t.Fatalf("first call: expected 1 HTTP call, got %d", callCount)
+	}
+
+	_, _, _ = singleFetchUrlWithContext(url, config, context.Background())
+	if callCount != 1 {
+		t.Fatalf("second call: expected 0 HTTP calls (cached), got %d", callCount)
+	}
+
+	ctx := context.Background()
+	val, ok, _ := cache.Get(ctx, "test:"+url+securityPolicyFingerprint(config))
+	if !ok || val != "cached content" {
+		t.Fatalf("cache miss or wrong value: ok=%v, val=%s", ok, val)
+	}
+}
+
+func TestFetchWithoutCache(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("direct content"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.Cache = nil
+	config.BlockPrivateIPs = false
+
+	url := server.URL + "/test"
+	content, _, err := singleFetchUrlWithContext(url, config, context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "direct content" {
+		t.Fatalf("expected 'direct content', got '%s'", content)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 HTTP call, got %d", callCount)
+	}
+}
+
+func TestFetchWithCache_NilCacheKeyFunc(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("direct content"))
+	}))
+	defer server.Close()
+
+	cache := NewMemoryCache(100, time.Hour)
+	config := CreateDefaultConfig()
+	config.Cache = cache
+	config.CacheKeyFunc = nil
+	config.BlockPrivateIPs = false
+
+	url := server.URL + "/test"
+	content, _, err := singleFetchUrlWithContext(url, config, context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "direct content" {
+		t.Fatalf("expected 'direct content', got '%s'", content)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 HTTP call (no cache key func), got %d", callCount)
+	}
+}
+
+func TestFetchWithCache_EsiResponse(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Edge-control", "dca=esi")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("esi content"))
+	}))
+	defer server.Close()
+
+	cache := NewMemoryCache(100, time.Hour)
+	config := CreateDefaultConfig()
+	config.Cache = cache
+	config.CacheKeyFunc = func(url string) string { return "test:" + url }
+	config.BlockPrivateIPs = false
+
+	url := server.URL + "/esi"
+	content, isEsi, err := singleFetchUrlWithContext(url, config, context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "esi content" {
+		t.Fatalf("expected 'esi content', got '%s'", content)
+	}
+	if !isEsi {
+		t.Fatalf("expected isEsi=true for ESI response")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 HTTP call, got %d", callCount)
+	}
+
+	content2, isEsi2, err := singleFetchUrlWithContext(url, config, context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error on cached call: %v", err)
+	}
+	if content2 != "esi content" {
+		t.Fatalf("expected cached 'esi content', got '%s'", content2)
+	}
+	if isEsi2 {
+		t.Fatalf("expected isEsi=false for cached response")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 0 HTTP calls (cached), got %d", callCount)
+	}
+}
+
+var _ Cache = errorCache{}
+
+type errorCache struct{}
+
+func (errorCache) Get(_ context.Context, key string) (string, bool, error) {
+	return "", false, errors.New("cache get failed: " + key)
+}
+
+func (errorCache) Set(_ context.Context, key, value string, _ time.Duration) error {
+	return errors.New("cache set failed: " + key)
+}
+
+func (errorCache) Delete(_ context.Context, key string) error {
+	return nil
+}
+
+func TestCacheGetErrorGoesToLogger(t *testing.T) {
+	logger := &recordingLogger{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("origin content"))
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          logger,
+		Cache:           errorCache{},
+		CacheKeyFunc:    DefaultCacheKey,
+	}
+
+	content, _, err := singleFetchUrlWithContext(server.URL+"/test", config, context.Background())
+	if err != nil {
+		t.Fatalf("expected fallback to origin on cache get error, got: %v", err)
+	}
+	if content != "origin content" {
+		t.Fatalf("expected 'origin content', got %q", content)
+	}
+	if !logger.containsMsg("cache_get_error") {
+		t.Fatal("expected cache_get_error log entry")
+	}
+}
+
+func TestCacheSetErrorGoesToLogger(t *testing.T) {
+	logger := &recordingLogger{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("origin content"))
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          logger,
+		Cache:           errorCache{},
+		CacheKeyFunc:    DefaultCacheKey,
+	}
+
+	content, _, err := singleFetchUrlWithContext(server.URL+"/test", config, context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != "origin content" {
+		t.Fatalf("expected 'origin content', got %q", content)
+	}
+	if !logger.containsMsg("cache_set_error") {
+		t.Fatal("expected cache_set_error log entry")
+	}
+}
+
+func TestCacheErrorDoesNotReachStderr(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(nil)
+
+	logger := &recordingLogger{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("origin content"))
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      server.URL + "/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          logger,
+		Cache:           errorCache{},
+		CacheKeyFunc:    DefaultCacheKey,
+	}
+
+	_, _, err := singleFetchUrlWithContext(server.URL+"/test", config, context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if buf.Len() > 0 {
+		t.Fatalf("stdlib log received unexpected output: %s", buf.String())
+	}
+}
+
+func TestSentinelErrorsIs(t *testing.T) {
+	_, _, schemeErr := singleFetchUrlWithContext("httpx://example.com/test", EsiParserConfig{Timeout: time.Second, BlockPrivateIPs: false, Logger: DiscardLogger{}}, context.Background())
+	_, _, timeoutErr := singleFetchUrlWithContext("http://example.com/test", EsiParserConfig{Timeout: 0, BlockPrivateIPs: false, Logger: DiscardLogger{}}, context.Background())
+	_, _, dialErr := singleFetchUrlWithContext("http://127.0.0.1/test", EsiParserConfig{Timeout: time.Second, BlockPrivateIPs: true, Logger: DiscardLogger{}}, context.Background())
+	hostErr := isURLSafe("http://evil.com/test", EsiParserConfig{AllowedHosts: []string{"allowed.com"}})
+
+	tests := []struct {
+		name   string
+		err    error
+		target error
+		want   bool
+	}{
+		{
+			name:   "invalid scheme wraps ErrInvalidURL",
+			err:    schemeErr,
+			target: ErrInvalidURL,
+			want:   true,
+		},
+		{
+			name:   "timeout wraps ErrTimeBudgetExceeded",
+			err:    timeoutErr,
+			target: ErrTimeBudgetExceeded,
+			want:   true,
+		},
+		{
+			name:   "dial SSRF block wraps ErrSSRFBlocked",
+			err:    dialErr,
+			target: ErrSSRFBlocked,
+			want:   true,
+		},
+		{
+			name:   "allowed-host SSRF block wraps ErrSSRFBlocked",
+			err:    hostErr,
+			target: ErrSSRFBlocked,
+			want:   true,
+		},
+		{
+			name:   "host-not-allowed not ErrInvalidURL",
+			err:    hostErr,
+			target: ErrInvalidURL,
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.err == nil {
+				t.Fatal("expected non-nil error")
+			}
+			if got := errors.Is(tt.err, tt.target); got != tt.want {
+				t.Errorf("errors.Is(%v, %v) = %v, want %v\nerr.Error() = %q", tt.err, tt.target, got, tt.want, tt.err)
+			}
+		})
+	}
+}
+func TestFetchRedirectToAllowedHostIsFollowed(t *testing.T) {
+	var targetHits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&targetHits, 1)
+		_, _ = w.Write([]byte("REDIRECT_TARGET_BODY"))
+	}))
+	defer target.Close()
+
+	// localhost resolves to the same loopback listener but is a distinct
+	// hostname, so the whitelist can tell the two endpoints apart.
+	targetPort := strings.TrimPrefix(target.URL, "http://127.0.0.1:")
+	redirectLocation := "http://localhost:" + targetPort + "/final"
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", redirectLocation)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1", "localhost"},
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(redirector.URL+"/start", config)
+	if err != nil {
+		t.Fatalf("expected redirect to allowlisted host to be followed, got error: %v", err)
+	}
+	if data != "REDIRECT_TARGET_BODY" {
+		t.Errorf("expected 'REDIRECT_TARGET_BODY', got %q", data)
+	}
+	if atomic.LoadInt32(&targetHits) != 1 {
+		t.Errorf("expected redirect target to be hit exactly once, got %d", atomic.LoadInt32(&targetHits))
+	}
+}
+
+func TestFetchRedirectToNonAllowedHostIsBlocked(t *testing.T) {
+	var targetHits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&targetHits, 1)
+		_, _ = w.Write([]byte("MUST_NOT_BE_FETCHED"))
+	}))
+	defer target.Close()
+
+	// localhost resolves to the target listener, so a buggy fetch that
+	// skipped hop validation would reach it; the whitelist block must
+	// happen before any dial.
+	targetPort := strings.TrimPrefix(target.URL, "http://127.0.0.1:")
+	redirectLocation := "http://localhost:" + targetPort + "/final"
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", redirectLocation)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1"},
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl(redirector.URL+"/start", config)
+	if err == nil {
+		t.Fatal("expected error for redirect to non-allowlisted host")
+	}
+	if !errors.Is(err, ErrSSRFBlocked) {
+		t.Errorf("expected ErrSSRFBlocked, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "host not in allowed list: localhost") {
+		t.Errorf("expected allowed-hosts block error, got: %v", err)
+	}
+	if atomic.LoadInt32(&targetHits) != 0 {
+		t.Errorf("redirect target was fetched %d times, want 0 (hop must be validated before dial)", atomic.LoadInt32(&targetHits))
+	}
+}
+
+func TestFetchRedirectRelativeLocationResolvedAgainstRedirectingURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			w.Header().Set("Location", "/next")
+			w.WriteHeader(http.StatusFound)
+		case "/next":
+			_, _ = w.Write([]byte("RELATIVE_NEXT_BODY"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1"},
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(server.URL+"/start", config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if data != "RELATIVE_NEXT_BODY" {
+		t.Errorf("expected 'RELATIVE_NEXT_BODY', got %q", data)
+	}
+}
+
+func TestFetchRedirectToNonHTTPSchemeIsBlocked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "ftp://evil.example/file")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl(server.URL+"/start", config)
+	if err == nil {
+		t.Fatal("expected error for non-http redirect scheme")
+	}
+	if !errors.Is(err, ErrInvalidURL) {
+		t.Errorf("expected ErrInvalidURL, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "invalid url scheme: ftp") {
+		t.Errorf("expected invalid scheme error, got: %v", err)
+	}
+}
+
+func TestFetchRedirectWithoutLocationReturnsFinalResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusFound) // 3xx without Location
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(server.URL+"/start", config)
+	if err != nil {
+		t.Fatalf("expected 3xx without Location to be returned as final response, got error: %v", err)
+	}
+	if data != "" {
+		t.Errorf("expected empty body, got %q", data)
+	}
+}
+
+func TestFetchRedirectLoopStopsAfterMaxRedirects(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var n int
+		if _, err := fmt.Sscanf(r.URL.Path, "/r%d", &n); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Location", fmt.Sprintf("/r%d", n+1))
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl(server.URL+"/r0", config)
+	if err == nil {
+		t.Fatal("expected error after exhausting redirect hops")
+	}
+	if !errors.Is(err, ErrUpstreamStatus) {
+		t.Errorf("expected ErrUpstreamStatus, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Errorf("expected 'stopped after 10 redirects' error, got: %v", err)
+	}
+}
+
+func TestFetchTimeoutBoundsWholeRedirectChain(t *testing.T) {
+	// 10 hops x ~40ms sleep = ~400ms pre-fix; config.Timeout = 50ms must
+	// bound the WHOLE chain (redirect hops + final body read), not each hop.
+	chain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var n int
+		if _, err := fmt.Sscanf(r.URL.Path, "/hop%d", &n); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		time.Sleep(40 * time.Millisecond)
+		if n < 10 {
+			w.Header().Set("Location", fmt.Sprintf("/hop%d", n+1))
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("DONE"))
+	}))
+	defer chain.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         50 * time.Millisecond,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1"},
+		Logger:          DiscardLogger{},
+	}
+
+	start := time.Now()
+	data, _, err := singleFetchUrl(chain.URL+"/hop0", config)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error: timeout must bound the whole redirect chain, not each hop")
+	}
+	if strings.Contains(data, "DONE") {
+		t.Errorf("redirect chain completed despite the 50ms fetch budget, got %q", data)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("fetch took %v, exceeding one configured budget of 50ms", elapsed)
+	}
+}
+
+func TestFetchCacheKeyNamespacedBySSRFPolicy(t *testing.T) {
+	var secretHits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&secretHits, 1)
+		_, _ = w.Write([]byte("SECRET_FROM_REDIRECT"))
+	}))
+	defer target.Close()
+
+	// localhost resolves to the same loopback listener but is a distinct
+	// hostname, so the whitelist can tell the two policies apart.
+	targetPort := strings.TrimPrefix(target.URL, "http://127.0.0.1:")
+	secretURL := "http://localhost:" + targetPort + "/secret"
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", secretURL)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	cache := NewMemoryCache(100, time.Hour)
+	startURL := redirector.URL + "/start"
+
+	// Broad policy: localhost is allowlisted, so the redirect is followed and
+	// the secret body is cached under the requested URL's key.
+	broad := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1", "localhost"},
+		Cache:           cache,
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(startURL, broad)
+	if err != nil {
+		t.Fatalf("broad-policy fetch failed: %v", err)
+	}
+	if data != "SECRET_FROM_REDIRECT" {
+		t.Fatalf("expected SECRET_FROM_REDIRECT, got %q", data)
+	}
+
+	// Strict policy: same cache, same URL, but localhost is not allowlisted.
+	// The cached body from the broad policy must NOT be served.
+	strict := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1"},
+		Cache:           cache,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err = singleFetchUrl(startURL, strict)
+	if err == nil {
+		t.Fatal("expected error: strict-policy fetch must not be served the broad-policy cached body")
+	}
+	if !errors.Is(err, ErrSSRFBlocked) {
+		t.Errorf("expected ErrSSRFBlocked on the redirect hop, got: %v", err)
+	}
+
+	// Same-policy repeat must still hit the cache (dedup preserved).
+	data2, _, err := singleFetchUrl(startURL, broad)
+	if err != nil {
+		t.Fatalf("second broad-policy fetch failed: %v", err)
+	}
+	if data2 != "SECRET_FROM_REDIRECT" {
+		t.Errorf("expected cached SECRET_FROM_REDIRECT, got %q", data2)
+	}
+	if atomic.LoadInt32(&secretHits) != 1 {
+		t.Errorf("secret endpoint hit %d times, want 1 (same-policy call must be served from cache)", atomic.LoadInt32(&secretHits))
+	}
+}
+
+// recordingTransport answers every request without any network: /start
+// redirects to the non-ASCII host İ.example and /secret returns SECRET. It
+// records the URL of every request so a test can assert which upstreams were
+// actually dialed.
+type recordingTransport struct {
+	mu   sync.Mutex
+	urls []string
+}
+
+func (rt *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.mu.Lock()
+	rt.urls = append(rt.urls, r.URL.String())
+	rt.mu.Unlock()
+
+	switch r.URL.Path {
+	case "/start":
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Status:     "302 Found",
+			Header:     http.Header{"Location": []string{"http://İ.example/secret"}},
+			Body:       http.NoBody,
+			Request:    r,
+		}, nil
+	case "/secret":
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("SECRET")),
+			Request:    r,
+		}, nil
+	}
+	return nil, fmt.Errorf("unexpected request path %q", r.URL.Path)
+}
+
+func (rt *recordingTransport) countPath(path string) int {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	n := 0
+	for _, u := range rt.urls {
+		if parsed, err := url.Parse(u); err == nil && parsed.Path == path {
+			n++
+		}
+	}
+	return n
+}
+
+func TestFetchCacheKeyUnicodePolicyIsolation(t *testing.T) {
+	transport := &recordingTransport{}
+	client := &http.Client{Transport: transport}
+
+	cache := NewMemoryCache(100, time.Hour)
+	startURL := "http://127.0.0.1/start"
+	keyFor := func(config EsiParserConfig) string {
+		return "test:" + startURL + securityPolicyFingerprint(config)
+	}
+
+	// Policy A allowlists the exact non-ASCII host İ.example: the redirect
+	// hop passes the matcher, so SECRET is fetched and cached under A's
+	// fingerprint key.
+	policyA := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1", "İ.example"},
+		HTTPClient:      client,
+		Cache:           cache,
+		CacheKeyFunc:    func(url string) string { return "test:" + url },
+		Logger:          DiscardLogger{},
+	}
+
+	data, _, err := singleFetchUrl(startURL, policyA)
+	if err != nil {
+		t.Fatalf("policy-A fetch failed: %v", err)
+	}
+	if data != "SECRET" {
+		t.Fatalf("expected SECRET, got %q", data)
+	}
+	if val, ok, _ := cache.Get(context.Background(), keyFor(policyA)); !ok || val != "SECRET" {
+		t.Fatalf("policy-A body not cached: ok=%v, val=%q", ok, val)
+	}
+
+	// Policy B allowlists the ASCII variant i.example. With the old
+	// Lower()-based fingerprint the two policies produced the same key, so B
+	// would have been served the cached SECRET without ever validating (or
+	// fetching) the redirect target it would have blocked. With the injective
+	// fingerprint the keys differ: B misses the cache, dials /start, and the
+	// İ.example hop fails the matcher before any dial.
+	policyB := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"127.0.0.1", "i.example"},
+		HTTPClient:      client,
+		Cache:           cache,
+		CacheKeyFunc:    func(url string) string { return "test:" + url },
+		Logger:          DiscardLogger{},
+	}
+
+	body, _, err := singleFetchUrl(startURL, policyB)
+	if err == nil {
+		t.Fatal("expected error: policy-B fetch must not be served policy-A's cached SECRET")
+	}
+	if !errors.Is(err, ErrSSRFBlocked) {
+		t.Errorf("expected ErrSSRFBlocked on the İ.example redirect hop, got: %v", err)
+	}
+	if body == "SECRET" {
+		t.Error("policy-B fetch returned the cached SECRET body")
+	}
+	if n := transport.countPath("/secret"); n != 1 {
+		t.Errorf("SECRET endpoint hit %d times, want 1 (only policy A's hop; policy B must never dial it)", n)
+	}
+}
+
+func TestFetchRelativeIncludeAllowedHostsOnExpandedURL(t *testing.T) {
+	t.Run("blocked when DefaultUrl host not in AllowedHosts", func(t *testing.T) {
+		var hits int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&hits, 1)
+			_, _ = w.Write([]byte("MUST_NOT_BE_FETCHED"))
+		}))
+		defer server.Close()
+
+		config := EsiParserConfig{
+			DefaultUrl:      server.URL + "/base/",
+			MaxDepth:        1,
+			Timeout:         5 * time.Second,
+			BlockPrivateIPs: false,
+			AllowedHosts:    []string{"allowed.example"},
+			Logger:          DiscardLogger{},
+		}
+
+		_, _, err := singleFetchUrl("relative/path", config)
+		if err == nil {
+			t.Fatal("expected error for relative include resolving to non-allowlisted host")
+		}
+		if !errors.Is(err, ErrSSRFBlocked) {
+			t.Errorf("expected ErrSSRFBlocked, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "host not in allowed list: 127.0.0.1") {
+			t.Errorf("expected allowed-hosts block error, got: %v", err)
+		}
+		if atomic.LoadInt32(&hits) != 0 {
+			t.Errorf("server was hit %d times, want 0 (expanded URL must be validated before dial)", atomic.LoadInt32(&hits))
+		}
+	})
+
+	t.Run("works when DefaultUrl host in AllowedHosts", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("RELATIVE_OK"))
+		}))
+		defer server.Close()
+
+		config := EsiParserConfig{
+			DefaultUrl:      server.URL + "/base/",
+			MaxDepth:        1,
+			Timeout:         5 * time.Second,
+			BlockPrivateIPs: false,
+			AllowedHosts:    []string{"127.0.0.1"},
+			Logger:          DiscardLogger{},
+		}
+
+		data, _, err := singleFetchUrl("relative/path", config)
+		if err != nil {
+			t.Fatalf("expected relative include to resolve to allowlisted host, got error: %v", err)
+		}
+		if data != "RELATIVE_OK" {
+			t.Errorf("expected 'RELATIVE_OK', got %q", data)
+		}
+	})
+}
+
+// TestNoDuplicatedHelper guards against re-introducing a hand-rolled
+// substring-search helper in fetch_test.go. The standard library
+// strings.Contains is the accepted implementation; any local
+// reimplementation of substring matching must be reviewed and
+// justified before being merged.
+func TestNoDuplicatedHelper(t *testing.T) {
+	const target = "fetch_test.go"
+
+	path, err := filepath.Abs(target)
+	if err != nil {
+		t.Fatalf("filepath.Abs(%q): %v", target, err)
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q): %v", path, err)
+	}
+
+	// Parse the file with go/parser so Go's parameter syntax (grouped
+	// shared-type declarations like `s, substr string`) is handled
+	// exactly as the compiler would. A top-level `func name(...) bool`
+	// is forbidden iff it declares at least two `string` parameters
+	// and one of them is named `s` — the signature shape used by the
+	// deleted `contains` / `containsHelper` helpers.
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, target, src, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parser.ParseFile(%q): %v", target, err)
+	}
+
+	ident := func(expr ast.Expr, name string) bool {
+		id, ok := expr.(*ast.Ident)
+		return ok && id.Name == name
+	}
+
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil {
+			continue
+		}
+		// Must return a single untyped `bool`.
+		if fn.Type.Results == nil || len(fn.Type.Results.List) != 1 {
+			continue
+		}
+		resultField := fn.Type.Results.List[0]
+		if len(resultField.Names) != 0 || !ident(resultField.Type, "bool") {
+			continue
+		}
+		var (
+			stringCount int
+			hasNameS    bool
+		)
+		for _, field := range fn.Type.Params.List {
+			if !ident(field.Type, "string") {
+				continue
+			}
+			if len(field.Names) == 0 {
+				stringCount++
+				continue
+			}
+			stringCount += len(field.Names)
+			for _, name := range field.Names {
+				if name.Name == "s" {
+					hasNameS = true
+				}
+			}
+		}
+		if stringCount >= 2 && hasNameS {
+			t.Errorf("forbidden local substring helper found: func %s", fn.Name.Name)
+		}
+	}
+
+	// Sanity: strings.Contains must be referenced somewhere in the file
+	// (otherwise the file has no substring check at all).
+	if !bytes.Contains(src, []byte("strings.Contains")) {
+		t.Error("expected strings.Contains to be used in fetch_test.go")
+	}
+}

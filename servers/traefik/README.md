@@ -22,6 +22,7 @@ http:
       plugin:
         mesi:
           maxDepth: 5
+          sharedHTTPClient: true
 
   routers:
     test-server:
@@ -33,4 +34,308 @@ http:
   services:
     test-server:
     # some service config here
+```
+
+## Include Error Marker
+
+When `includeErrorMarker` is set, the specified string is rendered in place of
+a failed `<esi:include>` when no `onerror="continue"` and no fallback body is
+present. Default: empty string (silent — failed includes produce no output).
+
+**SECURITY**: Never include raw error messages or URLs in the marker.
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          includeErrorMarker: "<!-- ESI_ERROR -->"
+```
+
+## Shared HTTP Client
+
+When `sharedHTTPClient` is enabled, a shared `http.Transport` with SSRF protection
+is created once and reused for all ESI include requests. This enables TCP connection
+pooling (keep-alive), dramatically reducing latency for pages with multiple includes
+to the same backend origin.
+
+Without this option, each `<esi:include>` creates a fresh `http.Client` + `http.Transport`,
+incurring N × (TCP connect + TLS handshake) overhead.
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          sharedHTTPClient: true
+```
+
+## Allowed Hosts (SSRF whitelist)
+
+When `allowedHosts` is set, only ESI include destinations whose host is listed
+(or is a subdomain of a listed host) are fetched. This is the **effective SSRF
+control** for the Traefik plugin: because the plugin runs under Yaegi, the
+dial-time private-IP blocking transport is stubbed, so URL-level host
+restriction is what actually prevents includes to arbitrary/internal hosts.
+
+Matching rules:
+
+- **Exact match** — `backend.internal` matches `backend.internal`.
+- **Subdomain suffix** — `example.com` matches `sub.example.com` (and any
+  deeper subdomain). The `.` boundary prevents suffix injection: `evil.com`
+  does **not** match `example.com`, and `notexample.com` does **not** match
+  `example.com`.
+- **Empty list** (default) allows all hosts, subject to `blockPrivateIPs`
+  (backward compatible).
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          allowedHosts:
+            - backend.internal
+            - cdn.trusted.com
+```
+
+**SECURITY**: Always set `allowedHosts` in untrusted environments. Without it,
+any `<esi:include src>` URL is fetched unconditionally.
+
+### Private-IP bypass for whitelisted hosts
+
+`allowPrivateIPsForAllowedHosts` lets hosts listed in `allowedHosts` resolve to
+private/reserved IP addresses even when `blockPrivateIPs` is enabled:
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          blockPrivateIPs: true
+          allowedHosts:
+            - backend.internal
+          allowPrivateIPsForAllowedHosts: true
+```
+
+- Default is `false` (no bypass — backward compatible).
+- Only effective when BOTH `blockPrivateIPs` is `true` AND `allowedHosts` is
+  non-empty; otherwise a no-op. Unlisted hosts and empty allowlists can never
+  bypass (fail closed) — the whitelist check runs before any dial.
+- **No effect under `sharedHTTPClient`**: the shared transport bakes
+  `blockPrivateIPs` at startup, so the bypass is not consulted for
+  shared-client fetches.
+- **Yaegi note**: under the interpreted plugin the dial-time IP-blocking
+  transport is stubbed (see `servers/traefik/Dockerfile`), so the bypass is not
+  observable in functional tests — the unit tests exercise the real Go path.
+  URL-level `allowedHosts` remains the effective SSRF control.
+- **SECURITY**: the bypass **trusts DNS** for hosts in `allowedHosts` — only
+  use it with internal DNS (Consul, Kubernetes DNS, `/etc/hosts`).
+
+## Cache Backend
+
+The plugin supports multiple cache backends for ESI fragment caching:
+
+### Memory Cache
+
+In-memory LRU cache with configurable size and TTL:
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          maxDepth: 5
+          cacheBackend: memory
+          cacheSize: 10000
+          cacheTTL: "60s"
+```
+
+### Redis Cache
+
+Redis-backed cache for sharing ESI fragments across Traefik instances:
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          maxDepth: 5
+          cacheBackend: redis
+          cacheTTL: "120s"
+          cacheRedisAddr: "10.0.0.5:6379"
+          cacheRedisPassword: "your-password"
+          cacheRedisDb: 0
+```
+
+### Memcached Cache
+
+Memcached-backed cache for distributed ESI fragment caching:
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          maxDepth: 5
+          cacheBackend: memcached
+          cacheTTL: "120s"
+          cacheMemcachedServers:
+            - "10.0.0.1:11211"
+            - "10.0.0.2:11211"
+```
+
+#### Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxDepth` | int | `5` | Maximum ESI recursion depth |
+| `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
+| `includeErrorMarker` | string | `""` | String rendered for failed includes (empty = silent) |
+| `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis`, `memcached` |
+| `cacheTTL` | string | `""` | Cache TTL as Go duration (e.g., `"60s"`, `"5m"`) |
+| `cacheSize` | int | `10000` | Max entries for memory cache |
+| `cacheRedisAddr` | string | `"localhost:6379"` | Redis server address |
+| `cacheRedisPassword` | string | `""` | Redis AUTH password |
+| `cacheRedisDb` | int | `0` | Redis database number |
+| `cacheMemcachedServers` | []string | `[]` | Memcached server addresses (host:port) |
+| `allowedHosts` | []string | `[]` | ESI include host whitelist (exact or subdomain-suffix match); empty = allow all |
+| `allowPrivateIPsForAllowedHosts` | bool | `false` | Let `allowedHosts` entries resolve to private/reserved IPs when `blockPrivateIPs` is on (trusts DNS; no effect under `sharedHTTPClient`) |
+| `cacheKeyTemplate` | string | `""` | Custom cache key template: `${url}`, `${header:Name}`, `${cookie:Name}`; unknown placeholders left literal; empty = default URL-only key |
+
+### Custom cache key template
+
+Customize cache keys with placeholders substituted from the incoming request (mirrors Caddy `cache_key_template` and RoadRunner `cache_key_template`, backed by `mesi.BuildCacheKey`):
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          cacheBackend: memory
+          cacheTTL: "60s"
+          cacheKeyTemplate: "mesi:${url}:lang=${header:Accept-Language}"
+```
+
+| Placeholder | Substituted with |
+|---|---|
+| `${url}` | Full URL of the `<esi:include>` |
+| `${header:Name}` | Request header `Name` (case-insensitive) |
+| `${cookie:Name}` | Request cookie `Name` (case-insensitive) |
+
+- Unknown placeholders (e.g. `${unknown:foo}`) are left literal — no error.
+- Empty / absent `cacheKeyTemplate` = default URL-only key (`mesi.DefaultCacheKey`).
+- **Warning:** a template without `${url}` collapses all include URLs to a single cache key — different URLs will share the same cached body (cross-URL collision). Always include `${url}` unless you intentionally want one entry for every URL.
+
+#### Redis Features
+
+
+- **Cache sharing**: Share ESI fragments across multiple Traefik instances
+- **Persistence**: Cache survives Traefik restarts
+- **TTL support**: Automatic expiration of cached entries
+- **Connection pooling**: Managed by go-redis library
+
+#### Redis Key Format
+
+Cached entries are stored with key format: `mesi:<url>` when no template is set.
+
+With `cacheKeyTemplate` the key is the rendered template result (e.g. `pfx:http://backend/fragment:sfx`), plus an SSRF-policy fingerprint suffix (see `mesi/fetch.go:200`) so different policies never share a cache entry.
+
+Example: `mesi:http://backend/fragment`
+
+#### Redis Connection Failure
+
+When Redis is unreachable, the plugin continues to work in degraded mode:
+- ESI processing continues without caching
+- Origin server is hit for each request
+- When Redis becomes available, caching resumes
+
+#### Memcached Features
+
+- **Distributed cache**: Share ESI fragments across multiple Traefik instances
+- **Consistent hashing**: Cache is distributed across multiple Memcached servers
+- **Lightweight**: Simpler than Redis for simple key-value workloads
+- **TTL support**: Automatic expiration of cached entries
+
+#### Memcached Limitations
+
+- **1 MB value size limit**: ESI includes larger than 1 MB cannot be cached
+- **No TLS support**: Use a sidecar proxy (e.g., stunnel) for encrypted connections
+- **Server format**: `host:port` separated by spaces or YAML list items
+
+## Development
+
+### Yaegi Compatibility
+
+This plugin runs inside Traefik's embedded [Yaegi](https://github.com/traefik/yaegi)
+Go interpreter (v0.16.1). Yaegi has several limitations that affect which Go
+features can be used in the plugin source code:
+
+| Limitation | Workaround | Issue |
+|---|---|---|
+| `for range N` (Go 1.22+) panics | Use `for i := 0; i < N; i++` | [#1701](https://github.com/traefik/yaegi/issues/1701) |
+| `math/rand/v2` not supported | Use `math/rand` instead | [#1674](https://github.com/traefik/yaegi/issues/1674) |
+| `syscall` / `unsafe` not supported | Dialer code in `ssrf_dialer.go` excluded from build | — |
+| Build tags ignored by Yaegi | Problematic files removed in Dockerfile | — |
+| `min`/`max` builtins (Go 1.21+) | Not used | [#1674](https://github.com/traefik/yaegi/issues/1674) |
+| `nil type` panic in complex packages | Avoid combinations that trigger it | [#1636](https://github.com/traefik/yaegi/issues/1636) |
+
+**Impact**: The Traefik plugin does not support Redis or Memcached cache backends
+(they depend on third-party packages with `unsafe` usage). Only the in-memory
+cache backend is available. Dial-time SSRF protection (private IP blocking at
+TCP connect) is also not available; URL-level protection (allowed hosts) still
+works.
+
+When modifying the `mesi/` package, verify changes with the Yaegi compatibility
+test before pushing (no Docker needed, completes in seconds):
+
+```bash
+# Quick Yaegi compatibility check (standalone tool)
+go run ./servers/traefik/yaegi-check/
+
+# Or via Go test
+go test -run TestYaegiCompatibility -v -count=1 ./servers/traefik/
+```
+
+The test sets up a temporary GOPATH, copies the plugin sources (excluding
+files that are known to be incompatible: `ssrf_dialer.go`, `cache_redis/`,
+`cache_memcached/`, test files), and uses Yaegi to import the `mesi/` package.
+Any regression (e.g. `for range N`, `math/rand/v2`, `syscall`) will cause a
+clear test failure instead of a cryptic "nil type" panic in the Docker-based
+integration test.
+
+### Building
+
+```bash
+# Default (memory only)
+go build ./...
+
+# With Redis support
+go build -tags redis ./...
+
+# With Memcached support
+go build -tags memcached ./...
+
+# With both Redis and Memcached
+go build -tags "redis,memcached" ./...
+```
+
+### Testing
+
+```bash
+# Run unit tests (no external dependencies)
+go test -v ./...
+
+# Run tests with Redis (requires Redis running)
+go test -tags redis -v ./...
+
+# Run tests with Memcached (requires Memcached running)
+go test -tags memcached -v ./...
+
+# Run integration tests (requires Redis/Memcached running)
+go test -tags redis -v -run TestCacheIntegration ./...
 ```

@@ -1,6 +1,7 @@
 package roadrunner
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,11 +13,128 @@ import (
 
 const PluginName = "mesi"
 
+// MaxCacheSize bounds RoadRunner's cache_size config. Matches
+// servers/apache/mod_mesi.c MESI_MAX_CACHE_SIZE so all server
+// integrations reject the same overflow class.
+const MaxCacheSize = 1_000_000
+
+// MaxCacheTTL bounds RoadRunner's cache_ttl config. Matches
+// servers/apache/mod_mesi.c MESI_MAX_CACHE_TTL_SECONDS (24h).
+const MaxCacheTTL = 24 * time.Hour
+
+// DefaultCacheSize is applied when cache_size is unset (<=0). Mirrors
+// servers/apache/mod_mesi.c MESI_DEFAULT_CACHE_SIZE and the existing
+// nginx / CLI / libgomesi defaults.
+const DefaultCacheSize = 10000
+
+type Config struct {
+	MaxDepth                       int      `mapstructure:"max_depth"`
+	SharedHTTPClient               bool     `mapstructure:"shared_http_client"`
+	CacheBackend                   string   `mapstructure:"cache_backend"`
+	CacheSize                      int      `mapstructure:"cache_size"`
+	CacheTTL                       string   `mapstructure:"cache_ttl"`
+	CacheKeyTemplate               string   `mapstructure:"cache_key_template"`
+	CacheRedisAddr                 string   `mapstructure:"cache_redis_addr"`
+	CacheRedisPassword             string   `mapstructure:"cache_redis_password"`
+	CacheRedisDB                   int      `mapstructure:"cache_redis_db"`
+	CacheMemcachedServers          []string `mapstructure:"cache_memcached_servers"`
+	Timeout                        string   `mapstructure:"timeout"`
+	IncludeErrorMarker             string   `mapstructure:"include_error_marker"`
+	BlockPrivateIPs                *bool    `mapstructure:"block_private_ips"`
+	AllowedHosts                   []string `mapstructure:"allowed_hosts"`
+	AllowPrivateIPsForAllowedHosts bool     `mapstructure:"allow_private_ips_for_allowed_hosts"`
+}
+
+func CreateConfig() *Config {
+	return &Config{
+		MaxDepth: 5,
+	}
+}
+
+// NewWithConfig returns a Plugin using the given config for programmatic
+// callers (e.g. embedded test harnesses). Normal RoadRunner deployments
+// configure the plugin from .rr.yaml and need no constructor.
+//
+// The caller must still call Init() on the returned Plugin to apply the
+// config defaults and initialize backing resources (shared transport,
+// cache); NewWithConfig only sets the config pointer.
+func NewWithConfig(config *Config) *Plugin {
+	return &Plugin{config: config}
+}
+
 type Plugin struct {
+	config          *Config
+	cache           mesi.Cache
+	cacheTTL        time.Duration
+	sharedTransport *http.Transport
+	blockPrivateIPs bool
+	closeFn         func() error
 }
 
 func (p *Plugin) Init() error {
+	if p.config == nil {
+		p.config = CreateConfig()
+	}
+
+	if p.config.MaxDepth == 0 {
+		p.config.MaxDepth = 5
+	}
+
+	// BlockPrivateIPs defaults to true (secure by default). A nil pointer
+	// means "unset" and keeps the safe default; an explicit false opts out
+	// of dial-time SSRF protection (e.g. for internal service meshes).
+	p.blockPrivateIPs = true
+	if p.config.BlockPrivateIPs != nil {
+		p.blockPrivateIPs = *p.config.BlockPrivateIPs
+	}
+
+	if p.config.SharedHTTPClient {
+		p.sharedTransport = mesi.NewSSRFSafeTransport(mesi.EsiParserConfig{
+			BlockPrivateIPs: p.blockPrivateIPs,
+		})
+	}
+
+	if p.config.CacheBackend != "" {
+		ttl, err := parseCacheTTL(p.config.CacheTTL)
+		if err != nil {
+			return err
+		}
+		p.cacheTTL = ttl
+	}
+
+	if err := initCache(p); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// parseCacheTTL converts the cache_ttl string to a Duration while
+// rejecting values that would silently degrade cache behaviour:
+//
+//   - empty string is treated as "no TTL" (Duration 0) so callers can
+//     configure a backend without expiry.
+//   - any other value must be a non-negative Go duration and must not
+//     exceed MaxCacheTTL (24h). Negative values would flow into
+//     mesi.NewMemoryCache as defaultTTL and silently translate to
+//     "no expiry" (cache_memory.Set treats <0 as 0); out-of-range
+//     values point to operator typos and we fail loud instead of
+//     accepting surprising cache lifetimes.
+func parseCacheTTL(raw string) (time.Duration, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid cache_ttl %q: %w", raw, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("invalid cache_ttl %q: must be non-negative", raw)
+	}
+	if d > MaxCacheTTL {
+		return 0, fmt.Errorf("invalid cache_ttl %q: exceeds max %s", raw, MaxCacheTTL)
+	}
+	return d, nil
 }
 
 func (p *Plugin) Middleware(next http.Handler) http.Handler {
@@ -30,12 +148,34 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 		contentType := customWriter.Header().Get("Content-Type")
 		if strings.HasPrefix(contentType, "text/html") {
 			config := mesi.EsiParserConfig{
-				Context:         r.Context(),
-				MaxDepth:        5,
-				DefaultUrl:      middleware.GetDefaultUrl(r),
-				Timeout:         10 * time.Second,
-				BlockPrivateIPs: true,
+				Context:                        r.Context(),
+				MaxDepth:                       uint(p.config.MaxDepth),
+				DefaultUrl:                     middleware.GetDefaultUrl(r),
+				Timeout:                        10 * time.Second,
+				BlockPrivateIPs:                p.blockPrivateIPs,
+				AllowedHosts:                   p.config.AllowedHosts,
+				AllowPrivateIPsForAllowedHosts: p.config.AllowPrivateIPsForAllowedHosts,
+				IncludeErrorMarker:             p.config.IncludeErrorMarker,
 			}
+
+			if p.cache != nil {
+				config.Cache = p.cache
+				config.CacheTTL = p.cacheTTL
+				if p.config.CacheKeyTemplate != "" {
+					tmpl := p.config.CacheKeyTemplate
+					config.CacheKeyFunc = func(url string) string {
+						return mesi.BuildCacheKey(url, tmpl, r)
+					}
+				}
+			}
+
+			if p.sharedTransport != nil {
+				config.HTTPClient = &http.Client{
+					Transport: p.sharedTransport,
+					Timeout:   config.Timeout,
+				}
+			}
+
 			processedResponse := mesi.MESIParse(
 				customWriter.Body().String(),
 				config,
@@ -57,4 +197,14 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 
 func (p *Plugin) Name() string {
 	return PluginName
+}
+
+func (p *Plugin) Close() error {
+	if p.sharedTransport != nil {
+		p.sharedTransport.CloseIdleConnections()
+	}
+	if p.closeFn != nil {
+		return p.closeFn()
+	}
+	return nil
 }

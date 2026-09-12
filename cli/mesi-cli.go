@@ -3,8 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/bradfitz/gomemcache/memcache"
 	"github.com/crazy-goat/go-mesi/mesi"
+	"github.com/crazy-goat/go-mesi/mesi/cache_memcached"
+	"github.com/crazy-goat/go-mesi/mesi/cache_redis"
+	"github.com/redis/go-redis/v9"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,11 +21,52 @@ func isURL(input string) bool {
 	return strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://")
 }
 
+// allowedHostsFromFlag converts the -allowedHosts flag value into the
+// config allowlist. An empty value keeps the default nil allowlist (all
+// hosts allowed, subject to BlockPrivateIPs) — backward compatible with
+// the pre-flag behaviour. Entries are passed verbatim to the shared-core
+// matcher (exact or subdomain-suffix match with a '.' boundary,
+// case-insensitive, ports ignored), so entries are matched as written.
+func allowedHostsFromFlag(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return strings.Split(value, ",")
+}
+
 func main() {
 	defaultUrl := flag.String("default-url", "http://127.0.0.1/", "Default URL to parse")
 	maxDepth := flag.Uint("max-depth", 5, "Maximum depth of parsing")
 	timeout := flag.Float64("timeout", 10.0, "Request timeout duration in seconds")
 	parseOnHeader := flag.Bool("parse-on-header", false, "Enable parsing on header")
+	debug := flag.Bool("debug", false, "Enable debug logging")
+	cacheBackend := flag.String("cache-backend", "",
+		"Cache backend for ESI includes: memory, redis, memcached (default: off)")
+	cacheSize := flag.Int("cache-size", 10000,
+		"Max cache entries for memory backend")
+	cacheTTL := flag.Duration("cache-ttl", 0,
+		"Cache TTL (e.g. 30s, 5m); 0 = no expiry")
+	cacheRedisAddr := flag.String("cache-redis-addr", "localhost:6379",
+		"Redis server address (host:port)")
+	cacheRedisPassword := flag.String("cache-redis-password", "",
+		"Redis password")
+	cacheRedisDB := flag.Int("cache-redis-db", 0,
+		"Redis database number")
+	cacheMemcachedServers := flag.String("cache-memcached-servers", "",
+		"Comma-separated Memcached servers (host:port)")
+	cacheKeyTemplate := flag.String("cache-key-template", "",
+		"Custom cache key template with placeholders: ${url}, ${header:Name}, ${cookie:Name}")
+	allowPrivateIPs := flag.Bool("allow-private-ips", false,
+		"Allow ESI includes to private/reserved IP ranges (for local testing)")
+	allowedHosts := flag.String("allowedHosts", "", "Comma-separated list of allowed hosts for ESI includes")
+	allowPrivateIPsForAllowedHosts := flag.Bool("allowPrivateIPsForAllowedHosts", false,
+		"Allow ESI includes to private/reserved IP ranges for hosts listed in -allowedHosts (trusts DNS)")
+	maxWorkers := flag.Int("max-workers", 0,
+		"Max concurrent ESI include goroutines (0 = NumCPU*4)")
+	sharedHTTPClient := flag.Bool("shared-http-client", false,
+		"Share HTTP client across ESI includes for connection pooling")
+	includeErrorMarker := flag.String("include-error-marker", "",
+		"Marker string rendered for failed ESI includes (e.g. '<!-- esi error -->')")
 
 	flag.Parse()
 	args := flag.Args()
@@ -36,6 +82,54 @@ func main() {
 	config.MaxDepth = *maxDepth
 	config.Timeout = time.Duration(*timeout * float64(time.Second))
 	config.ParseOnHeader = *parseOnHeader
+	config.Debug = *debug
+	config.BlockPrivateIPs = !*allowPrivateIPs
+	config.AllowedHosts = allowedHostsFromFlag(*allowedHosts)
+	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
+	config.MaxWorkers = *maxWorkers
+	config.IncludeErrorMarker = *includeErrorMarker
+
+	if *sharedHTTPClient {
+		config.HTTPClient = &http.Client{
+			Transport: mesi.NewSSRFSafeTransport(config),
+			Timeout:   config.Timeout,
+		}
+	}
+
+	switch *cacheBackend {
+	case "":
+	case "memory":
+		config.Cache = mesi.NewMemoryCache(*cacheSize, *cacheTTL)
+		config.CacheTTL = *cacheTTL
+	case "redis":
+		rdb := redis.NewClient(&redis.Options{
+			Addr:     *cacheRedisAddr,
+			Password: *cacheRedisPassword,
+			DB:       *cacheRedisDB,
+		})
+		defer func() { _ = rdb.Close() }()
+		config.Cache = cache_redis.NewRedisCache(rdb, *cacheTTL)
+		config.CacheTTL = *cacheTTL
+	case "memcached":
+		servers := strings.Split(*cacheMemcachedServers, ",")
+		if *cacheMemcachedServers == "" || len(servers) == 0 || servers[0] == "" {
+			log.Fatal("cache-memcached-servers required for memcached backend")
+		}
+		mc := memcache.New(servers...)
+		config.Cache = cache_memcached.NewMemcachedCache(mc, *cacheTTL)
+		config.CacheTTL = *cacheTTL
+	default:
+		log.Fatalf("unknown cache backend: %s", *cacheBackend)
+	}
+
+	if *cacheKeyTemplate != "" {
+		tmpl := *cacheKeyTemplate
+		config.CacheKeyFunc = func(url string) string {
+			// CLI mode: only ${url} is supported since there is no HTTP request context.
+			// For full header/cookie support, use the Caddy or nginx integration.
+			return strings.ReplaceAll(tmpl, "${url}", url)
+		}
+	}
 
 	pathOrUrl := args[0]
 	var data string
@@ -64,7 +158,7 @@ func main() {
 			return
 		}
 
-		if !(mesi.IsEsiResponse(content) || config.ParseOnHeader == false) {
+		if !mesi.IsEsiResponse(content) && config.ParseOnHeader {
 			fmt.Println("Error response missing Edge-control header:")
 			return
 		}

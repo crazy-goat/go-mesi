@@ -47,3 +47,298 @@ Finally, you can start the Caddy server with the command:
 ```shell
 caddy run --config Caddyfile
 ```
+
+## Directives
+
+### `max_depth`
+
+Limits ESI nesting depth. Controls how many levels of `<esi:include>` can be
+recursively processed. Default: `5`.
+
+```
+mesi {
+    max_depth 3
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| `0` | ESI processing disabled (passthrough). Tags are stripped but includes are not fetched. |
+| `1–N` | Process up to N levels of nested includes. |
+| unset | Default: `5`. |
+
+**Notes:**
+- Useful for preventing infinite recursion in complex ESI layouts.
+- Setting `0` is useful for temporarily disabling ESI processing without removing the middleware.
+
+### `timeout`
+
+Maximum time allowed for ESI processing, including all remote fragment fetches.
+Parsed as a Go duration string (`10s`, `30s`, `2m`). Default: `10s`.
+
+```
+mesi {
+    timeout 30s
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| duration | Maximum time for all ESI fetches combined. |
+| unset | Default: `10s`. |
+
+**Notes:**
+- The timeout covers the total wall-clock time of all `<esi:include>` fetches
+  within a single request. Individual fetches do not have separate timeouts.
+- For pages with many parallel includes, consider increasing this value.
+- When using `shared_http_client`, the timeout also applies to the underlying
+  `http.Client.Timeout`.
+
+### `shared_http_client`
+
+Enables TCP connection reuse for ESI `<esi:include>` fetches.  
+Without this, each include creates a fresh `http.Client` + `http.Transport`, incurring
+N × TCP+TLS handshake overhead.
+
+```
+mesi {
+    shared_http_client
+}
+```
+
+The shared transport is created once at config load (in `Provision()`) and reused
+for all requests. It uses `mesi.NewSSRFSafeTransport()` for dial-level SSRF
+protection (private IPs are blocked).
+
+Note: If adding Caddyfile directives that affect transport behaviour (e.g.
+`block_private_ips`, `allowed_hosts`), `Provision()` must recreate the
+shared transport to respect the new settings.
+
+### `cache_backend memory`
+
+Enables an in-process LRU cache for ESI fragments. Shared-nothing — each Caddy
+instance has its own cache.
+
+```
+mesi {
+    cache_backend memory
+    cache_size 10000       # optional, default 10000
+    cache_ttl 60s          # optional, default no expiry
+}
+```
+
+| Subdirective | Description |
+|---|---|
+| `cache_size` | Max entries in the LRU cache. Default: 10000. |
+| `cache_ttl` | Duration string (`60s`, `5m`, `1h`). Default: no expiry. |
+
+### `cache_backend redis`
+
+Enables a Redis-backed cache shared across Caddy instances. Ideal for
+horizontally scaled deployments.
+
+```
+mesi {
+    cache_backend redis
+    cache_redis_addr   10.0.0.5:6379
+    cache_redis_password s3cret   # optional
+    cache_redis_db     2           # optional, default 0
+    cache_ttl          120s        # optional, default no expiry
+}
+```
+
+| Subdirective | Description |
+|---|---|
+| `cache_redis_addr` | Redis server address as `host:port`. Required. Default: `localhost:6379`. |
+| `cache_redis_password` | Redis AUTH password. Optional. |
+| `cache_redis_db` | Redis database number. Optional. Default: 0. |
+| `cache_ttl` | Duration string (`60s`, `5m`, `1h`). Optional. Default: no expiry. |
+
+**Notes:**
+- `go-redis` pools connections internally. No extra pool configuration needed.
+- Password in Caddyfile — ensure proper file permissions (e.g. `chmod 600`).
+- Key prefix: `mesi:<url>`.
+- Redis unreachable → ESI falls back to origin fetch (degraded, no crash).
+
+### `cache_backend memcached`
+
+Enables a Memcached-backed cache shared across Caddy instances. Ideal for
+horizontally scaled deployments where Memcached is available.
+
+```
+mesi {
+    cache_backend memcached
+    cache_memcached_servers 10.0.0.1:11211 10.0.0.2:11211
+    cache_ttl 120s
+}
+```
+
+| Subdirective | Description |
+|---|---|
+| `cache_memcached_servers` | Space-separated list of `host:port` addresses. Required. |
+| `cache_ttl` | Duration string (`60s`, `5m`, `1h`). Optional. Default: no expiry. |
+
+**Notes:**
+- Multiple servers are supported — the client distributes keys across them.
+- Memcached has a 1 MB value size limit.
+- Key prefix: `mesi:<url>`.
+- Memcached unreachable → ESI falls back to origin fetch (degraded, no crash).
+
+### `cache_key_template`
+
+Custom cache key template with placeholders. Available for all cache backends.
+
+```
+mesi {
+    cache_backend memory
+    cache_key_template "mesi:${url}:lang=${header:Accept-Language}"
+}
+```
+
+| Placeholder | Description |
+|---|---|
+| `${url}` | Full URL of the ESI include |
+| `${header:Name}` | Request header value (case-insensitive) |
+| `${cookie:Name}` | Request cookie value (case-insensitive) |
+
+When unset, the URL-only default key is used.
+
+### `allowed_hosts`
+
+Restricts ESI `<esi:include>` fetches to specified domains. When set, only
+hosts in the list are allowed — all other hosts are blocked. This is a critical
+security directive for preventing SSRF attacks via ESI includes.
+
+```
+mesi {
+    allowed_hosts backend.internal cdn.example.com api.trusted.org
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| space-separated hosts | Only listed hosts are allowed for ESI includes. |
+| absent | All hosts allowed (subject to `block_private_ips`). |
+
+**Notes:**
+- Host matching supports exact match and subdomain suffix matching:
+  `sub.example.com` matches `example.com`.
+- Does NOT match `attacker-example.com` against `example.com` (suffix-injection safe).
+- `allowed_hosts` does NOT bypass `block_private_ips` by default.
+  Use `allow_private_ips_for_allowed_hosts` to enable private-IP bypass for
+  trusted environments (see below).
+- When combined with `shared_http_client`, the shared transport is created with
+  SSRF-safe dialer. The `allowed_hosts` check is applied at the ESI parser level.
+
+### `allow_private_ips_for_allowed_hosts`
+
+When `block_private_ips` is enabled (default) and `allowed_hosts` is set,
+listed hosts are still blocked at dial time if they resolve to
+private/reserved IPs. This directive permits listed hosts to resolve to
+private IPs — the dial-time block is bypassed for them:
+
+```
+mesi {
+    block_private_ips true
+    allowed_hosts backend.internal
+    allow_private_ips_for_allowed_hosts
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| present | Listed `allowed_hosts` may resolve to private/reserved IPs. |
+| absent | No bypass (default, backward compatible). |
+
+**Notes:**
+- Only effective when BOTH `block_private_ips true` AND a non-empty
+  `allowed_hosts` are set; otherwise a no-op.
+- The `allowed_hosts` whitelist check still runs first: hosts outside the
+  list are rejected regardless of this directive, and an empty whitelist
+  never grants the bypass (fail closed).
+- **SECURITY: this directive trusts DNS.** A compromised entry in
+  `allowed_hosts` can reach internal/private addresses. Enable it only when
+  DNS is trustworthy (internal DNS, pinned hostnames).
+- When combined with `shared_http_client`, the shared transport bakes
+  `block_private_ips` at startup, so the bypass is not consulted for
+  shared-client fetches (same documented limitation as the RoadRunner and
+  Traefik integrations).
+
+### `max_concurrent_requests`
+
+Limits the number of concurrent HTTP requests made during ESI processing.
+Without this, a page with 100 `<esi:include>` tags spawns 100 concurrent
+HTTP goroutines, which can overwhelm upstream services or the Caddy instance itself.
+
+```
+mesi {
+    max_concurrent_requests 5
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| `1–N` | At most N concurrent HTTP fetches across all includes in a single request. |
+| `0` | Unlimited (backward compatible default). |
+| absent | Unlimited. |
+
+**Notes:**
+- The limit applies per request — different incoming requests each get their own concurrency slot.
+- This controls HTTP fetch goroutines, not token-processing goroutines (see `max_workers` for that).
+- For pages with many parallel includes, set this to a reasonable value (e.g. `5–20`) to prevent goroutine explosion.
+- Works well with `timeout` to bound both concurrency and latency.
+
+### `max_workers`
+
+Limits the number of goroutines used to process ESI tokens within a single
+`MESIParse` call. This controls token-processing goroutines, not HTTP fetch
+goroutines (see `max_concurrent_requests` for that). Default: `0` (library
+default: `runtime.NumCPU()*4`).
+
+```
+mesi {
+    max_workers 8
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| `1–N` | At most N goroutines for token processing. |
+| `0` | Library default: `runtime.NumCPU()*4`. |
+| absent | Library default. |
+
+**Notes:**
+- Useful for tuning CPU usage on machines with many cores.
+- Lower values reduce CPU consumption; higher values improve throughput for
+  complex ESI pages with many tokens.
+- This is distinct from `max_concurrent_requests` — that limits HTTP fetches,
+  while `max_workers` limits internal parallelism of ESI tag parsing.
+
+### `max_response_size`
+
+Limits the size (in bytes) of an individual `<esi:include>` response.
+Responses exceeding this limit are treated as errors — the include is replaced
+with the `include_error_marker` (or silently dropped if no marker is set).
+
+This is a security directive: it prevents a malicious or misconfigured backend
+from returning an unbounded response that exhausts Caddy's memory.
+
+```
+mesi {
+    max_response_size 1048576   # 1 MB
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| `1–N` | Include responses larger than N bytes are rejected. |
+| `0` | Unlimited (no size check). |
+| absent | Library default: `10485760` (10 MB). |
+
+**Notes:**
+- Values are in bytes. For common sizes: `1048576` = 1 MB, `10485760` = 10 MB, `1073741824` = 1 GB.
+- When a response exceeds the limit, the include is replaced with the
+  `include_error_marker` string (if configured) or silently dropped.
+- This limit applies to each individual include response, not the total page size.
+- Consider setting this to a reasonable value based on the largest expected
+  include fragment in your application.

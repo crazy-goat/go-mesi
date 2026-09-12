@@ -40,7 +40,12 @@ debug/
 /tests/*.log
 /tests/*.php.log
 /tests/*.sh.log
+# PHPT-generated wrappers (same basename as the .phpt, .sh/.php extension):
+/tests/[a-z_]*.php
+/tests/[a-z_]*.sh
+!/tests/router.php
 run-tests.php
+/php_test_results_*.txt
 
 # Pliki specyficzne dla systemu
 .DS_Store

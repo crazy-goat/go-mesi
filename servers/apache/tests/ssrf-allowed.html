@@ -1,0 +1,8 @@
+<!DOCTYPE html>
+<html>
+<head><title>SSRF AllowedHosts Test</title></head>
+<body>
+<esi:include src="http://backend:8000/allowed.txt" />
+<esi:include src="http://evil.com/blocked.txt" />
+</body>
+</html>

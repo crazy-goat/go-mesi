@@ -1,0 +1,42 @@
+services:
+  nginx:
+    image: go-mesi-nginx-test
+    build:
+      context: ../..
+      dockerfile: servers/nginx/Dockerfile
+    ports:
+      - "18080:8080"
+    depends_on:
+      backend:
+        condition: service_started
+      memcached:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/"]
+      interval: 2s
+      retries: 10
+      start_period: 5s
+
+  backend:
+    image: python:3.11-slim
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: /data
+    volumes:
+      - ./tests:/data:ro
+    command: python /data/server.py
+    expose:
+      - "8000"
+    # Aliases make subdomain hosts resolve to the backend container, so the
+    # allowed-hosts subdomain fixtures (sub.backend, cdn.example.net) get a
+    # real fetch target instead of a DNS failure.
+    networks:
+      default:
+        aliases:
+          - sub.backend
+          - cdn.example.net
+
+  memcached:
+    image: memcached:1.6-alpine
+    expose:
+      - "11211"
+    command: ["memcached", "-m", "64"]

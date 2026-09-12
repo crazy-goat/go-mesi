@@ -8,3 +8,6 @@ log: ## Display container logs
 run: ## Run træfik with go-esi
 	cd ../test-server && make
 	docker-compose up --remove-orphans --build
+
+test: ## Run integration tests
+	./test.sh

@@ -4,11 +4,11 @@
     <title>Standard esi:include tests</title>
 </head>
 <body>
-This should print hello world: [<esi:include src="http://127.0.0.1:8080/hello" />]
-This should print 404: [<esi:include src="http://127.0.0.1:8080/status/code/404" />]
-This should print 500: [<esi:include src="http://127.0.0.1:8080/status/code/404" alt="http://127.0.0.1:8080/status/code/500"/>]
-This should be empty: [<esi:include onerror="continue" src="http://127.0.0.1:8080/status/code/500" />]
-This should also be empty: [<esi:include onerror="continue" src="http://127.0.0.1:8080/status/code/500" alt="http://127.0.0.1:8080/status/code/500"/>]
-This should print hello world: [<esi:include onerror="continue" src="http://127.0.0.1:8080/status/code/500" alt="http://127.0.0.1:8080/hello"/>]
+This should print hello world: [<esi:include src="http://127.0.0.1:18080/hello" />]
+This should print 404: [<esi:include src="http://127.0.0.1:18080/status/code/404" />]
+This should print 500: [<esi:include src="http://127.0.0.1:18080/status/code/404" alt="http://127.0.0.1:18080/status/code/500"/>]
+This should be empty: [<esi:include onerror="continue" src="http://127.0.0.1:18080/status/code/500" />]
+This should also be empty: [<esi:include onerror="continue" src="http://127.0.0.1:18080/status/code/500" alt="http://127.0.0.1:18080/status/code/500"/>]
+This should print hello world: [<esi:include onerror="continue" src="http://127.0.0.1:18080/status/code/500" alt="http://127.0.0.1:18080/hello"/>]
 </body>
 </html>

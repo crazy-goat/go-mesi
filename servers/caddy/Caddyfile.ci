@@ -1,0 +1,11 @@
+{
+    admin off
+    order mesi before reverse_proxy
+}
+
+:8080 {
+    mesi {
+        block_private_ips false
+    }
+    reverse_proxy test-server:80
+}

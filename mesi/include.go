@@ -1,24 +1,15 @@
 package mesi
 
 import (
-	"context"
 	"encoding/xml"
 	"errors"
-	"math/rand/v2"
-	"strconv"
-	"strings"
-	"time"
+	"fmt"
 )
 
 type esiResponse struct {
 	Data          string
 	IsEsiResponse bool
 	Error         error
-}
-
-type abRatio struct {
-	A uint
-	B uint
 }
 
 type esiIncludeToken struct {
@@ -43,118 +34,17 @@ func parseInclude(input string) (token esiIncludeToken, err error) {
 	return esi, nil
 }
 
-func (token *esiIncludeToken) parseAB() abRatio {
-	defaultValue := abRatio{
-		A: 50,
-		B: 50,
-	}
-
-	if !strings.Contains(token.ABRatio, ":") {
-		return defaultValue
-	}
-
-	parts := strings.Split(token.ABRatio, ":")
-	if len(parts) != 2 {
-		return defaultValue
-	}
-
-	a, err := strconv.ParseUint(parts[0], 10, 64)
-	if err != nil {
-		return defaultValue
-	}
-
-	b, err := strconv.ParseUint(parts[1], 10, 64)
-	if err != nil {
-		return defaultValue
-	}
-
-	if a == 0 && b == 0 {
-		return defaultValue
-	}
-
-	return abRatio{
-		A: uint(a),
-		B: uint(b),
-	}
-}
-
-func (ratio abRatio) selectUrl(token *esiIncludeToken) string {
-	if token.Alt == "" {
-		return token.Src
-	}
-
-	sum := ratio.A + ratio.B
-
-	if sum == 0 {
-		return token.Src
-	}
-
-	randomValue := rand.IntN(int(sum))
-
-	if randomValue < int(ratio.A) {
-		return token.Src
-	}
-	return token.Alt
-}
-
-func fetchAB(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
-	return singleFetchUrlWithContext(token.parseAB().selectUrl(token), config, config.Context)
-}
-
-func fetchConcurrent(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
-	if token.Alt == "" {
-		return singleFetchUrlWithContext(token.Src, config, config.Context)
-	}
-
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if config.Context != nil {
-		ctx, cancel = context.WithCancel(config.Context)
-	} else {
-		ctx, cancel = context.WithCancel(context.Background())
-	}
-	defer cancel()
-
-	resultChan := make(chan esiResponse, 2)
-	doneChan := make(chan struct{})
-
-	runTask := func(url string) {
-		data, isEsiResponse, err := singleFetchUrlWithContext(url, config, ctx)
-		select {
-		case resultChan <- esiResponse{Data: data, IsEsiResponse: isEsiResponse, Error: err}:
-		case <-doneChan:
-		}
-	}
-
-	go runTask(token.Src)
-	go runTask(token.Alt)
-
-	result := <-resultChan
-	close(doneChan)
-
-	return result.Data, result.IsEsiResponse, result.Error
-}
-
-func fetchFallback(token *esiIncludeToken, config EsiParserConfig) (string, bool, error) {
-	start := time.Now()
+func (token *esiIncludeToken) toString(config EsiParserConfig) (string, bool, error) {
+	logger := config.getLogger()
 	var data string
 	var err error
 	var isEsiResponse bool
+	var unhandledErr error
 
-	data, isEsiResponse, err = singleFetchUrlWithContext(token.Src, config, config.Context)
-	if err != nil && token.Alt != "" {
-		return singleFetchUrlWithContext(token.Alt, config.WithElapsedTime(time.Since(start)), config.Context)
-	}
-
-	return data, isEsiResponse, err
-}
-
-func (token *esiIncludeToken) toString(config EsiParserConfig) (string, bool) {
-	var data string
-	var err error
-	var isEsiResponse bool
+	logger.Debug("include_start", "src", token.Src, "fetch_mode", token.FetchMode, "max_depth", config.MaxDepth, "timeout", config.Timeout)
 
 	if config.ParseOnly() {
+		logger.Debug("max_depth_reached", "src", token.Src)
 		err = errors.New("esi max depth")
 	} else {
 		switch token.FetchMode {
@@ -168,16 +58,19 @@ func (token *esiIncludeToken) toString(config EsiParserConfig) (string, bool) {
 	}
 
 	if err != nil {
+		logger.Debug("include_failed", "src", token.Src, "error", err.Error())
+
 		if token.OnError == "continue" {
-			return "", false
+			return "", false, nil
 		}
 
 		if token.Content != "" {
-			return token.Content, false
+			return token.Content, false, nil
 		}
 
-		return err.Error(), false
+		unhandledErr = fmt.Errorf("include failed: %w", err)
+		return config.IncludeErrorMarker, false, unhandledErr
 	}
 
-	return data, isEsiResponse
+	return data, isEsiResponse, nil
 }

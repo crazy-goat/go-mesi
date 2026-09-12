@@ -1,0 +1,17 @@
+# Example: allow trusted internal hosts (in allowed_hosts) to resolve to
+# private/reserved IPs while block_private_ips stays enabled.
+#
+# SECURITY: this directive trusts DNS for hosts in allowed_hosts. Enable it
+# only when DNS is trustworthy (internal DNS, pinned hostnames).
+#
+# Only effective when BOTH block_private_ips is true AND allowed_hosts is
+# non-empty; otherwise a no-op.
+
+http://:8080 {
+    mesi {
+        block_private_ips true
+        allowed_hosts backend.internal
+        allow_private_ips_for_allowed_hosts
+    }
+    reverse_proxy backend:80
+}

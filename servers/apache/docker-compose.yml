@@ -1,0 +1,34 @@
+services:
+  apache:
+    image: go-mesi-apache-test
+    build:
+      context: ../..
+      dockerfile: servers/apache/Dockerfile
+    ports:
+      - "18080:80"
+      - "8081:8081"
+      - "8082:8082"
+      - "8083:8083"
+      - "8084:8084"
+    environment:
+      - MESI_FORCE_FLATTEN_ERROR=${MESI_FORCE_FLATTEN_ERROR:-}
+    volumes:
+      - ./tests:/var/www/html:ro
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost/"]
+      interval: 2s
+      retries: 10
+      start_period: 5s
+
+  backend:
+    image: python:3.11-slim
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: /data
+    volumes:
+      - ./tests:/data:ro
+    command: python -m http.server 8000
+    expose:
+      - "8000"

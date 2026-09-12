@@ -1,0 +1,486 @@
+package mesi
+
+import (
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestSecurityPolicyFingerprintCollisionSafety(t *testing.T) {
+	fp := func(hosts []string) string {
+		return securityPolicyFingerprint(EsiParserConfig{AllowedHosts: hosts})
+	}
+
+	// A single host entry containing a comma must not collide with two
+	// separate entries: the list is JSON-encoded, so the delimiter cannot
+	// be confused with a hostname character.
+	if fp([]string{"a,b"}) == fp([]string{"a", "b"}) {
+		t.Error(`fingerprint(["a,b"]) must differ from fingerprint(["a","b"])`)
+	}
+
+	// Order-invariance: the list is sorted before encoding.
+	if fp([]string{"b", "a"}) != fp([]string{"a", "b"}) {
+		t.Error(`fingerprint must be invariant to allowlist order`)
+	}
+
+	// Duplicate-host invariance: duplicates collapse after sorting.
+	if fp([]string{"a", "a"}) != fp([]string{"a"}) {
+		t.Error(`fingerprint must be invariant to duplicate hosts`)
+	}
+
+	// Per-host normalization still applies before encoding.
+	if fp([]string{"Backend."}) != fp([]string{"backend"}) {
+		t.Error(`fingerprint must normalize hosts (lowercase + trailing dot)`)
+	}
+
+	// Unicode collision safety: strings.ToLower is not EqualFold-compatible
+	// for non-ASCII hosts (ToLower("İ.example") == "i.example" but the
+	// matcher rejects the fold), so the two policies must never share a
+	// fingerprint — otherwise content cached under the İ variant would be
+	// served to the i variant without ever validating the redirect hop.
+	if fp([]string{"127.0.0.1", "İ.example"}) == fp([]string{"127.0.0.1", "i.example"}) {
+		t.Error(`fingerprint([127.0.0.1, İ.example]) must differ from fingerprint([127.0.0.1, i.example])`)
+	}
+
+	// ASCII unification is preserved: ToLower on pure ASCII is exactly
+	// EqualFold-compatible, so ASCII case variants share a fingerprint.
+	if fp([]string{"Backend"}) != fp([]string{"backend"}) {
+		t.Error(`fingerprint([Backend]) must equal fingerprint([backend]) (ASCII case normalization)`)
+	}
+
+	// Non-ASCII hosts are preserved verbatim: even though the matcher folds
+	// long-s to s, the fingerprint must not collapse them — different raw
+	// strings always produce different fingerprints (safe fragmentation).
+	if fp([]string{"ſ.example"}) == fp([]string{"s.example"}) {
+		t.Error(`fingerprint([ſ.example]) must differ from fingerprint([s.example]) (non-ASCII verbatim)`)
+	}
+
+	// IPv6 hosts contain colons; distinct addresses must stay distinct.
+	if fp([]string{"2001:db8::1"}) == fp([]string{"2001:db8::2"}) {
+		t.Error(`fingerprints of distinct IPv6 hosts must differ`)
+	}
+
+	// Malformed UTF-8: hosts are encoded as byte slices (base64), which is
+	// lossless, so two distinct byte strings must never share a fingerprint
+	// (json.Marshal on strings would collapse both to U+FFFD).
+	if fp([]string{string([]byte{0x80})}) == fp([]string{string([]byte{0x81})}) {
+		t.Error(`fingerprints of distinct malformed-UTF-8 hosts must differ`)
+	}
+	if fp([]string{string([]byte{0x80})}) == fp([]string{"\ufffd"}) {
+		t.Error(`fingerprint of malformed byte 0x80 must differ from literal U+FFFD`)
+	}
+
+	// Distinct policies with identical host lists but different flags must
+	// produce different fingerprints.
+	if securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}, BlockPrivateIPs: true}) ==
+		securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}}) {
+		t.Error(`fingerprint must encode the BlockPrivateIPs flag`)
+	}
+
+	// A caller-supplied custom HTTPClient can fetch arbitrary hosts, so a
+	// custom-client policy must never share a fingerprint with an otherwise
+	// identical policy using the default (nil) client.
+	if securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}, BlockPrivateIPs: true}) ==
+		securityPolicyFingerprint(EsiParserConfig{AllowedHosts: []string{"a"}, BlockPrivateIPs: true, HTTPClient: &http.Client{}}) {
+		t.Error(`fingerprint must encode the HTTPClient type (custom vs default)`)
+	}
+}
+
+func TestHostMatches(t *testing.T) {
+	tests := []struct {
+		name        string
+		host        string
+		allowedHost string
+		want        bool
+	}{
+		{"exact", "example.com", "example.com", true},
+		{"host case-insensitive", "Backend", "backend", true},
+		{"allowed case-insensitive", "backend", "Backend", true},
+		{"subdomain", "sub.backend", "backend", true},
+		{"subdomain case-insensitive", "SUB.Backend", "backend", true},
+		{"trailing root dot on host", "backend.", "backend", true},
+		{"trailing root dot on allowed", "backend", "backend.", true},
+		{"trailing root dot on both", "backend.", "backend.", true},
+		{"subdomain with trailing dot", "sub.backend.", "backend", true},
+		{"fold pair exact", "S.example", "s.example", true},
+		{"fold pair subdomain", "SUB.S.example", "s.example", true},
+		{"long-s folds to s", "\u017f.example", "s.example", true},
+		{"suffix injection hyphen", "attacker-example.com", "example.com", false},
+		{"suffix injection prefix", "notexample.com", "example.com", false},
+		{"suffix injection domain", "example.com.evil.com", "example.com", false},
+		{"ipv6 exact", "::1", "::1", true},
+		{"ipv6 case-insensitive", "2001:DB8::1", "2001:db8::1", true},
+		{"empty host", "", "example.com", false},
+		{"empty allowed host", "example.com", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hostMatches(tt.host, tt.allowedHost); got != tt.want {
+				t.Errorf("hostMatches(%q, %q) = %v, want %v", tt.host, tt.allowedHost, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsURLSafe_AllowedHostsNormalized(t *testing.T) {
+	tests := []struct {
+		name         string
+		url          string
+		allowedHosts []string
+		wantErr      bool
+	}{
+		{"host name case differs", "http://BACKEND:8000/x", []string{"backend"}, false},
+		{"allowlist case differs", "http://backend:8000/x", []string{"BACKEND"}, false},
+		{"subdomain case differs", "http://SUB.BACKEND:8000/x", []string{"backend"}, false},
+		{"host trailing root dot", "http://backend.:8000/x", []string{"backend"}, false},
+		{"allowlist trailing root dot", "http://backend:8000/x", []string{"backend."}, false},
+		{"case and trailing dot combined", "http://BACKEND.:8000/x", []string{"backend"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := EsiParserConfig{
+				BlockPrivateIPs: true,
+				AllowedHosts:    tt.allowedHosts,
+			}
+			err := isURLSafe(tt.url, config)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestIsURLSafe_DoesNotBlockPrivateIPs(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"localhost", "http://localhost/test"},
+		{"127.0.0.1", "http://127.0.0.1/test"},
+		{"10.0.0.1", "http://10.0.0.1/test"},
+		{"public IP", "http://8.8.8.8/test"},
+	}
+
+	config := EsiParserConfig{
+		BlockPrivateIPs: true,
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := isURLSafe(tt.url, config)
+			if err != nil {
+				t.Errorf("isURLSafe should not check private IPs, got error: %v", err)
+			}
+		})
+	}
+}
+
+func TestIsURLSafe_AllowedHosts(t *testing.T) {
+	tests := []struct {
+		name         string
+		url          string
+		allowedHosts []string
+		wantErr      bool
+	}{
+		{"allowed exact", "http://example.com/test", []string{"example.com"}, false},
+		{"allowed subdomain", "http://api.example.com/test", []string{"example.com"}, false},
+		{"not allowed", "http://other.com/test", []string{"example.com"}, true},
+		{"multiple allowed", "http://foo.com/test", []string{"example.com", "foo.com"}, false},
+		{"empty allowed list", "http://example.com/test", []string{}, false},
+		{"allowed host with port", "http://example.com:8080/test", []string{"example.com"}, false},
+		{"allowed subdomain with port", "http://api.example.com:443/test", []string{"example.com"}, false},
+		{"not allowed with port", "http://other.com:8080/test", []string{"example.com"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := EsiParserConfig{
+				BlockPrivateIPs: true,
+				AllowedHosts:    tt.allowedHosts,
+			}
+			err := isURLSafe(tt.url, config)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestIsURLSafe_IgnoresBlockPrivateIPsFlag(t *testing.T) {
+	config := EsiParserConfig{
+		BlockPrivateIPs: false,
+	}
+
+	err := isURLSafe("http://127.0.0.1/test", config)
+	if err != nil {
+		t.Errorf("expected no error since isURLSafe does not check BlockPrivateIPs, got: %v", err)
+	}
+}
+
+func TestIsURLSafe_InvalidURL(t *testing.T) {
+	config := EsiParserConfig{
+		BlockPrivateIPs: true,
+	}
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"invalid url", "://invalid"},
+		{"no host", "http:///path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := isURLSafe(tt.url, config)
+			if err == nil {
+				t.Error("expected error for invalid URL")
+			}
+		})
+	}
+}
+
+func TestSingleFetchUrlSSRFValidation(t *testing.T) {
+	config := EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: true,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrl("http://127.0.0.1/test", config)
+	if err == nil {
+		t.Error("expected SSRF error for private IP")
+	}
+	if !strings.Contains(err.Error(), "blocked dial to private/reserved ip") {
+		t.Errorf("expected dial-time SSRF error, got: %v", err)
+	}
+}
+
+func TestIsPrivateOrReservedIP(t *testing.T) {
+	tests := []struct {
+		name     string
+		ip       string
+		expected bool
+	}{
+		{"loopback", "127.0.0.1", true},
+		{"10.0.0.0/8", "10.0.0.1", true},
+		{"10.255.255.255", "10.255.255.255", true},
+		{"172.16.0.0/12", "172.16.0.1", true},
+		{"172.31.255.255", "172.31.255.255", true},
+		{"192.168.0.0/16", "192.168.1.1", true},
+		{"link-local", "169.254.1.1", true},
+		{"unspecified", "0.0.0.0", true},
+		{"multicast", "224.0.0.1", true},
+		{"reserved", "240.0.0.1", true},
+		{"public", "8.8.8.8", false},
+		{"public 2", "1.1.1.1", false},
+		{"ipv6 loopback", "::1", true},
+		{"ipv6 ULA fd00", "fd00::1", true},
+		{"ipv6 ULA fc00", "fc00::1", true},
+		{"ipv6 link-local", "fe80::1", true},
+		{"ipv6 unspecified", "::", true},
+		{"ipv4-mapped loopback", "::ffff:127.0.0.1", true},
+		{"ipv4-mapped private", "::ffff:10.0.0.1", true},
+		{"ipv6 documentation", "2001:db8::1", true},
+		{"ipv6 multicast", "ff02::1", true},
+		{"nat64", "64:ff9b::8.8.8.8", true},
+		{"cgnat", "100.64.0.1", true},
+		{"benchmark", "198.18.0.1", true},
+		{"public ipv6", "2606:4700:4700::1111", false},
+		{"public ipv6 google", "2001:4860:4860::8888", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("failed to parse IP %s", tt.ip)
+			}
+			result := isPrivateOrReservedIP(ip)
+			if result != tt.expected {
+				t.Errorf("isPrivateOrReservedIP(%s) = %v, expected %v", tt.ip, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSSRFDialBlocksPrivateIP(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	}))
+	defer server.Close()
+
+	config := EsiParserConfig{
+		DefaultUrl:      "http://127.0.0.1/",
+		MaxDepth:        1,
+		Timeout:         2 * time.Second,
+		BlockPrivateIPs: true,
+		Logger:          DiscardLogger{},
+	}
+
+	_, _, err := singleFetchUrlWithContext(server.URL, config, context.Background())
+	if err == nil {
+		t.Fatal("expected error when fetching from private IP with BlockPrivateIPs=true, got nil")
+	}
+	if !strings.Contains(err.Error(), "blocked dial to private/reserved ip") {
+		t.Errorf("expected 'blocked dial' error, got: %v", err)
+	}
+}
+
+func TestSSRFDialAllowsPublicIP(t *testing.T) {
+	config := EsiParserConfig{
+		BlockPrivateIPs: true,
+	}
+
+	dialer := safeDialer(config)
+
+	err := dialer.Control("tcp", "8.8.8.8:80", nil)
+	if err != nil {
+		t.Errorf("expected public IP 8.8.8.8 to be allowed, got error: %v", err)
+	}
+
+	err = dialer.Control("tcp", "1.1.1.1:443", nil)
+	if err != nil {
+		t.Errorf("expected public IP 1.1.1.1 to be allowed, got error: %v", err)
+	}
+
+	err = dialer.Control("tcp", "127.0.0.1:80", nil)
+	if err == nil {
+		t.Error("expected private IP 127.0.0.1 to be blocked")
+	}
+
+	err = dialer.Control("tcp", "10.0.0.1:80", nil)
+	if err == nil {
+		t.Error("expected private IP 10.0.0.1 to be blocked")
+	}
+}
+
+func TestSSRFDialerWithBlockPrivateIPsDisabled(t *testing.T) {
+	config := EsiParserConfig{
+		BlockPrivateIPs: false,
+	}
+
+	dialer := safeDialer(config)
+
+	err := dialer.Control("tcp", "127.0.0.1:80", nil)
+	if err != nil {
+		t.Errorf("expected private IP to be allowed when BlockPrivateIPs=false, got: %v", err)
+	}
+
+	err = dialer.Control("tcp", "10.0.0.1:80", nil)
+	if err != nil {
+		t.Errorf("expected private IP to be allowed when BlockPrivateIPs=false, got: %v", err)
+	}
+
+	err = dialer.Control("tcp", "8.8.8.8:80", nil)
+	if err != nil {
+		t.Errorf("expected public IP to be allowed when BlockPrivateIPs=false, got: %v", err)
+	}
+}
+
+func TestNewSSRFSafeTransport(t *testing.T) {
+	config := EsiParserConfig{
+		BlockPrivateIPs: true,
+	}
+
+	transport := NewSSRFSafeTransport(config)
+	if transport == nil {
+		t.Fatal("NewSSRFSafeTransport returned nil")
+	}
+
+	if transport.DialContext == nil {
+		t.Fatal("transport.DialContext is nil")
+	}
+
+	config2 := EsiParserConfig{
+		BlockPrivateIPs: false,
+	}
+	transport2 := NewSSRFSafeTransport(config2)
+	if transport2 == nil {
+		t.Fatal("NewSSRFSafeTransport returned nil for BlockPrivateIPs=false")
+	}
+}
+
+func TestSSRFBlocksIPv6Loopback(t *testing.T) {
+	log := &recordingLogger{}
+	config := EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: true,
+		Logger:          log,
+	}
+
+	html := `<html><body><esi:include src="http://[::1]/test"/></body></html>`
+	result := MESIParse(html, config)
+
+	if strings.Contains(result, "::1") {
+		t.Errorf("output leaked internal IP: %q", result)
+	}
+	if !log.containsMsg("include_failed") {
+		t.Errorf("expected include_failed log for IPv6 loopback block, got: %q", result)
+	}
+}
+
+func TestSSRFBlocksIPv6ULA(t *testing.T) {
+	log := &recordingLogger{}
+	config := EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: true,
+		Logger:          log,
+	}
+
+	html := `<html><body><esi:include src="http://[fd00::1]/test"/></body></html>`
+	result := MESIParse(html, config)
+
+	if strings.Contains(result, "fd00") {
+		t.Errorf("output leaked internal IP: %q", result)
+	}
+	if !log.containsMsg("include_failed") {
+		t.Errorf("expected include_failed log for IPv6 ULA block, got: %q", result)
+	}
+}
+
+func TestSSRFBlocksIPv4MappedIPv6(t *testing.T) {
+	log := &recordingLogger{}
+	config := EsiParserConfig{
+		DefaultUrl:      "http://example.com/",
+		MaxDepth:        1,
+		Timeout:         1 * time.Second,
+		BlockPrivateIPs: true,
+		Logger:          log,
+	}
+
+	html := `<html><body><esi:include src="http://[::ffff:127.0.0.1]/test"/></body></html>`
+	result := MESIParse(html, config)
+
+	if strings.Contains(result, "127.0.0.1") {
+		t.Errorf("output leaked internal IP: %q", result)
+	}
+	if !log.containsMsg("include_failed") {
+		t.Errorf("expected include_failed log for IPv4-mapped IPv6 block, got: %q", result)
+	}
+}

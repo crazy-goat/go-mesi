@@ -1,0 +1,3 @@
+This is plain text.
+<esi:include src="http://example.com/not-processed.txt" />
+This should not be processed.

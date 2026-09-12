@@ -3,10 +3,13 @@ package mesi
 import "strings"
 
 func unescape(input string) string {
+	const open = "<!--esi"
+	const close = "-->"
+
 	var result strings.Builder
 	pos := 0
 	for {
-		start := strings.Index(input[pos:], "<!--esi")
+		start := strings.Index(input[pos:], open)
 		if start == -1 {
 			result.WriteString(input[pos:])
 			return result.String()
@@ -17,14 +20,14 @@ func unescape(input string) string {
 			result.WriteString(input[pos:start])
 		}
 
-		end := strings.Index(input[start:], "-->")
+		bodyStart := start + len(open)
+		end := strings.Index(input[bodyStart:], close)
 		if end == -1 {
+			// unclosed — preserve original literal in output
 			result.WriteString(input[start:])
 			return result.String()
 		}
-		end += start + 3
-
-		result.WriteString(input[start+8 : end-3])
-		pos = end
+		result.WriteString(input[bodyStart : bodyStart+end])
+		pos = bodyStart + end + len(close)
 	}
 }

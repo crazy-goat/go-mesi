@@ -41,6 +41,8 @@ func main() {
 		return testFiles[i].Name() < testFiles[j].Name()
 	})
 
+	failures := 0
+
 	// Process each test file.
 	for _, testFile := range testFiles {
 		testFileName := testFile.Name()
@@ -53,12 +55,14 @@ func main() {
 		testData, err := os.ReadFile(testFilePath)
 		if err != nil {
 			fmt.Printf("Error reading test file %s: %v\n", testFilePath, err)
+			failures++
 			continue
 		}
 
 		expectedData, err := os.ReadFile(expectedFilePath)
 		if err != nil {
 			fmt.Printf("Error reading expected file %s: %v\n", expectedFilePath, err)
+			failures++
 			continue
 		}
 
@@ -67,7 +71,7 @@ func main() {
 
 		result := mesi.MESIParse(string(testData), mesi.EsiParserConfig{
 			Context:       context.Background(),
-			DefaultUrl:    "http://127.0.0.1:8080",
+			DefaultUrl:    "http://127.0.0.1:18080",
 			MaxDepth:      5,
 			ParseOnHeader: true,
 			Timeout:       5 * time.Second,
@@ -81,9 +85,11 @@ func main() {
 				fmt.Printf("Test %s ok, duration: %s\n", testFileName, elapsed)
 			} else {
 				fmt.Printf("Test %s failed - took to long, duration: %s\n", testFileName, elapsed)
+				failures++
 			}
 		} else {
 			fmt.Printf("Test %s fail, duration: %s\n", testFileName, elapsed)
+			failures++
 			// Generate a diff between expected and result using diffmatchpatch.
 			dmp := diffmatchpatch.New()
 			diffs := dmp.DiffMain(expected, result, false)
@@ -91,5 +97,9 @@ func main() {
 			fmt.Println("Diff:")
 			fmt.Println(diffText)
 		}
+	}
+
+	if failures > 0 {
+		os.Exit(1)
 	}
 }

@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>ESI AllowedHosts Blocked Test</title>
+</head>
+<body>
+    <h1>ESI AllowedHosts Blocked Test Page</h1>
+    <esi:include src="http://notbackend.com:8000/include.txt">FALLBACK-NOTBACKEND</esi:include>
+    <esi:include src="http://attacker-example.com:8000/include.txt">FALLBACK-ATTACKER</esi:include>
+    <esi:include src="http://evil.com:8000/include.txt">FALLBACK-EVIL</esi:include>
+    <p>After include</p>
+</body>
+</html>

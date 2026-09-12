@@ -17,6 +17,9 @@
 - **esi:include timeout** - Timeout can be set both globally and specifically for a selected `esi:include` tag. In combination with fallback content, you can easily manage the page generation time.
 - **Fallback content** - Set the content to be displayed if remote content download fails.
 - **SSRF Protection** – Built-in protection against Server-Side Request Forgery attacks with private IP blocking and optional host whitelisting.
+
+See the full [Feature Matrix](docs/features.md) for a detailed breakdown of which features are supported in each server integration.
+
 ## ESI Parser Configuration
 This document describes the configuration structure for the mESI parser.
 
@@ -80,6 +83,23 @@ Protects against Server-Side Request Forgery (SSRF) attacks by blocking requests
 When set, specifies a whitelist of allowed hostnames for ESI includes. If defined, only requests to matching hosts will be allowed. Supports exact matches and subdomain matching (e.g., `example.com` matches `www.example.com`).
 
 This is useful when you want to restrict ESI includes to a specific set of trusted domains while still blocking private IP ranges.
+
+**AllowPrivateIPsForAllowedHosts**
+
+When set to `true`, hosts in `AllowedHosts` are allowed to resolve to private/reserved IP addresses, bypassing the `BlockPrivateIPs` check.
+
+⚠️ **Security Warning:** This creates a potential SSRF vector if an attacker can control DNS for a host in `AllowedHosts`. Only use in trusted environments where you control DNS resolution (e.g., internal reverse proxy setups).
+
+Default: `false` (private IPs always blocked regardless of `AllowedHosts`)
+
+Example:
+```go
+config := mesi.EsiParserConfig{
+    BlockPrivateIPs:                true,
+    AllowedHosts:                   []string{"internal.local"},
+    AllowPrivateIPsForAllowedHosts: true,
+}
+```
 
 **MaxResponseSize**
 

@@ -1,0 +1,21 @@
+{
+    admin off
+    frankenphp
+}
+
+:8080 {
+    route {
+        mesi {
+            block_private_ips false
+        }
+
+        @backend path /proxy*
+        handle @backend {
+            uri strip_prefix /proxy
+            reverse_proxy test-server:80
+        }
+
+        root * /app
+        php_server
+    }
+}

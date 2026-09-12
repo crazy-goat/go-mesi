@@ -1,0 +1,2 @@
+/* CSS file with ESI include */
+body { background: url(<esi:include src="http://backend:8000/ssrf-allowed.html"/>); }
