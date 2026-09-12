@@ -431,11 +431,11 @@ func TestAllowedHostsFromFlag(t *testing.T) {
 func TestCLI_allowedHostsFlagInHelp(t *testing.T) {
 	stdout, stderr, _ := runCLI(t, "-h")
 	output := stdout + stderr
-	if !strings.Contains(output, "-allowedHosts") {
-		t.Errorf("expected -allowedHosts in help output, got stdout=%q stderr=%q", stdout, stderr)
+	if !strings.Contains(output, "-allowed-hosts") {
+		t.Errorf("expected -allowed-hosts in help output, got stdout=%q stderr=%q", stdout, stderr)
 	}
 	if !strings.Contains(output, "Comma-separated list of allowed hosts") {
-		t.Errorf("expected -allowedHosts description in help output, got stdout=%q stderr=%q", stdout, stderr)
+		t.Errorf("expected -allowed-hosts description in help output, got stdout=%q stderr=%q", stdout, stderr)
 	}
 }
 
@@ -447,7 +447,7 @@ func TestCLI_allowedHostsFlag(t *testing.T) {
 	if err := os.WriteFile(inputFile, []byte("<!--esi Hello World-->"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	stdout, _, exitCode := runCLI(t, "-allowedHosts=backend.internal,cdn.example.com", inputFile)
+	stdout, _, exitCode := runCLI(t, "-allowed-hosts=backend.internal,cdn.example.com", inputFile)
 	if exitCode != 0 {
 		t.Fatalf("unexpected exit code %d", exitCode)
 	}
@@ -479,7 +479,7 @@ func TestCLI_allowPrivateIPsForAllowedHostsFlagInHelp(t *testing.T) {
 	if !strings.Contains(output, "-allowPrivateIPsForAllowedHosts") {
 		t.Errorf("expected -allowPrivateIPsForAllowedHosts in help output, got stdout=%q stderr=%q", stdout, stderr)
 	}
-	if !strings.Contains(output, "hosts listed in -allowedHosts") {
+	if !strings.Contains(output, "hosts listed in -allowed-hosts") {
 		t.Errorf("expected -allowPrivateIPsForAllowedHosts description in help output, got stdout=%q stderr=%q", stdout, stderr)
 	}
 }

@@ -1,10 +1,10 @@
 <!-- Example: ESI with allowed-hosts whitelist -->
-<!-- Run: mesi-cli -allowedHosts="backend.internal,cdn.example.com" examples/cli/allowed-hosts.html -->
+<!-- Run: mesi-cli -allowed-hosts="backend.internal,cdn.example.com" examples/cli/allowed-hosts.html -->
 <html>
 <body>
   <h1>Allowed Hosts Example</h1>
   <esi:include src="http://backend.internal/fragment.html" />
-  <!-- Only hosts listed in -allowedHosts are fetched (exact or subdomain-suffix match);
+  <!-- Only hosts listed in -allowed-hosts are fetched (exact or subdomain-suffix match);
        includes to unlisted hosts are blocked. Unset = all hosts allowed,
        subject to the private-IP block (see -allow-private-ips). -->
 </body>
