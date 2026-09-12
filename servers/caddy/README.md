@@ -53,7 +53,9 @@ caddy run --config Caddyfile
 ### `max_depth`
 
 Limits ESI nesting depth. Controls how many levels of `<esi:include>` can be
-recursively processed. Default: `5`.
+recursively processed. Default: `5`. Valid range: `[0, 10000]`
+(`mesi.MaxMaxDepth`). Values outside that range (negatives, `10001` and above)
+are rejected at Caddyfile parse and JSON provision.
 
 ```
 mesi {
@@ -64,12 +66,13 @@ mesi {
 | Value | Behaviour |
 |---|---|
 | `0` | ESI processing disabled (passthrough). Tags are stripped but includes are not fetched. |
-| `1–N` | Process up to N levels of nested includes. |
+| `1–N` | Process up to N levels of nested includes (`N` ≤ 10000). |
 | unset | Default: `5`. |
 
 **Notes:**
 - Useful for preventing infinite recursion in complex ESI layouts.
 - Setting `0` is useful for temporarily disabling ESI processing without removing the middleware.
+- Invalid values are rejected at config load (no silent default, no `uint` wrap).
 
 ### `timeout`
 

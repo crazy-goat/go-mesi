@@ -33,6 +33,8 @@ var (
 type MesiMiddleware struct {
 	// MaxDepth limits ESI nesting depth. Pointer distinguishes "unset" (nil → default 5)
 	// from "explicitly set to 0" (passthrough, ESI disabled).
+	// Valid range is [0, mesi.MaxMaxDepth] (10000). Values outside that
+	// range are rejected at Caddyfile parse and JSON provision.
 	MaxDepth *int `json:"max_depth,omitempty"`
 
 	// SharedHTTPClient enables TCP connection reuse for ESI includes.
@@ -132,8 +134,24 @@ func (m *MesiMiddleware) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
+// validateMaxDepth rejects values outside [0, mesi.MaxMaxDepth].
+// 0 is valid passthrough. Negatives must not reach uint() in ServeHTTP
+// (a wrap would bypass the nesting cap on 64-bit).
+func validateMaxDepth(v int) error {
+	if v < 0 || uint64(v) > mesi.MaxMaxDepth {
+		return fmt.Errorf("max_depth must be in [0, %d], got %d", mesi.MaxMaxDepth, v)
+	}
+	return nil
+}
+
 // Provision implements caddy.Provisioner. Called once at config load.
 func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
+	if m.MaxDepth != nil {
+		if err := validateMaxDepth(*m.MaxDepth); err != nil {
+			return err
+		}
+	}
+
 	blockPrivateIPs := true
 	if m.BlockPrivateIPs != nil {
 		blockPrivateIPs = *m.BlockPrivateIPs
@@ -315,6 +333,9 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 				v, err := strconv.Atoi(d.Val())
 				if err != nil {
+					return d.Errf("invalid max_depth %q: %v", d.Val(), err)
+				}
+				if err := validateMaxDepth(v); err != nil {
 					return d.Errf("invalid max_depth %q: %v", d.Val(), err)
 				}
 				m.MaxDepth = &v

@@ -1,6 +1,7 @@
 package caddy
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/crazy-goat/go-mesi/mesi"
 )
 
 // TestSharedHTTPClientDefault ensures that without the directive,
@@ -1360,39 +1362,109 @@ func TestUnmarshalCaddyfileMaxDepth(t *testing.T) {
 	}
 }
 
-// TestUnmarshalCaddyfileMaxDepthZero parses max_depth 0 (passthrough).
-func TestUnmarshalCaddyfileMaxDepthZero(t *testing.T) {
-	input := `mesi {
-		max_depth 0
-	}`
-	d := caddyfile.NewTestDispenser(input)
-	m := &MesiMiddleware{}
-	err := m.UnmarshalCaddyfile(d)
-	if err != nil {
-		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+// TestUnmarshalCaddyfileMaxDepthValidBounds accepts the documented
+// [0, mesi.MaxMaxDepth] range. 0 is passthrough; MaxMaxDepth is the cap.
+func TestUnmarshalCaddyfileMaxDepthValidBounds(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{name: "0", value: "0", want: 0},
+		{name: "10000", value: fmt.Sprintf("%d", mesi.MaxMaxDepth), want: int(mesi.MaxMaxDepth)},
 	}
-	if m.MaxDepth == nil {
-		t.Fatal("MaxDepth should be non-nil after parsing max_depth 0")
-	}
-	if *m.MaxDepth != 0 {
-		t.Errorf("expected MaxDepth=0 (passthrough), got %d", *m.MaxDepth)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf("mesi {\n\t\tmax_depth %s\n\t}", tc.value)
+			d := caddyfile.NewTestDispenser(input)
+			m := &MesiMiddleware{}
+			if err := m.UnmarshalCaddyfile(d); err != nil {
+				t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+			}
+			if m.MaxDepth == nil {
+				t.Fatal("MaxDepth should be non-nil after parsing a valid max_depth")
+			}
+			if *m.MaxDepth != tc.want {
+				t.Errorf("expected MaxDepth=%d, got %d", tc.want, *m.MaxDepth)
+			}
+		})
 	}
 }
 
-// TestUnmarshalCaddyfileMaxDepthInvalid verifies that max_depth with
-// a non-numeric value returns an error.
+// TestUnmarshalCaddyfileMaxDepthInvalid verifies that max_depth rejects
+// non-numeric input, negatives (which would wrap via uint() in ServeHTTP),
+// and values above mesi.MaxMaxDepth.
 func TestUnmarshalCaddyfileMaxDepthInvalid(t *testing.T) {
-	input := `mesi {
-		max_depth abc
-	}`
-	d := caddyfile.NewTestDispenser(input)
-	m := &MesiMiddleware{}
-	err := m.UnmarshalCaddyfile(d)
-	if err == nil {
-		t.Fatal("UnmarshalCaddyfile should return error for invalid max_depth")
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{name: "abc", value: "abc"},
+		{name: "-1", value: "-1"},
+		{name: "10001", value: fmt.Sprintf("%d", mesi.MaxMaxDepth+1)},
 	}
-	if !strings.Contains(err.Error(), "invalid max_depth") {
-		t.Errorf("expected 'invalid max_depth' error, got: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf("mesi {\n\t\tmax_depth %s\n\t}", tc.value)
+			d := caddyfile.NewTestDispenser(input)
+			m := &MesiMiddleware{}
+			err := m.UnmarshalCaddyfile(d)
+			if err == nil {
+				t.Fatal("UnmarshalCaddyfile should return error for invalid max_depth")
+			}
+			if !strings.Contains(err.Error(), "invalid max_depth") {
+				t.Errorf("expected 'invalid max_depth' error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestProvisionMaxDepthValidBounds accepts explicit 0 (passthrough) and
+// mesi.MaxMaxDepth via the JSON/Provision path (Caddyfile is not involved).
+func TestProvisionMaxDepthValidBounds(t *testing.T) {
+	cases := []struct {
+		name  string
+		value int
+	}{
+		{name: "0", value: 0},
+		{name: "10000", value: int(mesi.MaxMaxDepth)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := tc.value
+			m := &MesiMiddleware{MaxDepth: &v}
+			if err := m.Provision(caddy.Context{}); err != nil {
+				t.Fatalf("Provision() returned error: %v", err)
+			}
+			if m.MaxDepth == nil || *m.MaxDepth != tc.value {
+				t.Errorf("expected MaxDepth=%d after Provision, got %v", tc.value, m.MaxDepth)
+			}
+		})
+	}
+}
+
+// TestProvisionMaxDepthInvalid rejects negatives and values above
+// mesi.MaxMaxDepth at JSON provision (the path that bypasses UnmarshalCaddyfile).
+func TestProvisionMaxDepthInvalid(t *testing.T) {
+	cases := []struct {
+		name  string
+		value int
+	}{
+		{name: "-1", value: -1},
+		{name: "10001", value: int(mesi.MaxMaxDepth) + 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := tc.value
+			m := &MesiMiddleware{MaxDepth: &v}
+			err := m.Provision(caddy.Context{})
+			if err == nil {
+				t.Fatal("Provision() should return error for out-of-range max_depth")
+			}
+			if !strings.Contains(err.Error(), "max_depth") {
+				t.Errorf("expected max_depth in error, got: %v", err)
+			}
+		})
 	}
 }
 
