@@ -150,6 +150,17 @@ else
 	fail "Max-depth=0" "Result: $RESULT"
 fi
 
+echo "Test 10b: --max-depth above MaxMaxDepth is rejected"
+set +e
+OVER_ERR=$("$CLI_BINARY" --max-depth 10001 "$ROOT_DIR/tests/fixtures/05-comment.html" 2>&1)
+OVER_CODE=$?
+set -e
+if [ "$OVER_CODE" -ne 0 ] && echo "$OVER_ERR" | grep -q "max-depth"; then
+	pass "Max-depth=10001 rejected"
+else
+	fail "Max-depth=10001 reject" "exit=$OVER_CODE err=$OVER_ERR"
+fi
+
 echo "Test 11: --parse-on-header flag in file mode"
 RESULT=$("$CLI_BINARY" --parse-on-header "$ROOT_DIR/tests/fixtures/05-comment.html" 2>/dev/null)
 if echo "$RESULT" | grep -q "This should be empty:"; then
