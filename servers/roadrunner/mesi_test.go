@@ -6,12 +6,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/crazy-goat/go-mesi/mesi"
 )
 
 func TestCreateConfig(t *testing.T) {
 	config := CreateConfig()
-	if config.MaxDepth != 5 {
-		t.Errorf("Expected MaxDepth 5, got %d", config.MaxDepth)
+	if config.MaxDepth == nil || *config.MaxDepth != 5 {
+		t.Errorf("Expected MaxDepth 5, got %v", config.MaxDepth)
 	}
 }
 
@@ -20,8 +22,8 @@ func TestInitDefaults(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if p.config.MaxDepth != 5 {
-		t.Errorf("Expected MaxDepth 5, got %d", p.config.MaxDepth)
+	if p.config.MaxDepth == nil || *p.config.MaxDepth != 5 {
+		t.Errorf("Expected MaxDepth 5, got %v", p.config.MaxDepth)
 	}
 	if p.cache != nil {
 		t.Error("Expected nil cache with default config")
@@ -574,5 +576,82 @@ func TestAllowedHostsMultipleHostsAllows(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "FRAGMENT_OK") {
 		t.Errorf("Expected include to be allowed when the host is listed (2nd entry) in allowed_hosts, got body: %s", rec.Body.String())
+	}
+}
+
+func TestInitExplicitZeroKeepsPassthrough(t *testing.T) {
+	cfg := &Config{MaxDepth: intPtr(0)}
+	p := &Plugin{config: cfg}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if p.config.MaxDepth == nil || *p.config.MaxDepth != 0 {
+		t.Errorf("expected explicit 0 to stay 0, got %v", p.config.MaxDepth)
+	}
+	if p.maxDepth() != 0 {
+		t.Errorf("expected maxDepth()=0, got %d", p.maxDepth())
+	}
+}
+
+func TestInitNilMaxDepthDefaultsToFive(t *testing.T) {
+	p := &Plugin{config: &Config{}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if p.config.MaxDepth == nil || *p.config.MaxDepth != 5 {
+		t.Errorf("expected unset MaxDepth to become 5, got %v", p.config.MaxDepth)
+	}
+}
+
+func TestInitRejectsNegativeMaxDepth(t *testing.T) {
+	p := &Plugin{config: &Config{MaxDepth: intPtr(-1)}}
+	err := p.Init()
+	if err == nil {
+		t.Fatal("expected error for negative max_depth")
+	}
+	if !strings.Contains(err.Error(), "max_depth") {
+		t.Errorf("expected max_depth in error, got %v", err)
+	}
+}
+
+func TestInitRejectsMaxDepthAboveCap(t *testing.T) {
+	p := &Plugin{config: &Config{MaxDepth: intPtr(int(mesi.MaxMaxDepth) + 1)}}
+	err := p.Init()
+	if err == nil {
+		t.Fatal("expected error for max_depth above MaxMaxDepth")
+	}
+	if !strings.Contains(err.Error(), "max_depth") {
+		t.Errorf("expected max_depth in error, got %v", err)
+	}
+}
+
+func TestMiddlewareMaxDepthZeroPassthrough(t *testing.T) {
+	fragmentCalls := 0
+	frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fragmentCalls++
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fragment"))
+	}))
+	defer frag.Close()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<html><body><esi:include src="` + frag.URL + `/frag" /></body></html>`))
+	})
+
+	p := &Plugin{config: &Config{MaxDepth: intPtr(0)}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	p.Middleware(handler).ServeHTTP(rec, httptest.NewRequest("GET", "http://example.com/", nil))
+
+	if fragmentCalls != 0 {
+		t.Errorf("expected 0 fragment fetches at max_depth 0, got %d", fragmentCalls)
+	}
+	if rec.Body.String() != "<html><body></body></html>" {
+		t.Errorf("expected passthrough empty include, got %q", rec.Body.String())
 	}
 }

@@ -28,7 +28,10 @@ const MaxCacheTTL = 24 * time.Hour
 const DefaultCacheSize = 10000
 
 type Config struct {
-	MaxDepth                       int      `mapstructure:"max_depth"`
+	// MaxDepth limits ESI nesting. A nil pointer is "unset" (default 5).
+	// Explicit 0 is passthrough (disable ESI), matching Caddy / Apache #166
+	// and the README. Valid range is [0, mesi.MaxMaxDepth].
+	MaxDepth                       *int     `mapstructure:"max_depth"`
 	SharedHTTPClient               bool     `mapstructure:"shared_http_client"`
 	CacheBackend                   string   `mapstructure:"cache_backend"`
 	CacheSize                      int      `mapstructure:"cache_size"`
@@ -45,9 +48,11 @@ type Config struct {
 	AllowPrivateIPsForAllowedHosts bool     `mapstructure:"allow_private_ips_for_allowed_hosts"`
 }
 
+func intPtr(v int) *int { return &v }
+
 func CreateConfig() *Config {
 	return &Config{
-		MaxDepth: 5,
+		MaxDepth: intPtr(5),
 	}
 }
 
@@ -76,8 +81,10 @@ func (p *Plugin) Init() error {
 		p.config = CreateConfig()
 	}
 
-	if p.config.MaxDepth == 0 {
-		p.config.MaxDepth = 5
+	if p.config.MaxDepth == nil {
+		p.config.MaxDepth = intPtr(5)
+	} else if *p.config.MaxDepth < 0 || uint64(*p.config.MaxDepth) > mesi.MaxMaxDepth {
+		return fmt.Errorf("max_depth must be in [0, %d], got %d", mesi.MaxMaxDepth, *p.config.MaxDepth)
 	}
 
 	// BlockPrivateIPs defaults to true (secure by default). A nil pointer
@@ -149,7 +156,7 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 		if strings.HasPrefix(contentType, "text/html") {
 			config := mesi.EsiParserConfig{
 				Context:                        r.Context(),
-				MaxDepth:                       uint(p.config.MaxDepth),
+				MaxDepth:                       uint(p.maxDepth()),
 				DefaultUrl:                     middleware.GetDefaultUrl(r),
 				Timeout:                        10 * time.Second,
 				BlockPrivateIPs:                p.blockPrivateIPs,
@@ -193,6 +200,13 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 			w.Write(customWriter.Body().Bytes())
 		}
 	})
+}
+
+func (p *Plugin) maxDepth() int {
+	if p.config == nil || p.config.MaxDepth == nil {
+		return 5
+	}
+	return *p.config.MaxDepth
 }
 
 func (p *Plugin) Name() string {
