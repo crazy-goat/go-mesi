@@ -156,23 +156,45 @@ func ParseDefault(input *C.char) *C.char {
 	return C.CString(result)
 }
 
+// resolveMaxDepth converts the C ABI maxDepth to a validated uint.
+// Values outside [0, mesi.MaxMaxDepth] are rejected (0 is passthrough).
+// On error the caller must return NULL to C — never uint() a negative.
+func resolveMaxDepth(maxDepth C.int) (uint, error) {
+	v := int(maxDepth)
+	if err := config.ValidateMaxDepth(v); err != nil {
+		return 0, err
+	}
+	return uint(v), nil
+}
+
+func rejectMaxDepth(err error) {
+	mesi.DefaultLoggerNew().Warn("invalid_max_depth", "error", err.Error())
+}
+
 // Parse parses ESI tags with explicit configuration.
 // Parameters:
 //   - input: ESI markup string to parse
-//   - maxDepth: maximum nesting depth for includes (recommended: 5)
+//   - maxDepth: maximum nesting depth for includes (recommended: 5).
+//     Valid range is [0, mesi.MaxMaxDepth] (10000). Explicit 0 is
+//     passthrough (no ESI fetch). Values outside that range return NULL.
 //   - defaultUrl: base URL for relative include paths
 //
-// Returns parsed HTML with ESI tags replaced by their content.
-// Caller must free the returned string with FreeString.
+// Returns parsed HTML with ESI tags replaced by their content, or NULL
+// when maxDepth is out of range. Caller must free a non-NULL return
+// with FreeString.
 //
 //export Parse
 func Parse(input *C.char, maxDepth C.int, defaultUrl *C.char) *C.char {
 	goInput := C.GoString(input)
-	goMaxDepth := int(maxDepth)
+	goMaxDepth, err := resolveMaxDepth(maxDepth)
+	if err != nil {
+		rejectMaxDepth(err)
+		return nil
+	}
 	goDefaultUrl := C.GoString(defaultUrl)
 	config := mesi.EsiParserConfig{
 		DefaultUrl: goDefaultUrl,
-		MaxDepth:   uint(goMaxDepth),
+		MaxDepth:   goMaxDepth,
 		Timeout:    30 * time.Second,
 	}
 	applySharedConfig(&config)
@@ -183,13 +205,15 @@ func Parse(input *C.char, maxDepth C.int, defaultUrl *C.char) *C.char {
 // ParseWithConfig parses ESI tags with full configuration.
 // Parameters:
 //   - input: ESI markup string to parse
-//   - maxDepth: maximum nesting depth for includes (recommended: 5)
+//   - maxDepth: maximum nesting depth for includes (recommended: 5).
+//     Same [0, mesi.MaxMaxDepth] contract as Parse; out of range returns NULL.
 //   - defaultUrl: base URL for relative include paths
 //   - allowedHosts: space-separated list of allowed hostnames (or empty for no restriction)
 //   - blockPrivateIPs: set to 1 to block private/reserved IP addresses
 //
-// Returns parsed HTML with ESI tags replaced by their content.
-// Caller must free the returned string with FreeString.
+// Returns parsed HTML with ESI tags replaced by their content, or NULL
+// when maxDepth is out of range. Caller must free a non-NULL return
+// with FreeString.
 //
 //export ParseWithConfig
 func ParseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int) *C.char {
@@ -292,7 +316,11 @@ func buildRequestFromJSON(jsonStr string) *http.Request {
 // requestCtxJSON. When empty the behaviour is identical to ParseWithConfigEx.
 func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int, cacheKeyTemplate *C.char, requestCtxJSON *C.char) *C.char {
 	goInput := C.GoString(input)
-	goMaxDepth := int(maxDepth)
+	goMaxDepth, err := resolveMaxDepth(maxDepth)
+	if err != nil {
+		rejectMaxDepth(err)
+		return nil
+	}
 	goDefaultUrl := C.GoString(defaultUrl)
 
 	hostsStr := ""
@@ -312,7 +340,7 @@ func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, 
 
 	cfg := mesi.EsiParserConfig{
 		DefaultUrl:                     goDefaultUrl,
-		MaxDepth:                       uint(goMaxDepth),
+		MaxDepth:                       goMaxDepth,
 		Timeout:                        30 * time.Second,
 		AllowedHosts:                   hosts,
 		BlockPrivateIPs:                blockPrivateIPs != 0,

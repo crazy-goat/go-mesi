@@ -69,6 +69,8 @@ Hello world! example script:
 echo \mesi\parse('<!--esi Hello, world!-->', 5, "http://127.0.0.1");
 ```
 
+`max_depth` must be an integer in `[0, 10000]` (`mesi.MaxMaxDepth`). Explicit `0` is passthrough (no ESI fetch). Values outside that range emit `E_WARNING` and return `false`.
+
 ## Extended API: `parse_with_config()`
 
 For caching, use `parse_with_config()` with an associative `config` array. All three cache backends (`memory`, `redis`, `memcached`) are exposed to PHP.
@@ -76,7 +78,7 @@ For caching, use `parse_with_config()` with an associative `config` array. All t
 ```php
 $html = \mesi\parse_with_config(
     $input,
-    5,                          // max_depth (recommended: 5)
+    5,                          // max_depth (recommended: 5; range [0, 10000])
     'http://edge.example.com/', // default URL for relative includes
     [
         'cache_backend' => 'memory',     // "memory" | "redis" | "memcached" | ""

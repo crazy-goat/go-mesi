@@ -324,6 +324,105 @@ int main(void) {
     FreeCache();
     printf("  PASS: FreeCache did not crash\n");
 
+    /* ---- #414: maxDepth range [0, 10000]; 0 is passthrough ---- */
+    {
+        printf("Test 22: Parse maxDepth 0 is passthrough (non-NULL)\n");
+        char *r = Parse("plain-ok", 0, "http://127.0.0.1/");
+        if (r == NULL) {
+            printf("  FAIL: maxDepth 0 must not return NULL\n");
+            failed++;
+        } else if (strcmp(r, "plain-ok") != 0) {
+            printf("  FAIL: maxDepth 0 passthrough, got: %s\n", r);
+            failed++;
+        } else {
+            printf("  PASS: maxDepth 0 accepted\n");
+        }
+        if (r) FreeString(r);
+    }
+    {
+        printf("Test 22b: Parse maxDepth 10000 accepted\n");
+        char *r = Parse("plain-ok", 10000, "http://127.0.0.1/");
+        if (r == NULL) {
+            printf("  FAIL: maxDepth 10000 must be accepted\n");
+            failed++;
+        } else if (strcmp(r, "plain-ok") != 0) {
+            printf("  FAIL: maxDepth 10000, got: %s\n", r);
+            failed++;
+        } else {
+            printf("  PASS: maxDepth 10000 accepted\n");
+        }
+        if (r) FreeString(r);
+    }
+    {
+        printf("Test 22c: Parse maxDepth 10001 rejected (NULL)\n");
+        char *r = Parse("plain-ok", 10001, "http://127.0.0.1/");
+        if (r != NULL) {
+            printf("  FAIL: maxDepth 10001 must return NULL, got: %s\n", r);
+            FreeString(r);
+            failed++;
+        } else {
+            printf("  PASS: maxDepth 10001 returned NULL\n");
+        }
+    }
+    {
+        printf("Test 22d: Parse maxDepth -1 rejected (NULL)\n");
+        char *r = Parse("plain-ok", -1, "http://127.0.0.1/");
+        if (r != NULL) {
+            printf("  FAIL: maxDepth -1 must return NULL, got: %s\n", r);
+            FreeString(r);
+            failed++;
+        } else {
+            printf("  PASS: maxDepth -1 returned NULL\n");
+        }
+    }
+    {
+        printf("Test 22e: ParseWithConfig maxDepth -1 rejected (NULL)\n");
+        char *r = ParseWithConfig("plain-ok", -1, "http://127.0.0.1/", "", 0);
+        if (r != NULL) {
+            printf("  FAIL: ParseWithConfig maxDepth -1 must return NULL, got: %s\n", r);
+            FreeString(r);
+            failed++;
+        } else {
+            printf("  PASS: ParseWithConfig maxDepth -1 returned NULL\n");
+        }
+    }
+    {
+        printf("Test 22f: ParseWithConfigEx maxDepth 10001 rejected (NULL)\n");
+        char *r = ParseWithConfigEx("plain-ok", 10001, "http://127.0.0.1/", "", 0, 0);
+        if (r != NULL) {
+            printf("  FAIL: ParseWithConfigEx maxDepth 10001 must return NULL, got: %s\n", r);
+            FreeString(r);
+            failed++;
+        } else {
+            printf("  PASS: ParseWithConfigEx maxDepth 10001 returned NULL\n");
+        }
+    }
+    {
+        printf("Test 22g: ParseWithConfigCtx maxDepth -1 rejected (NULL)\n");
+        char *r = ParseWithConfigCtx("plain-ok", -1, "http://127.0.0.1/", "", 0, 0, "", "");
+        if (r != NULL) {
+            printf("  FAIL: ParseWithConfigCtx maxDepth -1 must return NULL, got: %s\n", r);
+            FreeString(r);
+            failed++;
+        } else {
+            printf("  PASS: ParseWithConfigCtx maxDepth -1 returned NULL\n");
+        }
+    }
+    {
+        printf("Test 22h: ParseWithConfig maxDepth 0 is passthrough (non-NULL)\n");
+        char *r = ParseWithConfig("plain-ok", 0, "http://127.0.0.1/", "", 0);
+        if (r == NULL) {
+            printf("  FAIL: ParseWithConfig maxDepth 0 must not return NULL\n");
+            failed++;
+        } else if (strcmp(r, "plain-ok") != 0) {
+            printf("  FAIL: ParseWithConfig maxDepth 0 passthrough, got: %s\n", r);
+            failed++;
+        } else {
+            printf("  PASS: ParseWithConfig maxDepth 0 accepted\n");
+        }
+        if (r) FreeString(r);
+    }
+
     /* ---- #196: shared-client yield for allowPrivateIPsForAllowedHosts ----
      *
      * The PHP extension (and any C consumer) runs with the shared HTTP
