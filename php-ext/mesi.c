@@ -37,6 +37,8 @@ ZEND_END_ARG_INFO()
  */
 #define MESI_CFG_MAX 4096            /* mirrors Apache MESI_MAX_CACHE_CONFIG_JSON */
 #define MESI_BACKEND_MAX 16
+/* Global ESI nesting depth (#414). Matches mesi.MaxMaxDepth (10,000). */
+#define MESI_MAX_MAX_DEPTH 10000
 
 typedef struct {
     char    backend[MESI_BACKEND_MAX]; /* "", "memory", "redis", "memcached" */
@@ -113,6 +115,19 @@ static void mesi_cache_state_record(const char *backend, long size, long ttl,
  * password never injects JSON keys. The trade-off (no `"`, no `\\`, no
  * control chars in user-supplied values) matches Apache mod_mesi.c.
  */
+/* Rejects max_depth outside [0, MESI_MAX_MAX_DEPTH]. 0 is passthrough.
+ * Emits E_WARNING and returns 1 when invalid so both parse() and
+ * parse_with_config() share the same contract as libgomesi (#414). */
+static int mesi_reject_max_depth(const char *fn, zend_long max_depth) {
+    if (max_depth >= 0 && max_depth <= MESI_MAX_MAX_DEPTH) {
+        return 0;
+    }
+    php_error_docref(NULL, E_WARNING,
+        "mesi\\%s(): max_depth must be in [0, %d], got " ZEND_LONG_FMT,
+        fn, MESI_MAX_MAX_DEPTH, max_depth);
+    return 1;
+}
+
 static int mesi_is_safe_string(const char *s) {
     if (s == NULL) return 1;
     for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
@@ -394,7 +409,15 @@ PHP_FUNCTION(parse) {
         Z_PARAM_STRING(default_url, default_url_len)
     ZEND_PARSE_PARAMETERS_END();
 
-    char* result = Parse(input, max_depth, default_url);
+    if (mesi_reject_max_depth("parse", max_depth)) {
+        RETURN_FALSE;
+    }
+
+    char* result = Parse(input, (int)max_depth, default_url);
+    if (result == NULL) {
+        php_error_docref(NULL, E_WARNING, "mesi\\parse(): invalid max_depth");
+        RETURN_FALSE;
+    }
     RETVAL_STRING(result);
     FreeString(result);
 }
@@ -522,6 +545,10 @@ PHP_FUNCTION(parse_with_config) {
         Z_PARAM_STRING(default_url, default_url_len)
         Z_PARAM_ARRAY(config)
     ZEND_PARSE_PARAMETERS_END();
+
+    if (mesi_reject_max_depth("parse_with_config", max_depth)) {
+        RETURN_FALSE;
+    }
 
     const char *cache_backend = "";
     long cache_size = 0;     /* 0 == "not specified" → use default */
@@ -1141,12 +1168,16 @@ ctx_done: ;
         ctx_json = (char*)"";
     }
 
-    char* result = ParseWithConfigCtx(input, max_depth, default_url, (char*)allowed_hosts,
+    char* result = ParseWithConfigCtx(input, (int)max_depth, default_url, (char*)allowed_hosts,
                                       block_private_ips ? 1 : 0,
                                       allow_private_ips_for_allowed_hosts ? 1 : 0,
                                       (char*)tmpl_for_ctx,
                                       ctx_json && *ctx_json ? ctx_json : (char*)"");
     if (ctx_json_buf) free(ctx_json_buf);
+    if (result == NULL) {
+        php_error_docref(NULL, E_WARNING, "mesi\\parse_with_config(): invalid max_depth");
+        RETURN_FALSE;
+    }
     RETVAL_STRING(result);
     FreeString(result);
 }
