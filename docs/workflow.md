@@ -227,8 +227,9 @@ go test -count=1 -v ./mesi/...
 > RoadRunner, FrankenPHP, proxy, PHP ext, Yaegi) is Docker-heavy — CI is the
 > authoritative gate for it; running it locally is optional.
 
-> **Note:** `libgomesi.so`, `libgomesi.a`, `*.test` and `coverage.*` are
-> generated artifacts and must never be committed.
+> **Note:** `libgomesi.so`, `libgomesi.a`, `*.test`, `coverage.*` and
+> `servers/test-server/test-server` are generated artifacts and must never
+> be committed.
 
 After auto-fixing lint issues (e.g. `gofmt -w`), commit any fixes:
 
@@ -603,7 +604,8 @@ Knowledge" above).
 - Silent-default fallback in parsers.
 - Silent `uint(x)` downcasts feeding `make([]…, n)` or `rng(...)`.
 - Force-push `main`.
-- Commit `libgomesi.so` / `libgomesi.a` / `*.test` / `coverage.*`.
+- Commit `libgomesi.so` / `libgomesi.a` / `*.test` / `coverage.*` /
+  `servers/test-server/test-server`.
 - Proposing `composer`, PHP version matrices, or FoundationDB for this
   repo's CI — it is a Go project.
 
