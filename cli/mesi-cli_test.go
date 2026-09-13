@@ -181,6 +181,37 @@ func TestCLI_maxDepthFlag(t *testing.T) {
 	}
 }
 
+func TestCLI_maxDepthAtCap(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, exitCode := runCLI(t, "--max-depth", "10000", inputFile)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d (stderr=%q)", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, "Hello") {
+		t.Errorf("expected 'Hello' with max-depth=10000, got %q", stdout)
+	}
+}
+
+func TestCLI_maxDepthAboveCap(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, exitCode := runCLI(t, "--max-depth", "10001", inputFile)
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit for max-depth=10001 (stdout=%q stderr=%q)", stdout, stderr)
+	}
+	out := stderr + stdout
+	if !strings.Contains(out, "max-depth") || !strings.Contains(out, "10001") {
+		t.Errorf("expected max-depth range error, got stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
 func TestCLI_parseOnHeaderFlag(t *testing.T) {
 	tmpDir := t.TempDir()
 	inputFile := filepath.Join(tmpDir, "input.html")

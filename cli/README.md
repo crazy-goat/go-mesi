@@ -47,7 +47,7 @@ mesi-cli [options] path/url
 
 **Flags**
 - **default-url <url>** (string): Specifies the default URL to parse when no explicit source is provided. Default: http://127.0.0.1/
-- **max-depth <depth>** (integer): Defines the maximum depth of parsing, which can limit how many nested ESI includes or references are processed. Default: 5
+- **max-depth <depth>** (integer): Defines the maximum depth of parsing, which can limit how many nested ESI includes or references are processed. Range `[0, 10000]` (`mesi.MaxMaxDepth`); values above the cap are rejected. Explicit `0` is passthrough. Default: 5
 - **timeout <seconds>** (float): Sets the request timeout duration (in seconds) for all retrieval operations. Default: 10.0
 - **parse-on-header** (bool): Enables ESI parsing on the HTTP headers, if set to `true` response must have `Edge-control: dca=esi` to enable parsing. Default: false
 - **cache-backend <name>** (string): Cache backend for ESI includes. Values: `memory`, `redis`, `memcached`. Default: off (no caching)
