@@ -10,8 +10,8 @@ import (
 
 func TestCreateConfig(t *testing.T) {
 	config := CreateConfig()
-	if config.MaxDepth != 5 {
-		t.Errorf("Expected MaxDepth 5, got %d", config.MaxDepth)
+	if config.MaxDepth == nil || *config.MaxDepth != 5 {
+		t.Errorf("Expected MaxDepth 5, got %v", config.MaxDepth)
 	}
 }
 

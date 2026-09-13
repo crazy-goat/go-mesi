@@ -14,8 +14,13 @@ import (
 
 const PluginName = "mesi"
 
+func intPtr(v int) *int { return &v }
+
 type Config struct {
-	MaxDepth                       int      `json:"maxDepth" yaml:"maxDepth"`
+	// MaxDepth limits ESI nesting. A nil pointer is "unset" (default 5).
+	// Explicit 0 is passthrough (disable ESI), matching Caddy / Apache #166
+	// and the README. Valid range is [0, mesi.MaxMaxDepth].
+	MaxDepth                       *int     `json:"maxDepth" yaml:"maxDepth"`
 	SharedHTTPClient               bool     `json:"sharedHTTPClient" yaml:"sharedHTTPClient"`
 	IncludeErrorMarker             string   `json:"includeErrorMarker" yaml:"includeErrorMarker"`
 	CacheBackend                   string   `json:"cacheBackend" yaml:"cacheBackend"`
@@ -33,7 +38,7 @@ type Config struct {
 
 func CreateConfig() *Config {
 	return &Config{
-		MaxDepth:        5,
+		MaxDepth:        intPtr(5),
 		BlockPrivateIPs: true,
 	}
 }
@@ -53,8 +58,10 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		return nil, fmt.Errorf("config cannot be nil")
 	}
 
-	if config.MaxDepth == 0 {
-		config.MaxDepth = 5
+	if config.MaxDepth == nil {
+		config.MaxDepth = intPtr(5)
+	} else if *config.MaxDepth < 0 || uint64(*config.MaxDepth) > mesi.MaxMaxDepth {
+		return nil, fmt.Errorf("maxDepth must be in [0, %d], got %d", mesi.MaxMaxDepth, *config.MaxDepth)
 	}
 
 	p := &ResponsePlugin{
@@ -99,7 +106,7 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if strings.HasPrefix(contentType, "text/html") {
 		config := mesi.EsiParserConfig{
 			Context:                        req.Context(),
-			MaxDepth:                       uint(p.config.MaxDepth),
+			MaxDepth:                       uint(p.maxDepth()),
 			DefaultUrl:                     middleware.GetDefaultUrl(req),
 			Timeout:                        10 * time.Second,
 			BlockPrivateIPs:                p.config.BlockPrivateIPs,
@@ -142,6 +149,13 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	rw.Write(customWriter.Body().Bytes())
+}
+
+func (p *ResponsePlugin) maxDepth() int {
+	if p.config == nil || p.config.MaxDepth == nil {
+		return 5
+	}
+	return *p.config.MaxDepth
 }
 
 func (p *ResponsePlugin) Name() string {
