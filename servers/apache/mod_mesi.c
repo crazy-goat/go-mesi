@@ -1384,14 +1384,18 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
 
     apr_brigade_cleanup(ctx->bb);
 
-    char *output;
-    if (esi) {
-        output = apr_pstrdup(f->r->pool, esi);
-        if (EsiFreeString) {
-            EsiFreeString(esi);
-        }
-    } else {
-        output = html;
+    if (!esi) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r,
+            "mesi: libgomesi Parse returned NULL; failing request (fail closed)");
+        f->r->status = HTTP_INTERNAL_SERVER_ERROR;
+        apr_table_unset(f->r->headers_out, "Content-Length");
+        APR_BRIGADE_INSERT_TAIL(ctx->bb, apr_bucket_eos_create(ctx->bb->bucket_alloc));
+        return ap_pass_brigade(f->next, ctx->bb);
+    }
+
+    char *output = apr_pstrdup(f->r->pool, esi);
+    if (EsiFreeString) {
+        EsiFreeString(esi);
     }
 
     b = apr_bucket_pool_create(output, strlen(output), f->r->pool, ctx->bb->bucket_alloc);

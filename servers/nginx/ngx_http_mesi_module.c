@@ -982,6 +982,13 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
     }
   }
 
+  if (message == NULL) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "mesi: libgomesi Parse returned NULL; failing request "
+                  "(fail closed)");
+    return (ngx_str_t){0, (u_char *)""};
+  }
+
   output.len = ngx_strlen(message);
   // +1 for the NUL terminator written below — the historical allocation
   // of exactly output.len bytes made output.data[output.len] = '\0' write
