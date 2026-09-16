@@ -69,6 +69,10 @@ func main() {
 		"Marker string rendered for failed ESI includes (e.g. '<!-- esi error -->')")
 
 	flag.Parse()
+	if uint64(*maxDepth) > mesi.MaxMaxDepth {
+		fmt.Fprintf(os.Stderr, "Error: max-depth must be in [0, %d], got %d\n", mesi.MaxMaxDepth, *maxDepth)
+		os.Exit(1)
+	}
 	args := flag.Args()
 	if len(args) < 1 {
 		fmt.Println("Error: Missing file|url path argument.")
