@@ -192,7 +192,7 @@ http:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `maxDepth` | int | `5` | Maximum ESI recursion depth |
+| `maxDepth` | int | `5` | Maximum ESI recursion depth. Omit for the default. Explicit `0` is passthrough (no ESI fetch). Values outside `[0, 10000]` are rejected. |
 | `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
 | `includeErrorMarker` | string | `""` | String rendered for failed includes (empty = silent) |
 | `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis`, `memcached` |
