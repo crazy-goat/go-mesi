@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-pattern='coverage\.out$|coverage\.html$|\.coverprofile$|\.test$|__debug_bin|\.DS_Store$|test-server/test-server$'
+pattern='coverage\.out$|coverage\.html$|\.coverprofile$|\.test$|__debug_bin|\.DS_Store$|\.so$|\.a$|test-server/test-server$|cli/mesi-cli$|tests/e2e$|tests/tests$|servers/caddy/caddy$|servers/proxy/proxy$|servers/frankenphp/frankenphp$|servers/roadrunner/rr$|libgomesi/test-libgomesi$'
 
 if git ls-files | grep -qE "$pattern"; then
     echo "ERROR: Generated artifacts are committed to the repository:" >&2
