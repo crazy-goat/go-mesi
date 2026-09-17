@@ -246,19 +246,19 @@ fi
 echo ""
 echo "--- Allowed Hosts Tests ---"
 
-echo "Test 19: -allowedHosts allows include from listed host"
+echo "Test 19: -allowed-hosts allows include from listed host"
 cat > "$TEST_DIR/allowed-host.html" <<'EOF'
 <esi:include src="hello"/>
 EOF
-RESULT=$("$CLI_BINARY" -allowedHosts=127.0.0.1 -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
+RESULT=$("$CLI_BINARY" -allowed-hosts=127.0.0.1 -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
 if echo "$RESULT" | grep -q "Hello World"; then
 	pass "Allowed host include resolved"
 else
 	fail "Allowed host include" "Result: $RESULT"
 fi
 
-echo "Test 20: -allowedHosts blocks include from unlisted host"
-RESULT=$("$CLI_BINARY" -allowedHosts=other.example.com -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
+echo "Test 20: -allowed-hosts blocks include from unlisted host"
+RESULT=$("$CLI_BINARY" -allowed-hosts=other.example.com -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
 if echo "$RESULT" | grep -q "Hello World"; then
 	fail "Unlisted host include" "Expected blocked include, got: $RESULT"
 else
@@ -269,7 +269,7 @@ echo ""
 echo "--- AllowPrivateIPsForAllowedHosts Tests ---"
 
 echo "Test 21: -allowPrivateIPsForAllowedHosts allows listed host on private IP (private block stays on)"
-RESULT=$("$CLI_BINARY" -allowedHosts=127.0.0.1 -allowPrivateIPsForAllowedHosts -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
+RESULT=$("$CLI_BINARY" -allowed-hosts=127.0.0.1 -allowPrivateIPsForAllowedHosts -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
 if echo "$RESULT" | grep -q "Hello World"; then
 	pass "Bypassed private-IP block for allowed host"
 else
@@ -277,7 +277,7 @@ else
 fi
 
 echo "Test 22: without -allowPrivateIPsForAllowedHosts the private host stays blocked"
-RESULT=$("$CLI_BINARY" -allowedHosts=127.0.0.1 -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
+RESULT=$("$CLI_BINARY" -allowed-hosts=127.0.0.1 -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
 if echo "$RESULT" | grep -q "Hello World"; then
 	fail "Control (no bypass flag)" "Expected blocked include, got: $RESULT"
 else
@@ -285,7 +285,7 @@ else
 fi
 
 echo "Test 23: -allowPrivateIPsForAllowedHosts does not bypass for hosts outside allowedHosts"
-RESULT=$("$CLI_BINARY" -allowedHosts=other.example.com -allowPrivateIPsForAllowedHosts -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
+RESULT=$("$CLI_BINARY" -allowed-hosts=other.example.com -allowPrivateIPsForAllowedHosts -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
 if echo "$RESULT" | grep -q "Hello World"; then
 	fail "Unlisted host with bypass flag" "Expected blocked include, got: $RESULT"
 else
