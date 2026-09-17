@@ -1,6 +1,7 @@
 /*
  * Unit tests for Apache module directive parsing
- * Compile: gcc -o test_directives test_directives.c -I/usr/include/apr-1.0 -lapr-1 -laprutil-1
+ * Compile: gcc -o test_directives test_directives.c -I$(APR_INCLUDEDIR) -lapr-1 -laprutil-1
+ *   APR_INCLUDEDIR from `apxs -q APR_INCLUDEDIR` (overridable); Linux fallback /usr/include/apr-1.0
  * Run: ./test_directives
  */
 
