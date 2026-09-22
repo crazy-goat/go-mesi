@@ -156,6 +156,52 @@ MesiCacheTTL 60
   EnableMesi On
   MesiMaxResponseSize 10485760
   ```
+- `MesiMaxConcurrentRequests N` — Caps the number of concurrent
+  `<esi:include>` HTTP fetches within one page render (`RSRC_CONF`,
+  server context; example: `MesiMaxConcurrentRequests 5` next to
+  `EnableMesi On`). Scope: one `MESIParse` call — a single page render
+  in one Apache worker thread/process, NOT process-wide or vhost-wide:
+  multiple concurrent page requests each get their own worker pool and
+  semaphore, and under MPM worker/event each thread applies the limit
+  independently. Unset (default) is **unlimited** — libgomesi leaves
+  `EsiParserConfig.MaxConcurrentRequests` at `0`, which the core
+  treats as "no limit" (`mesi/parser.go` only installs the
+  admission-control semaphore when `> 0`), so omitting the directive is
+  byte-identical to previous behaviour (the same contract as the core's
+  "0 = unlimited" and Caddy's unset `max_concurrent_requests`). This
+  bounds the goroutine/connection fan-out of include-heavy pages (the
+  failure mode this directive exists for: a page with 100 tags making
+  100 simultaneous backend requests). Explicit `0` also means
+  "unlimited" and is a legitimate configured value — it overrides an
+  inherited global cap (`-1` unset sentinel, same rule as
+  `MesiMaxDepth`/`MesiTimeout`/`MesiMaxResponseSize`). Must be an
+  integer in `[0, 999999999]` — neither core nor Caddy caps the value;
+  this bound is the portable transport range (the field is a C `int`
+  parsed by `parse_nonneg_int`'s 9-digit guard, kept in sync with
+  libgomesi's `config.MaxMaxConcurrentRequests` and validated Go-side
+  in `ParseConfig.ResolvedMaxConcurrentRequests` so Apache and the Go
+  side can never disagree). Negatives (`-1`), signs (`+3`), decimals
+  (`2.5`), non-digits (`abc`), trailing garbage (`3foo`), empty values
+  and anything above the cap are rejected at config load with an error
+  naming the directive (parsed via `parse_nonneg_int` — no silent
+  `atoi` coercion, which would turn `abc`/`""` into `0` = unlimited).
+  A negative in particular must never reach the core, which (since
+  #329) only warns and normalizes it to `0` = unlimited. **Merge:** a
+  vhost's value overrides the global one; unset vhosts inherit it. The
+  value travels to libgomesi through the `ParseJson` entry point as
+  the `{"maxConcurrentRequests":N}` count key; requires a
+  `libgomesi.so` exporting `ParseJson` — older builds log
+  `MesiMaxConcurrentRequests set but libgomesi lacks ParseJson;
+  MesiMaxConcurrentRequests ignored (unlimited concurrent requests
+  apply, the pre-#170 behaviour)` and keep unlimited. Includes
+  queued beyond the cap wait for a free slot (bounded by the fetch
+  budget — the `MesiTimeout` deadline covers the admission wait), they
+  are never dropped.
+
+  ```apache
+  EnableMesi On
+  MesiMaxConcurrentRequests 5
+  ```
 - `MesiAllowedHosts host1 host2 …` — Space-separated list of hostnames
   allowed in `<esi:include src=…>`. Matches `isURLSafe` from libgomesi.
 - `MesiBlockPrivateIPs on|off` — Enable/disable SSRF dial-time private-IP
@@ -257,10 +303,11 @@ docker compose up --build
    `MesiCacheBackend memory` is configured (TTL/size from
    `MesiCacheTTL`/`MesiCacheSize`).
 6. Processes the buffered body through `libgomesi.ParseJson()` when
-   `MesiTimeout` or `MesiMaxResponseSize` is set (the JSON blob
-   carries whichever of those two directives is configured plus depth,
-   base URL, SSRF flags and, when configured, the cache key template +
-   request context), through `libgomesi.ParseWithConfigCtx()` when only
+   `MesiTimeout`, `MesiMaxResponseSize` or `MesiMaxConcurrentRequests`
+   is set (the JSON blob carries whichever of those three directives
+   are configured plus depth, base URL, SSRF flags and, when
+   configured, the cache key template + request context), through
+   `libgomesi.ParseWithConfigCtx()` when only
    `MesiCacheKeyTemplate` is set (headers/cookies from the incoming
    request are serialised as JSON context for `mesi.BuildCacheKey`),
    otherwise through `libgomesi.ParseWithConfigEx()`

@@ -330,8 +330,12 @@ func defaultParseTimeout() time.Duration {
 // caller passes 0 (unlimited), the value those paths always left in
 // EsiParserConfig.MaxResponseSize; only ParseJson passes a resolved
 // `maxResponseSize` key (#169), so the positional exports keep their exact
-// pre-#169 behaviour too.
-func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int, cacheKeyTemplate *C.char, requestCtxJSON *C.char, timeout time.Duration, maxResponseSize int64) *C.char {
+// pre-#169 behaviour too. maxConcurrentRequests is the per-parse
+// concurrent-fetch cap — every positional caller passes 0 (unlimited), the
+// value those paths always left in EsiParserConfig.MaxConcurrentRequests;
+// only ParseJson passes a resolved `maxConcurrentRequests` key (#170), so
+// the positional exports keep their exact pre-#170 behaviour as well.
+func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int, cacheKeyTemplate *C.char, requestCtxJSON *C.char, timeout time.Duration, maxResponseSize int64, maxConcurrentRequests int) *C.char {
 	goInput := C.GoString(input)
 	goMaxDepth, err := resolveMaxDepth(maxDepth)
 	if err != nil {
@@ -363,6 +367,7 @@ func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, 
 		BlockPrivateIPs:                blockPrivateIPs != 0,
 		AllowPrivateIPsForAllowedHosts: allowPrivateIPsForAllowedHosts != 0,
 		MaxResponseSize:                maxResponseSize,
+		MaxConcurrentRequests:          maxConcurrentRequests,
 	}
 	applySharedConfig(&cfg)
 	if allowPrivateIPsForAllowedHosts != 0 {
@@ -384,7 +389,7 @@ func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, 
 }
 
 func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int) *C.char {
-	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, nil, nil, defaultParseTimeout(), 0)
+	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, nil, nil, defaultParseTimeout(), 0, 0)
 }
 
 // ParseWithConfigCtx extends ParseWithConfigEx with cache key templating.
@@ -394,7 +399,7 @@ func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedH
 //
 //export ParseWithConfigCtx
 func ParseWithConfigCtx(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int, cacheKeyTemplate *C.char, requestCtxJSON *C.char) *C.char {
-	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, cacheKeyTemplate, requestCtxJSON, defaultParseTimeout(), 0)
+	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, cacheKeyTemplate, requestCtxJSON, defaultParseTimeout(), 0, 0)
 }
 
 // ParseJson parses ESI tags with a JSON-encoded configuration blob — the
@@ -404,24 +409,27 @@ func ParseWithConfigCtx(input *C.char, maxDepth C.int, defaultUrl *C.char, allow
 //	{"maxDepth":5,"defaultUrl":"http://…/","allowedHosts":"a b",
 //	 "blockPrivateIPs":true,"allowPrivateIPsForAllowedHosts":false,
 //	 "cacheKeyTemplate":"mesi:${url}","requestCtx":{…},"timeoutSeconds":30,
-//	 "maxResponseSize":10485760}
+//	 "maxResponseSize":10485760,"maxConcurrentRequests":5}
 //
 // Every key is optional; an absent key resolves to the same documented
 // default the corresponding positional entry point uses (timeoutSeconds
 // absent → 30s — libgomesi's historical hardcoded value, so ParseJson with
 // an absent timeout is byte-identical to ParseWithConfigCtx; maxResponseSize
 // absent → 0 = unlimited — the value the positional paths always leave in
-// EsiParserConfig.MaxResponseSize). Unknown keys are ignored (forward
-// compatibility). configJSON may be NULL or "" — both mean "{}" (pure
-// defaults).
+// EsiParserConfig.MaxResponseSize; maxConcurrentRequests absent → 0 =
+// unlimited — likewise for EsiParserConfig.MaxConcurrentRequests). Unknown
+// keys are ignored (forward compatibility). configJSON may be NULL or "" —
+// both mean "{}" (pure defaults).
 //
 // Malformed JSON, a type mismatch (e.g. "timeoutSeconds":"10"), or an
 // out-of-range value (maxDepth outside [0, mesi.MaxMaxDepth];
 // timeoutSeconds outside [1, 86400] — 0 is rejected because the core fails
 // every include with ErrTimeBudgetExceeded when Timeout <= 0, see
 // mesi/fetch.go; maxResponseSize negative or above
-// [0, config.MaxMaxResponseSize]) logs a warning naming the offending input
-// and returns NULL. A default is NEVER substituted for a malformed explicit
+// [0, config.MaxMaxResponseSize]; maxConcurrentRequests negative or above
+// [0, config.MaxMaxConcurrentRequests] — its explicit 0 is accepted as the
+// documented "unlimited") logs a warning naming the offending input and
+// returns NULL. A default is NEVER substituted for a malformed explicit
 // value.
 //
 // Returns parsed HTML with ESI tags replaced by their content, or NULL on
@@ -458,6 +466,11 @@ func ParseJson(input *C.char, configJSON *C.char) *C.char {
 		mesi.DefaultLoggerNew().Warn("invalid_max_response_size", "error", err.Error())
 		return nil
 	}
+	maxConcurrentRequests, err := cfg.ResolvedMaxConcurrentRequests()
+	if err != nil {
+		mesi.DefaultLoggerNew().Warn("invalid_max_concurrent_requests", "error", err.Error())
+		return nil
+	}
 	// Hand the Go-side strings to parseWithConfigInternal as C strings;
 	// freed when this function returns (parseWithConfigInternal copies
 	// everything it needs via C.GoString).
@@ -472,7 +485,7 @@ func ParseJson(input *C.char, configJSON *C.char) *C.char {
 	return parseWithConfigInternal(input, C.int(depth), cDefaultUrl, cAllowedHosts,
 		boolCInt(cfg.ResolvedBlockPrivateIPs()),
 		boolCInt(cfg.AllowPrivateIPsForAllowedHosts),
-		cCacheKeyTemplate, cRequestCtx, timeout, maxResponseSize)
+		cCacheKeyTemplate, cRequestCtx, timeout, maxResponseSize, maxConcurrentRequests)
 }
 
 // boolCInt maps a Go bool to the C ABI int convention used by the

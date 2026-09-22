@@ -32,3 +32,6 @@
 !max-response-reject.html
 !max-response-unlimited.html
 !max-response-unset.html
+!concurrent-capped.html
+!concurrent-unlimited.html
+!concurrent-unset.html
