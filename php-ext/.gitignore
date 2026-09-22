@@ -44,6 +44,7 @@ debug/
 /tests/[a-z_]*.php
 /tests/[a-z_]*.sh
 !/tests/router.php
+!/tests/slow_router.php
 run-tests.php
 /php_test_results_*.txt
 

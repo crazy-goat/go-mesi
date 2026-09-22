@@ -148,6 +148,47 @@ if ($path === '/bypass-unlisted') {
     return true;
 }
 
+// timeout (#181): the include is fetched from a slow fragment server on
+// 127.0.0.1:18081 (dedicated `php -S` spawned by test.sh — see
+// tests/slow_router.php, 4s per response). block_private_ips=false so the
+// loopback dial is allowed and only the budget can fail the include.
+if ($path === '/timeout') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>timeout test</p><esi:include src="http://127.0.0.1:18081/fragment" />',
+        5,
+        $backend,
+        ['timeout' => 2, 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// timeout=30: well above the 4s sleep -> include succeeds (issue AC:
+// "timeout: 30 + normal include -> success").
+if ($path === '/timeout-ok') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>timeout ok</p><esi:include src="http://127.0.0.1:18081/fragment" />',
+        5,
+        $backend,
+        ['timeout' => 30, 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// timeout key absent: documented default 30s applies and the call stays on
+// the positional ParseWithConfigCtx path (backward compatible).
+if ($path === '/timeout-default') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>timeout default</p><esi:include src="http://127.0.0.1:18081/fragment" />',
+        5,
+        $backend,
+        ['block_private_ips' => false]
+    );
+    return true;
+}
+
 if ($path === '/health') {
     header('Content-Type: text/plain');
     echo 'OK';

@@ -2,7 +2,9 @@
 set -e
 # CI launches php -S on port 8080 (tests.yaml); the local docker path
 # publishes host port 18080 (container-internal 8080 is unchanged).
-TEST_PORT=8080
+# TEST_PORT can be pre-set to run the CI-mode suite locally on a port
+# other than 8080.
+TEST_PORT=${TEST_PORT:-8080}
 if [ "${CI:-}" != "true" ]; then
   TEST_PORT=18080
 fi
@@ -210,6 +212,85 @@ if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
 else
     echo "PASS: unlisted host blocked even with the bypass on"
 fi
+
+echo ""
+echo "=== Test 15: timeout=2 cuts a slow include at ~2s (#181) ==="
+# Spawn a DEDICATED slow fragment server (tests/slow_router.php, 4s per
+# response) on 127.0.0.1:18081 — the app's built-in server is
+# single-threaded, so the include must never be served by itself:
+#   CI mode:     second `php -S` on the runner (everything is localhost)
+#   docker mode: `php -S` inside the php-ext container (router.php runs
+#                there, so 127.0.0.1:18081 must resolve in-container)
+SLOW_PID=""
+if [ "${CI:-}" = "true" ]; then
+  SLOW_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/tests/slow_router.php"
+  php -S 127.0.0.1:18081 "$SLOW_SCRIPT" >/dev/null 2>&1 &
+  SLOW_PID=$!
+  for i in $(seq 1 50); do
+    if (exec 3<>/dev/tcp/127.0.0.1/18081) 2>/dev/null; then break; fi
+    sleep 0.2
+  done
+else
+  docker compose exec -d php-ext php -S 0.0.0.0:18081 /app/tests/slow_router.php >/dev/null 2>&1
+  for i in $(seq 1 50); do
+    if docker compose exec -T php-ext php -r '$c=@fsockopen("127.0.0.1",18081,$e,$s,0.2); if($c){fclose($c);echo "ready";}' 2>/dev/null | grep -q ready; then
+      break
+    fi
+    sleep 0.2
+  done
+fi
+
+START=$(date +%s)
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/timeout)
+ELAPSED=$(( $(date +%s) - START ))
+if echo "$RESPONSE" | grep -q "SLOW-FRAGMENT"; then
+    echo "FAIL: timeout=2 did not cut the slow include (timeout ignored?)"
+    echo "Response: $RESPONSE"
+    [ -n "$SLOW_PID" ] && kill "$SLOW_PID" 2>/dev/null
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+elif [ "$ELAPSED" -lt 1 ]; then
+    echo "FAIL: include failed instantly (wrong reason — server not up?)"
+    echo "Elapsed: ${ELAPSED}s"
+    [ -n "$SLOW_PID" ] && kill "$SLOW_PID" 2>/dev/null
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+elif [ "$ELAPSED" -ge 4 ]; then
+    echo "FAIL: budget not enforced (took ${ELAPSED}s, expected ~2s)"
+    [ -n "$SLOW_PID" ] && kill "$SLOW_PID" 2>/dev/null
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+else
+    echo "PASS: timeout=2 cut the slow include at ~${ELAPSED}s (fragment absent)"
+fi
+
+echo ""
+echo "=== Test 16: timeout=30 + slow include -> success (#181) ==="
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/timeout-ok)
+if echo "$RESPONSE" | grep -q "SLOW-FRAGMENT"; then
+    echo "PASS: timeout=30 outlasted the 4s backend (include resolved)"
+else
+    echo "FAIL: include did not resolve within timeout=30"
+    echo "Response: $RESPONSE"
+    [ -n "$SLOW_PID" ] && kill "$SLOW_PID" 2>/dev/null
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 17: timeout key absent -> default 30s, positional path (#181) ==="
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/timeout-default)
+if echo "$RESPONSE" | grep -q "SLOW-FRAGMENT"; then
+    echo "PASS: absent timeout kept the documented 30s default (include resolved)"
+else
+    echo "FAIL: absent timeout broke the backward-compatible path"
+    echo "Response: $RESPONSE"
+    [ -n "$SLOW_PID" ] && kill "$SLOW_PID" 2>/dev/null
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+[ -n "$SLOW_PID" ] && kill "$SLOW_PID" 2>/dev/null || true
 
 if [ "${CI:-}" != "true" ]; then
   docker compose down -v

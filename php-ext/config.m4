@@ -24,6 +24,12 @@ if test "$PHP_GOMESI" != "no"; then
 
   PHP_ADD_LIBRARY_WITH_PATH(gomesi, $MESI_LIBDIR, MESI_SHARED_LIBADD)
   LDFLAGS="$LDFLAGS -lgomesi"
+  dnl #181: dladdr/dlsym/dlopen (lazy ParseJson lookup) live in libdl on
+  dnl glibc < 2.34; macOS provides them via libSystem (no -ldl exists there).
+  case $host in
+    *darwin*) ;;
+    *) PHP_ADD_LIBRARY(dl, 1, MESI_SHARED_LIBADD) ;;
+  esac
   PHP_SUBST(MESI_SHARED_LIBADD)
   PHP_NEW_EXTENSION(mesi, mesi.c, $ext_shared, $MESI_SHARED_LIBADD)
 fi
