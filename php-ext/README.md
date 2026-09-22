@@ -106,6 +106,7 @@ $html = \mesi\parse_with_config(
 | `cache_key_template` | optional | string | Cache key template: `${url}`, `${header:Name}`, `${cookie:Name}`. Empty/absent = default URL-only key (`mesi.DefaultCacheKey`). Unknown placeholders stay literal. Case-insensitive header/cookie lookup via `mesi.BuildCacheKey`. Non-string / control-char / space-containing values are rejected with `E_WARNING`. Silently **ignored** when `cache_backend` is `""` (no cache — parity with CLI/Traefik #246). A template without `${url}` collapses all URLs to one entry |
 | `request_headers` | optional | array | String keys (header names) → string or array-of-strings values. Keys and all values must pass `mesi_is_safe_string` (no control chars, space/tab, DEL, `"` or `\`). Empty array = no headers. Only rendered when a non-empty `cache_key_template` is set and `cache_backend != ""` |
 | `request_cookies` | optional | array | String keys (cookie names, non-empty, no spaces/control) → string values (no control chars, `"` or `\`; spaces allowed in values). Empty array = no cookies. Only rendered when a non-empty `cache_key_template` is set and `cache_backend != ""` |
+| `timeout` | optional | int | Global per-include fetch budget in **seconds**; range `[1, 86_400]`; absent = `30` (libgomesi's historical default — omitting the key is backward compatible). **`0` is rejected**: the core makes every include fail immediately with `ErrTimeBudgetExceeded` when `Timeout <= 0` — it does **not** mean "no timeout". Non-integer values (string `"10"`, float `1.5`, `"abc"`, `""`, bool, null, array) and out-of-range values are rejected with `E_WARNING` and the function returns `false`. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"timeoutSeconds":N}`; on an older `libgomesi.so` without `ParseJson` a warning is emitted and the timeout is ignored (30s applies) |
 
 Validation is strict: an unknown `cache_backend`, mismatched Redis-vs-Memcached key, out-of-range numeric value, non-integer value, malformed `host:port`, or a non-string memcached server entry emits an `E_WARNING` and returns `false`. The function never silently degrades to "no cache" on a typo — a wrong host:port or empty memcached list surfaces as `E_WARNING`, matching the validation pattern in `parse_with_config()` for the in-memory backend and the equivalent `MesiCache*` directives in `servers/apache`. The same applies to `allowed_hosts`: a non-string or whitespace-only value is rejected (a whitespace-only list would silently tokenize to an empty allowlist = allow all hosts — the same fail-open typo nginx hardens against, #354). The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
 
@@ -351,6 +352,47 @@ produces the same key as the default, and any other template (e.g.
 
 `CacheKeyFunc` Go function pointers are **not** supported from PHP/C —
 the template string is the only PHP-visible cache-key customization.
+
+#### Fetch timeout (`timeout`)
+
+Since #181. `timeout` sets the global per-include fetch budget — how long
+a single `<esi:include>` fetch may take (connect + redirects + body read +
+admission-control queueing, bounded by the shared core) before it fails:
+
+```php
+// Abort includes that take longer than 2 seconds:
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    ['timeout' => 2]
+);
+```
+
+Semantics (identical to Apache's `MesiTimeout` #167 and libgomesi's
+`ParseJson` `timeoutSeconds`):
+
+- Integer **seconds**, range `[1, 86_400]` (24h).
+- **Absent key → `30`** — libgomesi's historical hardcoded value, so
+  omitting the key is byte-identical to previous behaviour.
+- **`0` is rejected** (with `E_WARNING` + `false`): the core fails every
+  include immediately with `ErrTimeBudgetExceeded` when `Timeout <= 0`
+  (`mesi/fetch.go`) — `0` does **not** mean "no timeout" (Caddy rejects a
+  non-positive `timeout` for the same reason), and an unlimited budget
+  would pin a goroutine per queued include while a backend hangs.
+- A malformed explicit value is never silently coerced: non-integers
+  (numeric string `"10"` does not coerce, floats `1.5`/`10.0`, `"abc"`,
+  `"3foo"`, `""`, bool, null, array) and out-of-range values (`0`, `-1`,
+  `86401`, overflow) emit an `E_WARNING` naming `timeout` and
+  `parse_with_config()` returns `false` — the same strict contract as
+  `cache_ttl`.
+- The key is passed through libgomesi's `ParseJson` entry point (#167) as
+  `{"timeoutSeconds":N}` together with every other resolved option; an
+  absent key keeps the exact positional `ParseWithConfigCtx` path. An
+  older `libgomesi.so` without the `ParseJson` symbol emits a warning
+  (`timeout ignored … Upgrade libgomesi.so.`) and falls back to that path
+  with the default 30s — never a crash.
+- The legacy `\mesi\parse()` entrypoint keeps the hardcoded 30s.
 
 ### Cache scope
 
