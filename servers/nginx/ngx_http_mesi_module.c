@@ -16,8 +16,25 @@
 // parser limit ever changes.
 #define MESI_MAX_CACHE_KEY_TEMPLATE 4096
 
+// Global ESI nesting depth (#180). Matches mesi.MaxMaxDepth (10,000) /
+// Apache MESI_MAX_MAX_DEPTH / Caddy max_depth: values outside
+// [0, MESI_MAX_MAX_DEPTH] are rejected at config load so a typo can
+// never silently become an unbounded nesting limit (libgomesi's Parse*
+// would reject it anyway since #414 — this guard keeps the failure at
+// `nginx -t` where the operator sees it).
+#define MESI_MAX_MAX_DEPTH 10000
+// Default when mesi_max_depth is unset — matches the previously
+// hardcoded literal 5 in parse() and mesi.EsiParserConfig.MaxDepth's
+// default (backward compatible).
+#define MESI_DEFAULT_MAX_DEPTH 5
+
 typedef struct {
   ngx_flag_t enable_mesi;
+  ngx_int_t  max_depth;      // ESI nesting depth (#180): NGX_CONF_UNSET
+                             // until merged (default 5), explicit 0 =
+                             // passthrough (no ESI fetch), range
+                             // [0, MESI_MAX_MAX_DEPTH] validated by the
+                             // directive setter
   ngx_str_t  cache_backend;  // "" (off), "memory", "redis", "memcached"
   ngx_int_t  cache_size;     // max entries for memory cache
   ngx_int_t  cache_ttl;      // TTL in seconds
@@ -54,6 +71,8 @@ static ngx_int_t ngx_test_is_html(ngx_http_request_t *r);
 static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
                                           void *child);
+static char *ngx_http_mesi_set_max_depth(ngx_conf_t *cf, ngx_command_t *cmd,
+                                         void *conf);
 
 typedef char *(*ParseFunc)(char *, int, char *);
 typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
@@ -78,6 +97,15 @@ static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("enable_mesi"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
      ngx_conf_set_flag_slot, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, enable_mesi), NULL},
+
+    // Global ESI nesting depth (#180). Custom setter instead of
+    // ngx_conf_set_num_slot: the stock slot setter only runs ngx_atoi,
+    // which has no upper bound — a typo like 10001 would pass
+    // `nginx -t` and reach libgomesi. See ngx_http_mesi_set_max_depth
+    // below.
+    {ngx_string("mesi_max_depth"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_http_mesi_set_max_depth, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, max_depth), NULL},
 
     {ngx_string("mesi_cache_backend"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
@@ -827,6 +855,24 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   ngx_http_mesi_loc_conf_t *lcf =
       ngx_http_get_module_loc_conf(r, ngx_http_mesi_module);
 
+  // Global ESI nesting depth (#180). The directive setter validated
+  // [0, MESI_MAX_MAX_DEPTH] at config load and ngx_conf_merge_value
+  // applied the default (5), so this guard is defense-in-depth: an
+  // unvalidated value fails the request closed (the module's existing
+  // fail-closed empty terminal response) with an ERR log instead of
+  // being silently clamped or defaulted — never a silent substitution.
+  ngx_int_t max_depth = lcf->max_depth;
+  if (max_depth < 0 || max_depth > MESI_MAX_MAX_DEPTH) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "mesi: mesi_max_depth %d out of range [0, %d]; failing "
+                  "request (fail closed)",
+                  (int)max_depth, MESI_MAX_MAX_DEPTH);
+    // Zero length with a non-NULL data pointer — same terminal-response
+    // contract as the other fail-closed paths below (never a NULL-pos
+    // zero-size buffer for the body writer).
+    return (ngx_str_t){0, (u_char *)""};
+  }
+
   if (lcf->cache_backend.len > 0 &&
       (!cache_initialized ||
        cache_last_backend.len != lcf->cache_backend.len ||
@@ -924,8 +970,8 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
                     "mesi: failed to allocate cache key template context");
       return (ngx_str_t){0, (u_char *)""};
     }
-    message = EsiParseWithConfigCtx(input_cstr, 5, base_url_cstr, hosts_cstr,
-                                    lcf->block_private_ips,
+    message = EsiParseWithConfigCtx(input_cstr, (int)max_depth, base_url_cstr,
+                                    hosts_cstr, lcf->block_private_ips,
                                     lcf->allow_private_ips_for_allowed,
                                     template_cstr, ctx_json);
   } else if (lcf->cache_key_template.len > 0) {
@@ -947,8 +993,8 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
       // effective when block_private_ips is on AND allowed_hosts is
       // non-empty; the core grants the bypass per-host only for hosts
       // present in AllowedHosts).
-      message = EsiParseWithConfigEx(input_cstr, 5, base_url_cstr, hosts_cstr,
-                                     lcf->block_private_ips,
+      message = EsiParseWithConfigEx(input_cstr, (int)max_depth, base_url_cstr,
+                                     hosts_cstr, lcf->block_private_ips,
                                      lcf->allow_private_ips_for_allowed);
     } else if (EsiParseWithConfig != NULL) {
       if (lcf->allow_private_ips_for_allowed) {
@@ -960,8 +1006,8 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
       }
       // ParseWithConfig enables SSRF protection (blockPrivateIPs) and an
       // optional allowed-hosts whitelist (empty string = no restriction).
-      message = EsiParseWithConfig(input_cstr, 5, base_url_cstr, hosts_cstr,
-                                   lcf->block_private_ips);
+      message = EsiParseWithConfig(input_cstr, (int)max_depth, base_url_cstr,
+                                   hosts_cstr, lcf->block_private_ips);
     } else if (lcf->allowed_hosts.len > 0) {
       // Defensive fail-closed fallback: the header phase already refused the
       // request with HTTP 500 before any body filter ctx was created, so this
@@ -978,7 +1024,7 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
       ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                     "mesi: ParseWithConfig unavailable in libgomesi — "
                     "SSRF protection DISABLED, falling back to Parse");
-      message = EsiParse(input_cstr, 5, base_url_cstr);
+      message = EsiParse(input_cstr, (int)max_depth, base_url_cstr);
     }
   }
 
@@ -1131,6 +1177,69 @@ static void ngx_http_mesi_thread_exit(ngx_cycle_t *cycle) {
   }
 }
 
+// ngx_http_mesi_set_max_depth parses the `mesi_max_depth` directive
+// argument (#180). Deliberately NOT ngx_conf_set_num_slot: the stock
+// slot setter only runs ngx_atoi — digits-only, but with no upper bound,
+// so `mesi_max_depth 10001` would pass `nginx -t` and reach libgomesi
+// (which rejects it at request time since #414, far from where the
+// operator looks). This setter mirrors Apache's parse_nonneg_int
+// (mod_mesi.c):
+// non-empty, digits only (rejects "-1", "+1", "3.5", "abc", "3foo"),
+// and the accumulated value must stay within [0, MESI_MAX_MAX_DEPTH]
+// (early exit bounds the accumulator, so it can never overflow
+// ngx_int_t). Explicit 0 is valid passthrough (no ESI fetch) — same
+// contract as Apache MesiMaxDepth / Caddy max_depth / CLI -max-depth.
+// Every rejection fails config load with an ERR-level (EMERG) log that
+// names the directive and the offending value — never a silent default.
+static char *ngx_http_mesi_set_max_depth(ngx_conf_t *cf, ngx_command_t *cmd,
+                                         void *conf) {
+  ngx_http_mesi_loc_conf_t *lcf = conf;
+  ngx_str_t *value = cf->args->elts;  // value[0] = directive name (TAKE1)
+  ngx_int_t val = 0;
+  size_t i;
+
+  (void)cmd;  // offset is informational; the setter writes lcf directly.
+
+  // NGX_CONF_TAKE1 guarantees one argument, but an empty quoted string
+  // ("") is still a zero-length token — reject it instead of letting
+  // the loop below parse "" as a silent passthrough 0.
+  if (value[1].len == 0) {
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "\"mesi_max_depth\" directive requires an argument "
+                       "(a non-negative integer in [0, %d])",
+                       MESI_MAX_MAX_DEPTH);
+    return NGX_CONF_ERROR;
+  }
+
+  for (i = 0; i < value[1].len; i++) {
+    u_char c = value[1].data[i];
+    if (c < '0' || c > '9') {
+      // atoi would silently coerce "-1" (wrap when cast to uint),
+      // "3.5" (truncate) and "abc" (→ 0 = passthrough). Fail fast.
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "invalid value \"%V\" in \"mesi_max_depth\" "
+                         "directive: must be a non-negative integer "
+                         "(digits only) in [0, %d]",
+                         &value[1], MESI_MAX_MAX_DEPTH);
+      return NGX_CONF_ERROR;
+    }
+    val = val * 10 + (c - '0');
+    if (val > MESI_MAX_MAX_DEPTH) {
+      // Early exit: the accumulator can never grow past
+      // MESI_MAX_MAX_DEPTH * 10 + 9, so this cannot overflow ngx_int_t
+      // regardless of argument length.
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "value \"%V\" out of range in \"mesi_max_depth\" "
+                         "directive: must be in [0, %d]",
+                         &value[1], MESI_MAX_MAX_DEPTH);
+      return NGX_CONF_ERROR;
+    }
+  }
+
+  lcf->max_depth = val;
+  return NGX_CONF_OK;
+}
+
 static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
   ngx_http_mesi_loc_conf_t *conf;
   conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_mesi_loc_conf_t));
@@ -1138,6 +1247,7 @@ static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
     return NULL;
   }
   conf->enable_mesi = NGX_CONF_UNSET;
+  conf->max_depth = NGX_CONF_UNSET;
   conf->cache_size = NGX_CONF_UNSET;
   conf->cache_ttl = NGX_CONF_UNSET;
   conf->cache_redis_db = NGX_CONF_UNSET;
@@ -1151,6 +1261,13 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   ngx_http_mesi_loc_conf_t *prev = parent;
   ngx_http_mesi_loc_conf_t *conf = child;
   ngx_conf_merge_value(conf->enable_mesi, prev->enable_mesi, 0);
+  // Unset → 5 (backward compatible with the previously hardcoded
+  // literal). An explicit 0 survives the merge untouched — passthrough,
+  // matching Apache MesiMaxDepth / Caddy max_depth / CLI -max-depth.
+  // A child location that sets the directive overrides its parent's;
+  // an unset child inherits the parent's value.
+  ngx_conf_merge_value(conf->max_depth, prev->max_depth,
+                       MESI_DEFAULT_MAX_DEPTH);
   ngx_conf_merge_str_value(conf->cache_backend, prev->cache_backend, "");
   ngx_conf_merge_value(conf->cache_size, prev->cache_size, 10000);
   ngx_conf_merge_value(conf->cache_ttl, prev->cache_ttl, 30);

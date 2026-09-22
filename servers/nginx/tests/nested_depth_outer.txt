@@ -1,0 +1,1 @@
+OUTER-DEPTH-BODY<esi:include src="http://backend:8000/nested_depth_inner.txt" />
