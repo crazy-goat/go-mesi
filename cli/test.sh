@@ -299,6 +299,10 @@ cat > "$TEST_DIR/maxrs-include.html" <<'EOF'
 <html><body><esi:include src="bytes/200"/></body></html>
 EOF
 
+cat > "$TEST_DIR/maxrs-default-cap.html" <<'EOF'
+<html><body><esi:include src="bytes/10485761"/></body></html>
+EOF
+
 echo "Test 24: -max-response-size 100 rejects a 200-byte include"
 RESULT=$("$CLI_BINARY" -max-response-size=100 -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/maxrs-include.html" 2>/dev/null)
 if echo "$RESULT" | grep -q "MesiBytesPayload"; then
@@ -315,12 +319,21 @@ else
 	fail "max-response-size 1024 accepts 200-byte include" "Result: $RESULT"
 fi
 
-echo "Test 26: absent -max-response-size keeps the 10 MB default (200-byte include accepted)"
+echo "Test 26: absent -max-response-size keeps the 10 MB default"
 RESULT=$("$CLI_BINARY" -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/maxrs-include.html" 2>/dev/null)
 if echo "$RESULT" | grep -q "MesiBytesPayload"; then
-	pass "Absent flag keeps the 10 MB CreateDefaultConfig default"
+	pass "Absent flag keeps the 10 MB CreateDefaultConfig default (200-byte include accepted)"
 else
 	fail "Absent -max-response-size default" "Result: $RESULT"
+fi
+# Discriminating half: a 10 MB + 1 body must be REJECTED with the flag
+# absent — this is what actually pins the 10 MB default end-to-end (a
+# regression to 0 = unlimited would deliver it; a larger cap would too).
+CAP_RESULT=$("$CLI_BINARY" -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/maxrs-default-cap.html" 2>/dev/null)
+if echo "$CAP_RESULT" | grep -q "MesiBytesPayload"; then
+	fail "Absent -max-response-size pins the 10 MB cap" "Expected 10 MB + 1 include to be rejected, got: $CAP_RESULT"
+else
+	pass "Absent flag rejects a 10 MB + 1 include (pins the 10 MB default end-to-end)"
 fi
 
 echo "Test 27: -max-response-size=-1 is rejected"
