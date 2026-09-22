@@ -292,6 +292,90 @@ fi
 
 [ -n "$SLOW_PID" ] && kill "$SLOW_PID" 2>/dev/null || true
 
+echo ""
+echo "=== Test 18: max_response_size=100 rejects a 200-byte include (#201) ==="
+# Spawn a DEDICATED size-serving fragment server (tests/router.php
+# /bytes/<size>) on 127.0.0.1:18082 — same split as the slow server
+# above (the app's built-in server is single-threaded, so the include
+# must never be served by itself):
+#   CI mode:     second `php -S` on the runner
+#   docker mode: `php -S` inside the php-ext container
+BYTES_PID=""
+if [ "${CI:-}" = "true" ]; then
+  BYTES_ROUTER="$(dirname "${BASH_SOURCE[0]}")/tests/router.php"
+  php -S 127.0.0.1:18082 "$BYTES_ROUTER" >/dev/null 2>&1 &
+  BYTES_PID=$!
+  for i in $(seq 1 50); do
+    if (exec 3<>/dev/tcp/127.0.0.1/18082) 2>/dev/null; then break; fi
+    sleep 0.2
+  done
+else
+  docker compose exec -d php-ext php -S 0.0.0.0:18082 /app/tests/router.php >/dev/null 2>&1
+  for i in $(seq 1 50); do
+    if docker compose exec -T php-ext php -r '$c=@fsockopen("127.0.0.1",18082,$e,$s,0.2); if($c){fclose($c);echo "ready";}' 2>/dev/null | grep -q ready; then
+      break
+    fi
+    sleep 0.2
+  done
+fi
+
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-response-size-over)
+if echo "$RESPONSE" | grep -q "over test" \
+   && ! echo "$RESPONSE" | grep -q '#' \
+   && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: 200-byte include rejected by max_response_size=100 (empty marker, no raw tag)"
+else
+    echo "FAIL: over-cap include was not rejected (cap ignored?)"
+    echo "Response: $RESPONSE"
+    [ -n "$BYTES_PID" ] && kill "$BYTES_PID" 2>/dev/null
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 19: max_response_size=1000 delivers a 200-byte include (#201) ==="
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-response-size-under)
+COUNT=$(printf '%s' "$RESPONSE" | tr -cd '#' | wc -c | tr -d ' ')
+if echo "$RESPONSE" | grep -q "under test" && [ "$COUNT" -eq 200 ]; then
+    echo "PASS: under-cap include delivered fully ($COUNT/200 bytes)"
+else
+    echo "FAIL: under-cap include incomplete (got $COUNT/200 bytes, cap ignored?)"
+    echo "Response: ${RESPONSE:0:200}"
+    [ -n "$BYTES_PID" ] && kill "$BYTES_PID" 2>/dev/null
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 20: max_response_size absent -> unlimited (10 MB + 1 body) (#201) ==="
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-response-size-absent)
+COUNT=$(printf '%s' "$RESPONSE" | tr -cd '#' | wc -c | tr -d ' ')
+if echo "$RESPONSE" | grep -q "absent test" && [ "$COUNT" -eq 10485761 ]; then
+    echo "PASS: absent key kept unlimited size (10485761/10485761 bytes delivered)"
+else
+    echo "FAIL: absent key did not behave as unlimited (got $COUNT/10485761 bytes)"
+    echo "Response: ${RESPONSE:0:200}"
+    [ -n "$BYTES_PID" ] && kill "$BYTES_PID" 2>/dev/null
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 21: max_response_size=0 -> unlimited (10 MB + 1 body) (#201) ==="
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-response-size-zero)
+COUNT=$(printf '%s' "$RESPONSE" | tr -cd '#' | wc -c | tr -d ' ')
+if echo "$RESPONSE" | grep -q "zero test" && [ "$COUNT" -eq 10485761 ]; then
+    echo "PASS: explicit 0 delivered the full body (unlimited)"
+else
+    echo "FAIL: explicit 0 did not behave as unlimited (got $COUNT/10485761 bytes)"
+    echo "Response: ${RESPONSE:0:200}"
+    [ -n "$BYTES_PID" ] && kill "$BYTES_PID" 2>/dev/null
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+[ -n "$BYTES_PID" ] && kill "$BYTES_PID" 2>/dev/null || true
+
 if [ "${CI:-}" != "true" ]; then
   docker compose down -v
 fi
