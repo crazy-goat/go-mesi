@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Max Concurrent Requests Cap Test</title>
+</head>
+<body>
+    <h1>Max Concurrent Requests Cap Test</h1>
+    <!-- Vhost *:8092 sets MesiMaxConcurrentRequests 3; the 20 slow includes below must be funneled through 3 concurrent fetch slots (peak tracked by the backend /hold counters).
+         Used by test.sh (#170). Do not mention the fragment
+         marker text or a literal ESI tag in this comment —
+         test.sh greps the rendered response. -->
+    <esi:include src="http://backend:8000/hold/1500/1" />
+    <esi:include src="http://backend:8000/hold/1500/2" />
+    <esi:include src="http://backend:8000/hold/1500/3" />
+    <esi:include src="http://backend:8000/hold/1500/4" />
+    <esi:include src="http://backend:8000/hold/1500/5" />
+    <esi:include src="http://backend:8000/hold/1500/6" />
+    <esi:include src="http://backend:8000/hold/1500/7" />
+    <esi:include src="http://backend:8000/hold/1500/8" />
+    <esi:include src="http://backend:8000/hold/1500/9" />
+    <esi:include src="http://backend:8000/hold/1500/10" />
+    <esi:include src="http://backend:8000/hold/1500/11" />
+    <esi:include src="http://backend:8000/hold/1500/12" />
+    <esi:include src="http://backend:8000/hold/1500/13" />
+    <esi:include src="http://backend:8000/hold/1500/14" />
+    <esi:include src="http://backend:8000/hold/1500/15" />
+    <esi:include src="http://backend:8000/hold/1500/16" />
+    <esi:include src="http://backend:8000/hold/1500/17" />
+    <esi:include src="http://backend:8000/hold/1500/18" />
+    <esi:include src="http://backend:8000/hold/1500/19" />
+    <esi:include src="http://backend:8000/hold/1500/20" />
+    <p>After capped include</p>
+</body>
+</html>

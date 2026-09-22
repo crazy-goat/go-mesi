@@ -19,6 +19,9 @@ func TestParseConfigFromJSONMalformed(t *testing.T) {
 		{name: "maxResponseSize as string", blob: `{"maxResponseSize":"1048576"}`},
 		{name: "fractional maxResponseSize", blob: `{"maxResponseSize":1.5}`},
 		{name: "maxResponseSize above int64 range", blob: `{"maxResponseSize":9223372036854775808}`},
+		{name: "maxConcurrentRequests as string", blob: `{"maxConcurrentRequests":"5"}`},
+		{name: "fractional maxConcurrentRequests", blob: `{"maxConcurrentRequests":1.5}`},
+		{name: "maxConcurrentRequests above int64 range", blob: `{"maxConcurrentRequests":9223372036854775808}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,6 +69,14 @@ func TestParseConfigDefaults(t *testing.T) {
 	if err != nil || maxResp != 0 {
 		t.Errorf("ResolvedMaxResponseSize() = (%d, %v), want (0, nil)", maxResp, err)
 	}
+
+	// Absent maxConcurrentRequests → 0 (unlimited) — byte-identical to
+	// the positional Parse* paths, which leave
+	// EsiParserConfig.MaxConcurrentRequests at its zero value.
+	maxConc, err := c.ResolvedMaxConcurrentRequests()
+	if err != nil || maxConc != 0 {
+		t.Errorf("ResolvedMaxConcurrentRequests() = (%d, %v), want (0, nil)", maxConc, err)
+	}
 }
 
 func TestParseConfigExplicitValues(t *testing.T) {
@@ -78,7 +89,8 @@ func TestParseConfigExplicitValues(t *testing.T) {
 		"cacheKeyTemplate": "mesi:${url}",
 		"requestCtx": {"headers":{"X-A":"1"},"cookies":[{"name":"a","value":"b"}]},
 		"timeoutSeconds": 7,
-		"maxResponseSize": 2048
+		"maxResponseSize": 2048,
+		"maxConcurrentRequests": 5
 	}`))
 	if err != nil {
 		t.Fatalf("ParseConfigFromJSON = %v", err)
@@ -110,6 +122,11 @@ func TestParseConfigExplicitValues(t *testing.T) {
 	maxResp, err := c.ResolvedMaxResponseSize()
 	if err != nil || maxResp != 2048 {
 		t.Errorf("ResolvedMaxResponseSize() = (%d, %v), want (2048, nil)", maxResp, err)
+	}
+
+	maxConc, err := c.ResolvedMaxConcurrentRequests()
+	if err != nil || maxConc != 5 {
+		t.Errorf("ResolvedMaxConcurrentRequests() = (%d, %v), want (5, nil)", maxConc, err)
 	}
 }
 
@@ -244,6 +261,62 @@ func TestParseConfigRangeBoundaries(t *testing.T) {
 			t.Errorf("ResolvedMaxResponseSize() = (%d, %v), want (0, nil)", v, err)
 		}
 	})
+
+	t.Run("maxConcurrentRequests accepted max", func(t *testing.T) {
+		c, err := ParseConfigFromJSON([]byte(`{"maxConcurrentRequests":999999999}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		v, err := c.ResolvedMaxConcurrentRequests()
+		if err != nil || v != MaxMaxConcurrentRequests {
+			t.Errorf("ResolvedMaxConcurrentRequests() = (%d, %v), want (%d, nil)", v, err, MaxMaxConcurrentRequests)
+		}
+	})
+
+	t.Run("maxConcurrentRequests max+1 rejected", func(t *testing.T) {
+		c, err := ParseConfigFromJSON([]byte(`{"maxConcurrentRequests":1000000000}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		if _, err := c.ResolvedMaxConcurrentRequests(); err == nil {
+			t.Fatal("ResolvedMaxConcurrentRequests(1000000000) = nil error, want *InvalidMaxConcurrentRequestsError")
+		}
+		var ierr *InvalidMaxConcurrentRequestsError
+		if err := func() error { _, e := c.ResolvedMaxConcurrentRequests(); return e }(); !errors.As(err, &ierr) {
+			t.Fatalf("error type = %T, want *InvalidMaxConcurrentRequestsError", err)
+		}
+	})
+
+	t.Run("negative maxConcurrentRequests rejected", func(t *testing.T) {
+		// The core only warns and normalizes a negative to 0 (#329) —
+		// libgomesi must fail loud instead: a malformed explicit value
+		// must never pass as the documented "unlimited".
+		c, err := ParseConfigFromJSON([]byte(`{"maxConcurrentRequests":-1}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		if _, err := c.ResolvedMaxConcurrentRequests(); err == nil {
+			t.Fatal("ResolvedMaxConcurrentRequests(-1) = nil error, want *InvalidMaxConcurrentRequestsError")
+		}
+	})
+
+	t.Run("explicit maxConcurrentRequests 0 accepted as unlimited", func(t *testing.T) {
+		// 0 is a legitimate documented value (unlimited) — it must
+		// survive the round-trip, not be rejected and not be confused
+		// with an absent key (Apache's -1-sentinel merge relies on the
+		// explicit 0 reaching the core untouched).
+		c, err := ParseConfigFromJSON([]byte(`{"maxConcurrentRequests":0}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		if c.MaxConcurrentRequests == nil {
+			t.Fatal("MaxConcurrentRequests pointer is nil for explicit 0 — key must be distinguishable from absent")
+		}
+		v, err := c.ResolvedMaxConcurrentRequests()
+		if err != nil || v != 0 {
+			t.Errorf("ResolvedMaxConcurrentRequests() = (%d, %v), want (0, nil)", v, err)
+		}
+	})
 }
 
 func TestParseConfigUnknownKeysIgnored(t *testing.T) {
@@ -285,5 +358,22 @@ func TestParseConfigNullMaxResponseSizeTreatedAsAbsent(t *testing.T) {
 	v, err := c.ResolvedMaxResponseSize()
 	if err != nil || v != 0 {
 		t.Errorf("ResolvedMaxResponseSize() = (%d, %v), want default (0, nil)", v, err)
+	}
+}
+
+func TestParseConfigNullMaxConcurrentRequestsTreatedAsAbsent(t *testing.T) {
+	// null is the encoding/json "not set" signal — same as an absent
+	// key (documented: null = unset → 0 = unlimited), NOT an explicit
+	// value that could fail validation.
+	c, err := ParseConfigFromJSON([]byte(`{"maxConcurrentRequests":null}`))
+	if err != nil {
+		t.Fatalf("ParseConfigFromJSON = %v", err)
+	}
+	if c.MaxConcurrentRequests != nil {
+		t.Fatal("MaxConcurrentRequests pointer non-nil for null — key must be distinguishable from absent")
+	}
+	v, err := c.ResolvedMaxConcurrentRequests()
+	if err != nil || v != 0 {
+		t.Errorf("ResolvedMaxConcurrentRequests() = (%d, %v), want default (0, nil)", v, err)
 	}
 }

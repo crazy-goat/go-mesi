@@ -20,11 +20,13 @@ const DefaultMaxDepth = 5
 // defaults — maxDepth 5, no allowed-hosts restriction, SSRF
 // blockPrivateIPs ON (secure default, matching the core/Caddy/PHP/
 // RoadRunner defaults), no bypass, URL-only cache keys,
-// timeoutSeconds 30 (libgomesi's historical hardcoded value), and
+// timeoutSeconds 30 (libgomesi's historical hardcoded value),
 // maxResponseSize 0 (unlimited — the value every positional Parse*
 // entry point leaves in EsiParserConfig.MaxResponseSize, NOT the
 // 10 MB of mesi.CreateDefaultConfig, which only applies to Go
-// callers using that constructor).
+// callers using that constructor), and maxConcurrentRequests 0
+// (unlimited — likewise the value every positional Parse* entry
+// point leaves in EsiParserConfig.MaxConcurrentRequests).
 //
 // Unknown keys are ignored (forward compatibility — a newer caller
 // must be able to talk to an older libgomesi). Type mismatches and
@@ -66,6 +68,19 @@ type ParseConfig struct {
 	// Parse* paths). Validated against [0, MaxMaxResponseSize];
 	// negatives are rejected rather than silently behaving like 0.
 	MaxResponseSize *int64 `json:"maxResponseSize"`
+	// MaxConcurrentRequests caps the number of concurrent
+	// <esi:include> HTTP fetches within one parse (the
+	// admission-control semaphore mesi/parser.go installs when > 0).
+	// Pointer so an explicit 0 — a legitimate documented value
+	// meaning "unlimited", see the core's "0 = unlimited" contract —
+	// is distinguishable from an absent key (both resolve to 0,
+	// keeping the key's absence byte-identical to the positional
+	// Parse* paths, which leave EsiParserConfig.MaxConcurrentRequests
+	// at its zero value). Validated against
+	// [0, MaxMaxConcurrentRequests]; negatives are rejected rather
+	// than silently behaving like 0 (the core only warns and
+	// normalizes them — #329 — libgomesi fails loud instead).
+	MaxConcurrentRequests *int `json:"maxConcurrentRequests"`
 }
 
 // ParseConfigFromJSON decodes the ParseJson config blob. Malformed
@@ -117,6 +132,23 @@ func (c ParseConfig) ResolvedMaxResponseSize() (int64, error) {
 		return 0, err
 	}
 	return *c.MaxResponseSize, nil
+}
+
+// ResolvedMaxConcurrentRequests returns the validated per-parse
+// concurrent-fetch cap: the explicit value when set (0 = unlimited —
+// the documented core contract), otherwise 0. Absent → 0 is
+// byte-identical to every positional Parse* entry point, which leaves
+// EsiParserConfig.MaxConcurrentRequests at its zero value
+// (unlimited). An out-of-range explicit value (including negatives)
+// errors — it is never silently replaced by the default.
+func (c ParseConfig) ResolvedMaxConcurrentRequests() (int, error) {
+	if c.MaxConcurrentRequests == nil {
+		return 0, nil
+	}
+	if err := ValidateMaxConcurrentRequests(*c.MaxConcurrentRequests); err != nil {
+		return 0, err
+	}
+	return *c.MaxConcurrentRequests, nil
 }
 
 // ResolvedBlockPrivateIPs returns the effective SSRF dial-time block:

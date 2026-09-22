@@ -59,6 +59,10 @@ typedef struct {
      * -1 = unset (libgomesi leaves 0 = unlimited). 0 IS a storable
      * configured value — "unlimited" — so the sentinel must stay -1. */
     apr_off_t max_response_size;
+    /* Concurrent-fetch cap per page render (#170).
+     * -1 = unset (libgomesi leaves 0 = unlimited). 0 IS a storable
+     * configured value — "unlimited" — so the sentinel must stay -1. */
+    int max_concurrent_requests;
 } mesi_config;
 
 /* Sentinel/constant values copied from mod_mesi.c */
@@ -80,6 +84,12 @@ typedef struct {
  * core computes MaxResponseSize+1 for its io.LimitReader bound
  * (mesi/fetch.go), which would wrap negative at math.MaxInt64. */
 #define MESI_MAX_MAX_RESPONSE_SIZE ((apr_off_t)9223372036854775806LL)
+/* Concurrent-fetch cap (#170) — mirrors mod_mesi.c; keep in sync
+ * with libgomesi config.MaxMaxConcurrentRequests. Neither core nor
+ * Caddy caps the value; the bound is parse_nonneg_int's 9-digit
+ * int32-safe guard, the largest value the C `int` field and the
+ * helper can both represent without a wrap. */
+#define MESI_MAX_MAX_CONCURRENT_REQUESTS 999999999
 
 /* Directive parsing functions (copied from mod_mesi.c for testing) */
 static const char *parse_allowed_hosts(mesi_config *conf, const char *arg) {
@@ -291,6 +301,26 @@ static const char *set_max_response_size(mesi_config *conf, const char *arg) {
         return err;
     }
     conf->max_response_size = v;
+    return NULL;
+}
+
+/* MesiMaxConcurrentRequests — mirrors set_max_concurrent_requests in
+ * mod_mesi.c (#170). Uses parse_nonneg_int (never the issue's atoi
+ * sketch — atoi coerces "abc"/"" to 0 = unlimited and accepts
+ * trailing garbage like "3foo") with range [0,
+ * MESI_MAX_MAX_CONCURRENT_REQUESTS]. 0 is a LEGITIMATE configured
+ * value ("unlimited": mesi/parser.go only installs the semaphore when
+ * > 0); negatives are rejected (the core would only warn and
+ * normalize them to 0 = unlimited, #329). Helper errors already name
+ * MesiMaxConcurrentRequests. */
+static const char *set_max_concurrent_requests(mesi_config *conf, const char *arg) {
+    int v = 0;
+    const char *err = parse_nonneg_int(pool, arg, "MesiMaxConcurrentRequests",
+                                       0, MESI_MAX_MAX_CONCURRENT_REQUESTS, &v);
+    if (err) {
+        return err;
+    }
+    conf->max_concurrent_requests = v;
     return NULL;
 }
 
@@ -528,6 +558,7 @@ static void init_config(mesi_config *conf) {
     conf->max_depth = -1;
     conf->timeout_seconds = -1;
     conf->max_response_size = -1;
+    conf->max_concurrent_requests = -1;
 }
 
 static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merged) {
@@ -553,6 +584,9 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
     merged->max_depth = (add->max_depth != -1) ? add->max_depth : base->max_depth;
     merged->timeout_seconds = (add->timeout_seconds != -1) ? add->timeout_seconds : base->timeout_seconds;
     merged->max_response_size = (add->max_response_size != -1) ? add->max_response_size : base->max_response_size;
+    merged->max_concurrent_requests = (add->max_concurrent_requests != -1)
+        ? add->max_concurrent_requests
+        : base->max_concurrent_requests;
 }
 
 /* Test cases */
@@ -2357,6 +2391,196 @@ TEST(merge_mrs_both_unset) {
     ASSERT_EQ(merged.max_response_size, (apr_off_t)-1);
 }
 
+/* --- MesiMaxConcurrentRequests directive tests (#170) --- */
+
+TEST(mcr_default_unset) {
+    /* Fresh config: sentinel -1 (unset). The filter then stays on the
+     * legacy parse path and LIBGOMESI leaves MaxConcurrentRequests at
+     * 0 — "unlimited", the exact pre-#170 Apache behaviour (the core
+     * only installs the admission-control semaphore when > 0,
+     * mesi/parser.go). */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_EQ(conf.max_concurrent_requests, -1);
+}
+
+TEST(mcr_zero_accepted) {
+    /* AC: MesiMaxConcurrentRequests 0 = unlimited. Unlike
+     * MesiTimeout, 0 is a legitimate configured value (mesi/parser.go
+     * only installs the semaphore when > 0), so it must parse AND be
+     * storable — the -1 sentinel is what keeps it distinct from
+     * "unset" so it can override an inherited global cap. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_concurrent_requests(&conf, "0"));
+    ASSERT_EQ(conf.max_concurrent_requests, 0);
+}
+
+TEST(mcr_typical_accepted) {
+    /* AC: MesiMaxConcurrentRequests 5 (the issue's example) — and the
+     * functional cap-3 variant runs on vhost 8092. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_concurrent_requests(&conf, "5"));
+    ASSERT_EQ(conf.max_concurrent_requests, 5);
+}
+
+TEST(mcr_cap_accepted) {
+    /* Boundary: 999999999 (MESI_MAX_MAX_CONCURRENT_REQUESTS) is the
+     * configured max — the 9-digit int32-safe bound shared with
+     * libgomesi config.MaxMaxConcurrentRequests (neither core nor
+     * Caddy caps the value; this is the transport's portable range). */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_concurrent_requests(&conf, "999999999"));
+    ASSERT_EQ(conf.max_concurrent_requests, MESI_MAX_MAX_CONCURRENT_REQUESTS);
+    ASSERT_EQ(MESI_MAX_MAX_CONCURRENT_REQUESTS, 999999999);
+}
+
+TEST(mcr_cap_plus_one_rejected) {
+    /* Boundary: 1000000000 (10 digits) trips parse_nonneg_int's
+     * 9-digit overflow guard before any intermediate wraps. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_concurrent_requests(&conf, "1000000000");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxConcurrentRequests");
+    ASSERT_STR_CONTAINS(err, "exceeds");
+    ASSERT_EQ(conf.max_concurrent_requests, -1);
+}
+
+TEST(mcr_negative_rejected) {
+    /* AC: negative is an error. The core would only warn
+     * ("max_concurrent_requests_invalid") and normalize a negative to
+     * 0 = unlimited (#329) — a malformed explicit value must never
+     * pass as the documented "unlimited". */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_concurrent_requests(&conf, "-1");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxConcurrentRequests");
+    ASSERT_EQ(conf.max_concurrent_requests, -1);
+}
+
+TEST(mcr_plus_sign_rejected) {
+    /* "+3" is rejected — the strict digits-only parser (which skips
+     * leading spaces/tabs, like parse_nonneg_int everywhere) requires
+     * a plain decimal form; the issue's atoi sketch would accept the
+     * sign. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_concurrent_requests(&conf, "+3");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxConcurrentRequests");
+    ASSERT_EQ(conf.max_concurrent_requests, -1);
+}
+
+TEST(mcr_alpha_rejected) {
+    /* atoi("abc") → 0 would silently mean "unlimited". Reject. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_concurrent_requests(&conf, "abc");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxConcurrentRequests");
+    ASSERT_EQ(conf.max_concurrent_requests, -1);
+}
+
+TEST(mcr_trailing_garbage_rejected) {
+    /* atoi("3foo") → 3 would silently accept. Reject. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_concurrent_requests(&conf, "3foo");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxConcurrentRequests");
+    ASSERT_EQ(conf.max_concurrent_requests, -1);
+}
+
+TEST(mcr_decimal_rejected) {
+    /* Decimals must fail-fast — atoi("2.5") would truncate to 2. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_concurrent_requests(&conf, "2.5");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxConcurrentRequests");
+    ASSERT_EQ(conf.max_concurrent_requests, -1);
+}
+
+TEST(mcr_empty_rejected) {
+    /* atoi("") → 0 would silently mean "unlimited". Reject. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_concurrent_requests(&conf, "");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxConcurrentRequests");
+    ASSERT_EQ(conf.max_concurrent_requests, -1);
+}
+
+TEST(mcr_oversize_rejected) {
+    /* 12345678901 (11 digits) — the digit-count guard fires before
+     * the range check. Must fail with an error naming the directive. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_concurrent_requests(&conf, "12345678901");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxConcurrentRequests");
+    ASSERT_STR_CONTAINS(err, "exceeds");
+    ASSERT_EQ(conf.max_concurrent_requests, -1);
+}
+
+TEST(merge_mcr_child_overrides) {
+    /* Child 5 / parent 3 → 5 (add overrides base). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.max_concurrent_requests = 3;
+    add.max_concurrent_requests = 5;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_concurrent_requests, 5);
+}
+
+TEST(merge_mcr_child_inherits) {
+    /* Base 3 + unset add → 3 (unset child inherits the parent). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.max_concurrent_requests = 3;
+    add.max_concurrent_requests = -1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_concurrent_requests, 3);
+}
+
+TEST(merge_mcr_child_zero_overrides) {
+    /* Explicit 0 ("unlimited") must win over a parent cap — 0 is
+     * configured, not unset. This is the whole reason the sentinel
+     * is -1 and not 0 (a `>= 0` merge would silently inherit the
+     * parent's cap and the operator's "unlimited" would be lost). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.max_concurrent_requests = 3;
+    add.max_concurrent_requests = 0;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_concurrent_requests, 0);
+}
+
+TEST(merge_mcr_both_unset) {
+    /* Both unset → -1 sentinel → legacy path; LIBGOMESI leaves 0
+     * (unlimited) — byte-identical to pre-#170 behaviour. */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_concurrent_requests, -1);
+}
+
 int main(int argc, char *argv[]) {
     printf("=== Apache Module Directive Unit Tests ===\n\n");
 
@@ -2585,6 +2809,26 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_mrs_child_inherits);
     RUN_TEST(merge_mrs_child_zero_overrides);
     RUN_TEST(merge_mrs_both_unset);
+
+    printf("\nTesting set_max_concurrent_requests() (#170):\n");
+    RUN_TEST(mcr_default_unset);
+    RUN_TEST(mcr_zero_accepted);
+    RUN_TEST(mcr_typical_accepted);
+    RUN_TEST(mcr_cap_accepted);
+    RUN_TEST(mcr_cap_plus_one_rejected);
+    RUN_TEST(mcr_negative_rejected);
+    RUN_TEST(mcr_plus_sign_rejected);
+    RUN_TEST(mcr_alpha_rejected);
+    RUN_TEST(mcr_trailing_garbage_rejected);
+    RUN_TEST(mcr_decimal_rejected);
+    RUN_TEST(mcr_empty_rejected);
+    RUN_TEST(mcr_oversize_rejected);
+
+    printf("\nTesting merge_server_config() max_concurrent_requests fields (#170):\n");
+    RUN_TEST(merge_mcr_child_overrides);
+    RUN_TEST(merge_mcr_child_inherits);
+    RUN_TEST(merge_mcr_child_zero_overrides);
+    RUN_TEST(merge_mcr_both_unset);
 
 
     apr_pool_destroy(pool);

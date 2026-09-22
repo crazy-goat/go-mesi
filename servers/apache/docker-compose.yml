@@ -20,6 +20,10 @@ services:
       - "8089:8089"
       - "8090:8090"
       - "8091:8091"
+      # 8092 = MesiMaxConcurrentRequests 3, 8093 =
+      # MesiMaxConcurrentRequests 0 (#170).
+      - "8092:8092"
+      - "8093:8093"
     environment:
       - MESI_FORCE_FLATTEN_ERROR=${MESI_FORCE_FLATTEN_ERROR:-}
     volumes:

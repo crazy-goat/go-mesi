@@ -665,6 +665,98 @@ else
 fi
 rm -f /tmp/mesi-mrs-unset.html
 
+# --- MesiMaxConcurrentRequests tests (#170) ---
+# The backend (tests/server.py) serves /hold/<millis>/<label>: it
+# records request concurrency in a peak counter (see /track/reset and
+# /track/max, reachable through the *:80 vhost's /backend/ ProxyPass),
+# holds each request for <millis>, then returns a "<label> Held
+# <millis>" fragment. Each page fans out to 20 DISTINCT labels so every
+# include reaches the backend (duplicate URLs would be served from the
+# in-process cache, #174, and never touch the counter). The peak
+# counter is a deterministic observable — no wall-clock assertion.
+#
+# Fan-out bound for the "unlimited" cases: MESIParse drains includes
+# through a worker pool of min(MaxWorkers=NumCPU*4, 20) goroutines
+# (mesi/parser.go), i.e. at least 4 in any container — with 1500 ms
+# holds, an uncapped parse must show peak >= 4, while a cap of 3 can
+# never exceed 3 (hard semaphore invariant, mesi/fetch.go).
+
+echo "=== Test 36: MesiMaxConcurrentRequests 3 — 20 includes funneled through 3 slots (#170) ==="
+# 8092 sets ONLY MesiMaxConcurrentRequests 3 (proving the routing
+# condition sends a maxcr-only config through ParseJson with the
+# timeout/max-response-size keys absent). Assertions: peak <= 3 is the
+# cap itself (an uncapped parse would reach >= 4 per the fan-out bound
+# above, so this discriminates a broken route); peak >= 2 proves the
+# cap is a multi-slot queue, not a serialisation to 1 (an exact peak
+# == 3 would additionally require all three first-wave dials to
+# overlap — scheduling-dependent, deliberately not asserted). All 20
+# fragments must arrive: includes beyond the cap are QUEUED, not
+# dropped.
+curl -s http://localhost:18080/backend/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mcr-capped.html http://localhost:8092/concurrent-capped.html
+PEAK=$(curl -s http://localhost:18080/backend/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mcr-capped.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 2 ] && [ "$PEAK" -le 3 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After capped include" /tmp/mesi-mcr-capped.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mcr-capped.html; then
+    echo "PASS: peak concurrent fetches $PEAK <= 3 (cap), >= 2 (parallel slots), all 20 fragments queued and delivered"
+else
+    echo "FAIL: MesiMaxConcurrentRequests 3 did not funnel the 20 includes (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mcr-capped.html
+    rm -f /tmp/mesi-mcr-capped.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-mcr-capped.html
+
+echo "=== Test 37: MesiMaxConcurrentRequests 0 — explicit unlimited, fan-out unthrottled (#170) ==="
+# 8093 sets an explicit 0: the value must reach the core as
+# "unlimited" (ParseJson "maxConcurrentRequests":0 — an explicit 0
+# rejected Go-side would make ParseJson return NULL and the request
+# would fail closed with 500). Peak >= 4 distinguishes this from the
+# cap-3 vhost; the fan-out bound above explains the floor.
+curl -s http://localhost:18080/backend/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mcr-zero.html http://localhost:8093/concurrent-unlimited.html
+PEAK=$(curl -s http://localhost:18080/backend/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mcr-zero.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 4 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After explicit-zero include" /tmp/mesi-mcr-zero.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mcr-zero.html; then
+    echo "PASS: peak concurrent fetches $PEAK >= 4 under explicit MesiMaxConcurrentRequests 0 (unlimited), all 20 fragments delivered"
+else
+    echo "FAIL: MesiMaxConcurrentRequests 0 did not behave as unlimited (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mcr-zero.html
+    rm -f /tmp/mesi-mcr-zero.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-mcr-zero.html
+
+echo "=== Test 38: MesiMaxConcurrentRequests unset — backward compat, fan-out unthrottled (#170) ==="
+# The default vhost (*:80) never sets the directive → the legacy parse
+# path (no ParseJson key rendered) with MaxConcurrentRequests left at
+# 0 = unlimited, byte-identical to pre-#170 behaviour. Peak >= 4 pins
+# that unset never throttles.
+curl -s http://localhost:18080/backend/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mcr-unset.html http://localhost:18080/concurrent-unset.html
+PEAK=$(curl -s http://localhost:18080/backend/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mcr-unset.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 4 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After unset-maxcr include" /tmp/mesi-mcr-unset.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mcr-unset.html; then
+    echo "PASS: unset MesiMaxConcurrentRequests stayed unlimited — peak $PEAK >= 4, all 20 fragments delivered"
+else
+    echo "FAIL: unset MesiMaxConcurrentRequests did not behave as unlimited (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mcr-unset.html
+    rm -f /tmp/mesi-mcr-unset.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-mcr-unset.html
+
 docker compose down
 
 echo ""
