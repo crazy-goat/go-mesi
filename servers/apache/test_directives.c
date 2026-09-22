@@ -1907,10 +1907,12 @@ TEST(merge_max_depth_child_zero_overrides) {
 /* --- MesiTimeout directive tests (#167) --- */
 
 TEST(timeout_default_unset) {
-    /* Fresh config: sentinel -1 (unset). The filter substitutes
-     * MESI_DEFAULT_TIMEOUT_SECONDS — pinned to 30 (libgomesi's
-     * historical hardcoded value) so "unset → 30s" is asserted here at
-     * unit level alongside the functional default-timeout case. */
+    /* Fresh config: sentinel -1 (unset). The filter then stays on the
+     * legacy parse path and LIBGOMESI applies its default 30s
+     * (config.DefaultTimeoutSeconds) Go-side; MESI_DEFAULT_TIMEOUT_SECONDS
+     * only documents that value (pinned to 30 here) so "unset → 30s" is
+     * asserted at unit level alongside the functional default-timeout
+     * case. */
     mesi_config conf;
     init_config(&conf);
     ASSERT_EQ(conf.timeout_seconds, -1);

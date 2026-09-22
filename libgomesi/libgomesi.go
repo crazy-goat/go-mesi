@@ -149,7 +149,7 @@ func ParseDefault(input *C.char) *C.char {
 	config := mesi.EsiParserConfig{
 		DefaultUrl: "http://127.0.0.1/",
 		MaxDepth:   5,
-		Timeout:    30 * time.Second,
+		Timeout:    defaultParseTimeout(),
 	}
 	applySharedConfig(&config)
 	result := mesi.MESIParse(goInput, config)
@@ -195,7 +195,7 @@ func Parse(input *C.char, maxDepth C.int, defaultUrl *C.char) *C.char {
 	config := mesi.EsiParserConfig{
 		DefaultUrl: goDefaultUrl,
 		MaxDepth:   goMaxDepth,
-		Timeout:    30 * time.Second,
+		Timeout:    defaultParseTimeout(),
 	}
 	applySharedConfig(&config)
 	result := mesi.MESIParse(goInput, config)

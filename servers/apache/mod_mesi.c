@@ -105,13 +105,15 @@ typedef struct {
     // is valid passthrough (no ESI fetch). Range [0, MESI_MAX_MAX_DEPTH]
     // matches mesi.MaxMaxDepth / Caddy.
     int max_depth;  // -1=unset, >=0 = configured
-    // Global per-include fetch budget in seconds (#167). -1 = unset
-    // (filter uses MESI_DEFAULT_TIMEOUT_SECONDS — 30, libgomesi's
-    // historical hardcoded value). Range [1, MESI_MAX_TIMEOUT_SECONDS];
-    // 0 is REJECTED at config load: the core treats Timeout <= 0 as
-    // "budget already exhausted" and fails every include immediately
-    // with ErrTimeBudgetExceeded (mesi/fetch.go) — it does NOT mean
-    // "no timeout".
+    // Global per-include fetch budget in seconds (#167). -1 = unset:
+    // the filter stays on the legacy parse path and libgomesi applies
+    // its default 30s (config.DefaultTimeoutSeconds — the
+    // MESI_DEFAULT_TIMEOUT_SECONDS macro below only documents that
+    // value, the filter never substitutes it). Range [1,
+    // MESI_MAX_TIMEOUT_SECONDS]; 0 is REJECTED at config load: the
+    // core treats Timeout <= 0 as "budget already exhausted" and fails
+    // every include immediately with ErrTimeBudgetExceeded
+    // (mesi/fetch.go) — it does NOT mean "no timeout".
     int timeout_seconds;  // -1=unset, >=1 = configured
 } mesi_config;
 
@@ -137,9 +139,11 @@ typedef struct {
 #define MESI_MAX_MAX_DEPTH 10000
 #define MESI_DEFAULT_MAX_DEPTH 5
 // Global ESI per-include fetch timeout (#167). Bounds match libgomesi's
-// config.MaxTimeoutSeconds (86400 = 24h); the default is libgomesi's
-// historical hardcoded 30s (config.DefaultTimeoutSeconds). Keep both in
-// sync with libgomesi/internal/config/timeout.go.
+// config.MaxTimeoutSeconds (86400 = 24h). Documentation-only mirror of
+// libgomesi's config.DefaultTimeoutSeconds (30): an unset MesiTimeout
+// keeps the legacy parse path and libgomesi applies 30s Go-side — this
+// module never substitutes the macro itself. Keep the value in sync
+// with libgomesi/internal/config/timeout.go.
 #define MESI_MAX_TIMEOUT_SECONDS (24 * 60 * 60)
 #define MESI_DEFAULT_TIMEOUT_SECONDS 30
 
