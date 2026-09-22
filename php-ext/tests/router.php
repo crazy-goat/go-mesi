@@ -189,6 +189,75 @@ if ($path === '/timeout-default') {
     return true;
 }
 
+// max_response_size (#201): fragment bodies come from a DEDICATED
+// size-serving server spawned by test.sh on 127.0.0.1:18082 (php -S is
+// single-threaded — the include must never be served by this process, same
+// rule as the slow server above). block_private_ips=false so the loopback
+// dial is allowed and only the size cap can fail the include.
+if ($path === '/max-response-size-over') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>over test</p><esi:include src="http://127.0.0.1:18082/bytes/200" />',
+        5,
+        $backend,
+        ['max_response_size' => 100, 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// 200-byte body under a 1000-byte cap -> delivered fully.
+if ($path === '/max-response-size-under') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>under test</p><esi:include src="http://127.0.0.1:18082/bytes/200" />',
+        5,
+        $backend,
+        ['max_response_size' => 1000, 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// key absent: documented default 0 = UNLIMITED — a 10 MB + 1-byte body
+// still delivers (pins absent = unlimited against the issue's proposed
+// "absent -> 10 MB" default, which never exists on this path — #169).
+if ($path === '/max-response-size-absent') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>absent test</p><esi:include src="http://127.0.0.1:18082/bytes/10485761" />',
+        5,
+        $backend,
+        ['block_private_ips' => false]
+    );
+    return true;
+}
+
+// explicit 0: the documented "unlimited" value (mesi/fetch.go only limits
+// when MaxResponseSize > 0) — same large body must deliver.
+if ($path === '/max-response-size-zero') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>zero test</p><esi:include src="http://127.0.0.1:18082/bytes/10485761" />',
+        5,
+        $backend,
+        ['max_response_size' => 0, 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// /bytes/<size> (#201): serve a body of EXACTLY <size> '#' bytes — the
+// deterministic size fixture for the max_response_size tests (the #169
+// servers/apache/tests/server.py / tests/server/main.go /bytes generator,
+// reduced to this suite's needs). Guarded against absurd allocations.
+if (preg_match('#^/bytes/([0-9]+)$#', $path, $bytes_m)) {
+    $n = (int)$bytes_m[1];
+    if ($n < 0 || $n > 67108864) {
+        return false;
+    }
+    header('Content-Type: application/octet-stream');
+    echo str_repeat('#', $n);
+    return true;
+}
+
 if ($path === '/health') {
     header('Content-Type: text/plain');
     echo 'OK';

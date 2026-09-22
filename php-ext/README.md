@@ -107,6 +107,7 @@ $html = \mesi\parse_with_config(
 | `request_headers` | optional | array | String keys (header names) → string or array-of-strings values. Keys and all values must pass `mesi_is_safe_string` (no control chars, space/tab, DEL, `"` or `\`). Empty array = no headers. Only rendered when a non-empty `cache_key_template` is set and `cache_backend != ""` |
 | `request_cookies` | optional | array | String keys (cookie names, non-empty, no spaces/control) → string values (no control chars, `"` or `\`; spaces allowed in values). Empty array = no cookies. Only rendered when a non-empty `cache_key_template` is set and `cache_backend != ""` |
 | `timeout` | optional | int | Global per-include fetch budget in **seconds**; range `[1, 86_400]`; absent = `30` (libgomesi's historical default — omitting the key is backward compatible). **`0` is rejected**: the core makes every include fail immediately with `ErrTimeBudgetExceeded` when `Timeout <= 0` — it does **not** mean "no timeout". Non-integer values (string `"10"`, float `1.5`, `"abc"`, `""`, bool, null, array) and out-of-range values are rejected with `E_WARNING` and the function returns `false`. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"timeoutSeconds":N}`; on an older `libgomesi.so` without `ParseJson` a warning is emitted and the timeout is ignored (30s applies) |
+| `max_response_size` | optional | int | Caps a single `<esi:include>` response body in **bytes**; range `[0, 9223372036854775806]` (`MaxInt64 - 1`); absent = `0` = **unlimited** (backward compatible — omitting the key is byte-identical to previous behaviour; there is **no implicit 10 MB default** on this path). **`0` is the documented "unlimited" value** (the core only limits when `MaxResponseSize > 0`). Non-integer values (string `"10"`, float `1.5`, `"abc"`, `""`, bool, null, array), negatives and values above the cap are rejected with `E_WARNING` and the function returns `false`. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"maxResponseSize":N}` (#169 schema key); on an older `libgomesi.so` without `ParseJson` a warning is emitted and the cap is ignored (unlimited applies) |
 
 Validation is strict: an unknown `cache_backend`, mismatched Redis-vs-Memcached key, out-of-range numeric value, non-integer value, malformed `host:port`, or a non-string memcached server entry emits an `E_WARNING` and returns `false`. The function never silently degrades to "no cache" on a typo — a wrong host:port or empty memcached list surfaces as `E_WARNING`, matching the validation pattern in `parse_with_config()` for the in-memory backend and the equivalent `MesiCache*` directives in `servers/apache`. The same applies to `allowed_hosts`: a non-string or whitespace-only value is rejected (a whitespace-only list would silently tokenize to an empty allowlist = allow all hosts — the same fail-open typo nginx hardens against, #354). The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
 
@@ -393,6 +394,58 @@ Semantics (identical to Apache's `MesiTimeout` #167 and libgomesi's
   (`timeout ignored … Upgrade libgomesi.so.`) and falls back to that path
   with the default 30s — never a crash.
 - The legacy `\mesi\parse()` entrypoint keeps the hardcoded 30s.
+
+#### Max response size (`max_response_size`)
+
+Since #201. `max_response_size` caps the HTTP response body of a **single**
+`<esi:include>` fetch — an over-limit include fails its fetch and renders
+the empty `IncludeErrorMarker` / fallback body (per include, not per page):
+
+```php
+// Reject includes whose body exceeds 1 MB:
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    ['max_response_size' => 1048576]
+);
+```
+
+Semantics (identical to Apache's `MesiMaxResponseSize` #169 and libgomesi's
+`ParseJson` `maxResponseSize`):
+
+- Integer **bytes**, range `[0, 9223372036854775806]` (`math.MaxInt64 - 1`
+  — the core computes `MaxResponseSize + 1` for its `io.LimitReader` bound
+  (`mesi/fetch.go`); at `MaxInt64` that wraps negative and the include would
+  silently render an empty body).
+- **Absent key → `0` → unlimited** — the value every positional
+  `ParseWithConfig*` path leaves in `EsiParserConfig.MaxResponseSize`
+  (byte-identical to previous behaviour). There is **no implicit 10 MB
+  default** on this path: the `10 * 1024 * 1024` of
+  `mesi.CreateDefaultConfig()` only reaches Go callers using that
+  constructor, never libgomesi's positional exports or `ParseJson`.
+- **Explicit `0` = the documented "unlimited" value** — the core only
+  limits when `MaxResponseSize > 0` (`mesi/fetch.go`); with a current
+  `libgomesi.so` there is **no observable difference** between an explicit
+  `0` and an absent key (both resolve to `0`; the only difference is the
+  routing — an explicit key routes through `ParseJson`, so against an old
+  `libgomesi.so` without that symbol only the explicit key warns).
+- A malformed explicit value is never silently coerced: non-integers
+  (numeric string `"10"` does not coerce, floats `1.5`/`10.0`, `"abc"`,
+  `""`, bool, null, array), negatives (`-1` — the core's `> 0` check would
+  silently treat them like `0`) and values above the cap
+  (`9223372036854775807`, overflow) emit an `E_WARNING` naming
+  `max_response_size` and `parse_with_config()` returns `false` — the same
+  strict contract as `timeout` / `cache_ttl`.
+- The key is passed through libgomesi's `ParseJson` entry point (#167) as
+  `{"maxResponseSize":N}` (#169 schema key) together with every other
+  resolved option; **each key is only rendered when set**, so a
+  `timeout`-only call gains no `maxResponseSize` key and a
+  `max_response_size`-only call keeps the positional 30s timeout. An
+  absent key keeps the exact positional `ParseWithConfigCtx` path. An
+  older `libgomesi.so` without the `ParseJson` symbol emits a warning
+  (`max_response_size ignored … Upgrade libgomesi.so.`) and falls back to
+  that path unlimited — never a crash.
 
 ### Cache scope
 

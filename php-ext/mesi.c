@@ -49,6 +49,15 @@ ZEND_END_ARG_INFO()
  * historical hardcoded value (config.DefaultTimeoutSeconds), so omitting
  * the key is byte-identical to previous behaviour. */
 #define MESI_DEFAULT_TIMEOUT_SECONDS 30
+/* Per-include response body cap in BYTES (#201). Matches libgomesi's
+ * config.MaxMaxResponseSize (math.MaxInt64 - 1): the core computes
+ * MaxResponseSize+1 for its io.LimitReader bound (mesi/fetch.go), which
+ * wraps negative at MaxInt64 and would silently render an empty body.
+ * 0 is the documented "unlimited" value (the core only limits when
+ * MaxResponseSize > 0); the ABSENT key likewise means unlimited — the
+ * value every positional Parse* path leaves (never the 10 MB of
+ * mesi.CreateDefaultConfig, which does not reach this extension). */
+#define MESI_MAX_MAX_RESPONSE_SIZE 9223372036854775806LL
 
 typedef struct {
     char    backend[MESI_BACKEND_MAX]; /* "", "memory", "redis", "memcached" */
@@ -276,14 +285,22 @@ static void mesi_resolve_parse_json(void) {
 /*
  * build_parse_json_blob renders the fully-resolved per-parse configuration
  * into the JSON blob libgomesi's ParseJson accepts (#167). Only called when
- * the `timeout` key is present (that is what routes a call through
- * ParseJson). Every other key mirrors exactly what the positional
- * ParseWithConfigCtx path would pass, so behaviour is identical except for
- * the timeout. Timeouts travel in SECONDS ("timeoutSeconds":N) — the
+ * the `timeout` or `max_response_size` key is present (those are what route
+ * a call through ParseJson; Apache #167/#169 used_parse_json pattern). Every
+ * other key mirrors exactly what the positional ParseWithConfigCtx path
+ * would pass, so behaviour is identical except for the keys the blob
+ * carries. timeoutSeconds travels in SECONDS ("timeoutSeconds":N) — the
  * nanosecond conversion happens Go-side in config.ResolveTimeout
- * (deviation from issue #181's nanosecond sketch). cacheKeyTemplate and
- * requestCtx are included only when a template is active (backend
- * configured), mirroring tmpl_for_ctx/ctx_json on the positional path.
+ * (deviation from issue #181's nanosecond sketch) — maxResponseSize in
+ * BYTES ("maxResponseSize":N); BOTH keys are rendered ONLY when their PHP
+ * key was explicitly set (per-key conditional rendering, like Apache's
+ * build_parse_json_config), so a timeout-only call gains no
+ * maxResponseSize key and a max_response_size-only call keeps the
+ * positional 30s timeout — an absent key resolves to the same documented
+ * default the positional path uses Go-side (30s / 0 = unlimited).
+ * cacheKeyTemplate and requestCtx are included only when a template is
+ * active (backend configured), mirroring tmpl_for_ctx/ctx_json on the
+ * positional path.
  *
  * Strings are escaped via mesi_json_append_str (default_url is caller
  * input and may contain '"'; allowed_hosts validation only rules out
@@ -294,12 +311,13 @@ static char *build_parse_json_blob(zend_long depth, const char *default_url,
                                    const char *allowed_hosts,
                                    int block_private,
                                    int allow_private_for_allowed,
-                                   long timeout_seconds,
+                                   int timeout_set, long timeout_seconds,
+                                   int max_response_size_set, long max_response_size,
                                    const char *tmpl, const char *ctx_json) {
     int has_tmpl = (tmpl != NULL && tmpl[0] != '\0');
     int has_ctx = (has_tmpl && ctx_json != NULL && ctx_json[0] != '\0');
     /* Worst case 6 output bytes per input byte (\\u00XX) + fixed keys. */
-    size_t cap = 320
+    size_t cap = 360
         + strlen(default_url) * 6
         + strlen(allowed_hosts) * 6
         + (has_tmpl ? strlen(tmpl) * 6 : 0)
@@ -316,7 +334,11 @@ static char *build_parse_json_blob(zend_long depth, const char *default_url,
             ",\"blockPrivateIPs\":%s,\"allowPrivateIPsForAllowedHosts\":%s",
             block_private ? "true" : "false",
             allow_private_for_allowed ? "true" : "false")) goto fail;
-    if (!mesi_appendf(out, cap, &pos, ",\"timeoutSeconds\":%ld", timeout_seconds))
+    if (timeout_set
+        && !mesi_appendf(out, cap, &pos, ",\"timeoutSeconds\":%ld", timeout_seconds))
+        goto fail;
+    if (max_response_size_set
+        && !mesi_appendf(out, cap, &pos, ",\"maxResponseSize\":%ld", max_response_size))
         goto fail;
     if (has_tmpl) {
         if (!mesi_appendf(out, cap, &pos, ",\"cacheKeyTemplate\":")) goto fail;
@@ -682,6 +704,38 @@ PHP_FUNCTION(parse) {
  *                            E_WARNING reports the timeout as ignored
  *                            (30s applies) and the positional path runs —
  *                            never a crash. Legacy parse() keeps 30s.
+ *   max_response_size:        optional integer. Caps the HTTP response
+ *                            body of a SINGLE <esi:include> fetch in
+ *                            BYTES, range [0, 9223372036854775806]
+ *                            (math.MaxInt64 - 1 — the core computes
+ *                            size+1 for its LimitReader bound, which
+ *                            wraps negative at MaxInt64 and would
+ *                            silently render an empty body). Absent =>
+ *                            0 = UNLIMITED — the value the positional
+ *                            path always leaves (byte-identical to
+ *                            previous behaviour; there is NO implicit
+ *                            10 MB default on this path — that value
+ *                            only exists in mesi.CreateDefaultConfig,
+ *                            which libgomesi's positional exports never
+ *                            use). Explicit 0 is the documented
+ *                            "unlimited" value (the core only limits
+ *                            when MaxResponseSize > 0, mesi/fetch.go).
+ *                            Negatives are rejected instead of silently
+ *                            behaving like 0. Malformed explicit values
+ *                            (string "10", float 1.5, bool, null, array)
+ *                            are rejected with E_WARNING and the
+ *                            function returns false — same strict
+ *                            contract as timeout/cache_ttl. When the key
+ *                            is present the call is routed through
+ *                            libgomesi's ParseJson entry point (#167) as
+ *                            {"maxResponseSize":N} (the #169 schema key)
+ *                            together with every other resolved option;
+ *                            an absent key keeps the exact
+ *                            ParseWithConfigCtx path. If the loaded
+ *                            libgomesi predates ParseJson, an E_WARNING
+ *                            reports max_response_size as ignored
+ *                            (unlimited applies) and the positional path
+ *                            runs — never a crash.
  *
  * Validation strictly mirrors libgomesi's InitCacheWithConfig contract —
  * we detect the same bad inputs libgomesi would silently ignore or silently
@@ -736,6 +790,16 @@ PHP_FUNCTION(parse_with_config) {
      * explicit value routes the call through ParseJson (#181). */
     long timeout_seconds = MESI_DEFAULT_TIMEOUT_SECONDS;
     int timeout_set = 0;
+
+    /* max_response_size: per-include response body cap in BYTES,
+     * [0, MESI_MAX_MAX_RESPONSE_SIZE]. Absent => 0 = unlimited — the value
+     * the positional path always left (byte-identical to previous
+     * behaviour). max_response_size_set distinguishes "explicit key" from
+     * "absent" so the blob only renders the key when set — and like
+     * timeout, only an explicit value routes the call through ParseJson
+     * (#201; Apache #169 pattern). */
+    long max_response_size = 0;
+    int max_response_size_set = 0;
 
     if (config != NULL && Z_TYPE_P(config) == IS_ARRAY) {
         zval *val;
@@ -1172,6 +1236,41 @@ PHP_FUNCTION(parse_with_config) {
             timeout_set = 1;
         }
 
+        /* max_response_size: per-include response body cap in bytes, range
+         * [0, MESI_MAX_MAX_RESPONSE_SIZE]. Strict validation: an absent key
+         * keeps the documented default (0 = unlimited, byte-identical to
+         * previous behaviour), but an explicit malformed or out-of-range
+         * value is NEVER silently coerced — non-integers (string "10",
+         * float 1.5, bool, null, array) and values outside the range (-1,
+         * -100, MaxInt64, overflow) emit E_WARNING naming the option and
+         * the call returns false, same contract as timeout/cache_ttl.
+         * 0 is deliberately ACCEPTED as the documented "unlimited" value
+         * (the core only limits when MaxResponseSize > 0 — mesi/fetch.go);
+         * negatives are rejected because the core's `> 0` check would
+         * silently treat them exactly like 0 (a malformed explicit value
+         * must never pass as a documented one). */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "max_response_size", sizeof("max_response_size") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) != IS_LONG) {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): max_response_size must be an integer "
+                    "(bytes, range [0, %lld])",
+                    (long long)MESI_MAX_MAX_RESPONSE_SIZE);
+                RETURN_FALSE;
+            }
+            long v = Z_LVAL_P(val);
+            if (v < 0 || v > MESI_MAX_MAX_RESPONSE_SIZE) {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): max_response_size %ld is out of range "
+                    "[0, %lld] (0 is the documented \"unlimited\" value; negatives are "
+                    "rejected instead of silently behaving like it)",
+                    v, (long long)MESI_MAX_MAX_RESPONSE_SIZE);
+                RETURN_FALSE;
+            }
+            max_response_size = v;
+            max_response_size_set = 1;
+        }
+
         /* Backend-specific requirements: redis requires addr; memcached
          * requires servers. Detected after per-key parsing so a stray
          * key doesn't by itself trigger the error. */
@@ -1360,47 +1459,63 @@ ctx_done: ;
         ctx_json = (char*)"";
     }
 
-    /* #181 `timeout` key: when explicitly set, route the whole parse
-     * through libgomesi's ParseJson entry point so timeoutSeconds reaches
-     * the core. The blob carries every other resolved option (depth,
-     * default URL, allowed hosts, SSRF flags, optional cache key template
-     * + request context), so behaviour matches the positional path exactly
-     * except for the timeout (Apache #167 used_parse_json pattern). When
-     * the loaded libgomesi predates ParseJson (resolved at module init, see
-     * mesi_resolve_parse_json), fall through to the positional path with
-     * an E_WARNING — the timeout is ignored (default 30s applies), never a
-     * crash and never a silently wrong config. An absent `timeout` key
-     * keeps the exact pre-#181 positional path (byte-identical behaviour,
-     * default 30s). */
+    /* #181 `timeout` / #201 `max_response_size` keys: when either is
+     * explicitly set, route the whole parse through libgomesi's ParseJson
+     * entry point so timeoutSeconds / maxResponseSize reach the core
+     * (each option independently forces the routing — Apache #167/#169/
+     * #170/#171 pattern). The blob carries every other resolved option
+     * (depth, default URL, allowed hosts, SSRF flags, optional cache key
+     * template + request context), so behaviour matches the positional
+     * path exactly except for the keys it carries — and each key is only
+     * rendered when its PHP key was set (a timeout-only call gains no
+     * maxResponseSize key, a max_response_size-only call keeps the
+     * positional 30s timeout). When the loaded libgomesi predates
+     * ParseJson (resolved at module init, see mesi_resolve_parse_json),
+     * fall through to the positional path with a per-key E_WARNING — the
+     * set option is ignored (positional default applies: 30s / unlimited),
+     * never a crash and never a silently wrong config. Absent keys keep
+     * the exact pre-#181/pre-#201 positional path (byte-identical
+     * behaviour: default 30s, unlimited size). */
     char *result = NULL;
     int used_parse_json = 0;
     char *parse_json_blob = NULL;
 
-    if (timeout_set) {
+    if (timeout_set || max_response_size_set) {
         mesi_resolve_parse_json();
         if (g_parse_json != NULL) {
             parse_json_blob = build_parse_json_blob(
                 max_depth, default_url, allowed_hosts,
                 block_private_ips ? 1 : 0,
                 allow_private_ips_for_allowed_hosts ? 1 : 0,
-                timeout_seconds,
+                timeout_set, timeout_seconds,
+                max_response_size_set, max_response_size,
                 tmpl_for_ctx,
                 ctx_json && *ctx_json ? ctx_json : (char*)"");
             if (parse_json_blob == NULL) {
                 if (ctx_json_buf) free(ctx_json_buf);
                 php_error_docref(NULL, E_WARNING,
                     "mesi\\parse_with_config(): failed to render parse config JSON "
-                    "(timeout=%ld)", timeout_seconds);
+                    "(timeout=%ld, max_response_size=%ld)",
+                    timeout_seconds, max_response_size);
                 RETURN_FALSE;
             }
             used_parse_json = 1;
             result = g_parse_json(input, parse_json_blob);
             free(parse_json_blob);
         } else {
-            php_error_docref(NULL, E_WARNING,
-                "mesi\\parse_with_config(): timeout is set but libgomesi lacks "
-                "ParseJson; timeout ignored (default %d timeout applies). "
-                "Upgrade libgomesi.so.", MESI_DEFAULT_TIMEOUT_SECONDS);
+            if (timeout_set) {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): timeout is set but libgomesi lacks "
+                    "ParseJson; timeout ignored (default %d timeout applies). "
+                    "Upgrade libgomesi.so.", MESI_DEFAULT_TIMEOUT_SECONDS);
+            }
+            if (max_response_size_set) {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): max_response_size is set but "
+                    "libgomesi lacks ParseJson; max_response_size ignored "
+                    "(unlimited response size applies, the pre-#201 behaviour). "
+                    "Upgrade libgomesi.so.");
+            }
         }
     }
 
@@ -1415,11 +1530,13 @@ ctx_done: ;
     if (result == NULL) {
         if (used_parse_json) {
             /* PHP-side validation already passed; libgomesi logs the
-             * offending config (bad timeoutSeconds, malformed JSON, ...)
-             * Go-side — surface it loudly instead of blaming max_depth. */
+             * offending config (bad timeoutSeconds / maxResponseSize,
+             * malformed JSON, ...) Go-side — surface it loudly instead
+             * of blaming max_depth. */
             php_error_docref(NULL, E_WARNING,
                 "mesi\\parse_with_config(): libgomesi rejected the parse config "
-                "(timeout=%ld)", timeout_seconds);
+                "(timeout=%ld, max_response_size=%ld)",
+                timeout_seconds, max_response_size);
         } else {
             php_error_docref(NULL, E_WARNING, "mesi\\parse_with_config(): invalid max_depth");
         }
