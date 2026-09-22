@@ -2230,9 +2230,9 @@ TEST(mrs_negative_rejected) {
 
 TEST(mrs_plus_sign_rejected) {
     /* Deviation from the issue's apr_strtoff sketch: apr_strtoff
-     * accepts a leading '+' (and leading whitespace). The strict
-     * digits-only parser rejects it — only canonical decimal forms
-     * pass config load. */
+     * accepts a leading '+'. parse_nonneg_off skips leading spaces/tabs
+     * too (like parse_nonneg_int), but rejects the sign — the strict
+     * digits-only parser requires a plain decimal form. */
     mesi_config conf;
     init_config(&conf);
     const char *err = set_max_response_size(&conf, "+100");
