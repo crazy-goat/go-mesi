@@ -890,6 +890,31 @@ else
     exit 1
 fi
 
+# (e) Missing argument REJECTED: a bare `mesi_max_depth;` (zero args) is
+#     caught by NGX_CONF_TAKE1 before the setter runs.
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_max_depth;' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-max-depth.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-max-depth.conf' < /tmp/nginx-max-depth.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-max-depth.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q 'invalid number of arguments in "mesi_max_depth"'; then
+    echo "PASS: argument-less mesi_max_depth rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject a mesi_max_depth without an argument"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
 docker compose down
 
 echo ""

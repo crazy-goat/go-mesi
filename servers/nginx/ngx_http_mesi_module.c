@@ -1200,6 +1200,14 @@ static char *ngx_http_mesi_set_max_depth(ngx_conf_t *cf, ngx_command_t *cmd,
 
   (void)cmd;  // offset is informational; the setter writes lcf directly.
 
+  // Reject a repeated directive in the same scope, matching the
+  // "is duplicate" behaviour of the ngx_conf_set_*_slot setters used
+  // by every other directive in this module — a silent last-wins would
+  // substitute the operator's intent without a word.
+  if (lcf->max_depth != NGX_CONF_UNSET) {
+    return "is duplicate";
+  }
+
   // NGX_CONF_TAKE1 guarantees one argument, but an empty quoted string
   // ("") is still a zero-length token — reject it instead of letting
   // the loop below parse "" as a silent passthrough 0.
