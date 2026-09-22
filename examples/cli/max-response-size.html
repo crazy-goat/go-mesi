@@ -1,0 +1,14 @@
+<!-- Example: cap a single ESI include response body -->
+<!-- Run (test server must be running: go run ./tests/server):
+     mesi-cli -max-response-size=100 -allow-private-ips -default-url http://127.0.0.1:18080/ examples/cli/max-response-size.html -->
+<html>
+<body>
+  <h1>Max Response Size Example</h1>
+  <esi:include src="bytes/200" />
+  <!-- Unit: bytes. Range [0, 9223372036854775806]; 0 = unlimited;
+       default 10485760 (10 MB). Under -max-response-size=100 the 200-byte
+       fragment above exceeds the cap, its fetch fails and the include
+       renders empty; raise the flag (e.g. 1024) or pass 0 for unlimited
+       to fetch it. -->
+</body>
+</html>

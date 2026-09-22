@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -32,6 +33,28 @@ func allowedHostsFromFlag(value string) []string {
 		return nil
 	}
 	return strings.Split(value, ",")
+}
+
+// maxMaxResponseSize mirrors libgomesi's config.MaxMaxResponseSize
+// (libgomesi/internal/config/max_response_size.go, #169). That package
+// lives under libgomesi/internal and cannot be imported from the separate
+// cli module, so the bound is mirrored here (the same keep-in-sync pattern
+// as Apache's MESI_MAX_MAX_RESPONSE_SIZE). It is math.MaxInt64-1: the core
+// computes MaxResponseSize+1 for its io.LimitReader bound
+// (mesi/fetch.go:290), and at math.MaxInt64 that wraps negative, the
+// LimitedReader reports EOF immediately, and the include would silently
+// render an EMPTY body instead of failing the size check (#448).
+const maxMaxResponseSize int64 = math.MaxInt64 - 1
+
+// validateMaxResponseSize rejects -max-response-size values outside
+// [0, maxMaxResponseSize]. 0 is the documented "unlimited" value (the core
+// only limits when MaxResponseSize > 0, mesi/fetch.go:288); negatives are
+// rejected instead of silently passing as 0 through the core's > 0 check.
+func validateMaxResponseSize(v int64) error {
+	if v < 0 || v > maxMaxResponseSize {
+		return fmt.Errorf("max-response-size must be in [0, %d], got %d", maxMaxResponseSize, v)
+	}
+	return nil
 }
 
 func main() {
@@ -63,6 +86,12 @@ func main() {
 		"Allow ESI includes to private/reserved IP ranges for hosts listed in -allowed-hosts (trusts DNS)")
 	maxWorkers := flag.Int("max-workers", 0,
 		"Max concurrent ESI include goroutines (0 = NumCPU*4)")
+	// Default derived from CreateDefaultConfig() so that an absent flag is
+	// byte-identical to the pre-flag CLI behaviour (which never overrode the
+	// field and therefore always used the 10 MB constructor default).
+	maxResponseSize := flag.Int64("max-response-size",
+		mesi.CreateDefaultConfig().MaxResponseSize,
+		"Max ESI include response size in bytes (0 = unlimited)")
 	sharedHTTPClient := flag.Bool("shared-http-client", false,
 		"Share HTTP client across ESI includes for connection pooling")
 	includeErrorMarker := flag.String("include-error-marker", "",
@@ -71,6 +100,10 @@ func main() {
 	flag.Parse()
 	if uint64(*maxDepth) > mesi.MaxMaxDepth {
 		fmt.Fprintf(os.Stderr, "Error: max-depth must be in [0, %d], got %d\n", mesi.MaxMaxDepth, *maxDepth)
+		os.Exit(1)
+	}
+	if err := validateMaxResponseSize(*maxResponseSize); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
 	args := flag.Args()
@@ -91,6 +124,10 @@ func main() {
 	config.AllowedHosts = allowedHostsFromFlag(*allowedHosts)
 	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
 	config.MaxWorkers = *maxWorkers
+	// Explicitly assigned even though CreateDefaultConfig() already set the
+	// same value: the flag default IS that value, so an absent flag stays
+	// byte-identical, while an explicit 0 means "unlimited" (#169 contract).
+	config.MaxResponseSize = *maxResponseSize
 	config.IncludeErrorMarker = *includeErrorMarker
 
 	if *sharedHTTPClient {
