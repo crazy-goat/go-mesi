@@ -2883,8 +2883,8 @@ func TestMaxWorkersNegativeProvision(t *testing.T) {
 
 // --- MaxResponseSize Directive Tests ---
 
-// TestMaxResponseSizeDefaultUnset verifies that when max_response_size is not set,
-// MaxResponseSize is nil and the library default (10 MB) is used.
+// TestMaxResponseSizeDefaultUnset verifies that when max_response_size is not
+// set, MaxResponseSize is nil and the core value remains 0 (unlimited).
 func TestMaxResponseSizeDefaultUnset(t *testing.T) {
 	m := &MesiMiddleware{}
 	if err := m.Provision(caddy.Context{}); err != nil {
@@ -2892,6 +2892,42 @@ func TestMaxResponseSizeDefaultUnset(t *testing.T) {
 	}
 	if m.MaxResponseSize != nil {
 		t.Errorf("MaxResponseSize should be nil by default, got %v", *m.MaxResponseSize)
+	}
+}
+
+// TestMaxResponseSizeDefaultUnsetAllowsOverTenMB pins that Caddy's unset
+// max_response_size leaves EsiParserConfig.MaxResponseSize at 0 (unlimited).
+func TestMaxResponseSizeDefaultUnsetAllowsOverTenMB(t *testing.T) {
+	blockPrivateIPs := false
+	m := &MesiMiddleware{BlockPrivateIPs: &blockPrivateIPs}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() returned error: %v", err)
+	}
+
+	payload := "MesiPayload" + strings.Repeat("x", 10*1024*1024+1)
+	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(payload))
+	}))
+	defer fragmentServer.Close()
+
+	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<html><body><esi:include src="` + fragmentServer.URL + `/frag" /></body></html>`))
+		return nil
+	})
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+	if err := m.ServeHTTP(rec, req, handler); err != nil {
+		t.Fatalf("ServeHTTP returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "MesiPayload") {
+		t.Fatal("expected over-10MB include body to be rendered when max_response_size is unset")
 	}
 }
 
