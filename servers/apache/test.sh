@@ -577,6 +577,80 @@ else
     exit 1
 fi
 
+# --- MesiMaxResponseSize tests (#169) ---
+# The backend (tests/server.py) serves /bytes/<size>, a body of exactly
+# <size> bytes prefixed with a "MesiBytesPayload <size>" marker line.
+# Assertions combine the marker (fragment arrived / was rejected) with
+# wc -c (the whole body was delivered, not just the marker).
+
+echo "=== Test 32: MesiMaxResponseSize 100 — 200-byte include rejected (#169) ==="
+RESPONSE=$(curl -s http://localhost:8089/max-response-reject.html)
+if echo "$RESPONSE" | grep -q "After reject include" \
+    && ! echo "$RESPONSE" | grep -q "MesiBytesPayload" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: 200-byte include rejected by MesiMaxResponseSize 100 (marker absent, tag stripped)"
+else
+    echo "FAIL: MesiMaxResponseSize 100 did not reject the 200-byte include"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 33: MesiMaxResponseSize 1048576 — 500 KB include succeeds (#169) ==="
+curl -s -o /tmp/mesi-mrs-accept.html http://localhost:8090/max-response-accept.html
+SIZE=$(wc -c < /tmp/mesi-mrs-accept.html | tr -d ' ')
+if [ "$SIZE" -gt 512000 ] \
+    && grep -q "MesiBytesPayload 512000" /tmp/mesi-mrs-accept.html \
+    && grep -q "After accept include" /tmp/mesi-mrs-accept.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mrs-accept.html; then
+    echo "PASS: 500 KB include delivered in full under MesiMaxResponseSize 1048576 ($SIZE bytes)"
+else
+    echo "FAIL: MesiMaxResponseSize 1048576 did not deliver the 500 KB include (size $SIZE)"
+    head -c 500 /tmp/mesi-mrs-accept.html
+    rm -f /tmp/mesi-mrs-accept.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-mrs-accept.html
+
+echo "=== Test 34: MesiMaxResponseSize 0 — unlimited, 50 MB include succeeds (#169) ==="
+curl -s --max-time 120 -o /tmp/mesi-mrs-unlimited.html http://localhost:8091/max-response-unlimited.html
+SIZE=$(wc -c < /tmp/mesi-mrs-unlimited.html | tr -d ' ')
+if [ "$SIZE" -gt 52428800 ] \
+    && grep -q "MesiBytesPayload 52428800" /tmp/mesi-mrs-unlimited.html \
+    && grep -q "After unlimited include" /tmp/mesi-mrs-unlimited.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mrs-unlimited.html; then
+    echo "PASS: 50 MB include delivered in full under MesiMaxResponseSize 0 (unlimited, $SIZE bytes)"
+else
+    echo "FAIL: MesiMaxResponseSize 0 did not behave as unlimited (size $SIZE)"
+    head -c 500 /tmp/mesi-mrs-unlimited.html
+    rm -f /tmp/mesi-mrs-unlimited.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-mrs-unlimited.html
+
+echo "=== Test 35: MesiMaxResponseSize unset — backward compat, 10 MB + 1 include succeeds (#169) ==="
+# Default vhost (*:80) never sets the directive. The body is 10 MB + 1
+# byte: the issue's proposed implicit 10 MB default would reject it, so
+# a passing test pins "unset → unlimited" (byte-identical to pre-#169
+# behaviour) at the functional level.
+curl -s --max-time 120 -o /tmp/mesi-mrs-unset.html http://localhost:18080/max-response-unset.html
+SIZE=$(wc -c < /tmp/mesi-mrs-unset.html | tr -d ' ')
+if [ "$SIZE" -gt 10485761 ] \
+    && grep -q "MesiBytesPayload 10485761" /tmp/mesi-mrs-unset.html \
+    && grep -q "After unset include" /tmp/mesi-mrs-unset.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mrs-unset.html; then
+    echo "PASS: unset MesiMaxResponseSize stayed unlimited — 10 MB + 1 include delivered ($SIZE bytes)"
+else
+    echo "FAIL: unset MesiMaxResponseSize did not behave as unlimited (size $SIZE)"
+    head -c 500 /tmp/mesi-mrs-unset.html
+    rm -f /tmp/mesi-mrs-unset.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-mrs-unset.html
+
 docker compose down
 
 echo ""

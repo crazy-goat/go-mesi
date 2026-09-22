@@ -15,6 +15,11 @@ services:
       # 8087 = MesiTimeout 2, 8088 = MesiTimeout 30 (#167).
       - "8087:8087"
       - "8088:8088"
+      # 8089 = MesiMaxResponseSize 100, 8090 = MesiMaxResponseSize
+      # 1048576, 8091 = MesiMaxResponseSize 0 (#169).
+      - "8089:8089"
+      - "8090:8090"
+      - "8091:8091"
     environment:
       - MESI_FORCE_FLATTEN_ERROR=${MESI_FORCE_FLATTEN_ERROR:-}
     volumes:

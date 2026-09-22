@@ -120,6 +120,42 @@ MesiCacheTTL 60
   EnableMesi On
   MesiTimeout 10
   ```
+- `MesiMaxResponseSize N` — Caps the HTTP response body size, in
+  **bytes**, of a single `<esi:include>` fetch (`RSRC_CONF`, server
+  context; example: `MesiMaxResponseSize 1048576` — 1 MB). The limit
+  is per-SINGLE-include, not per page; an over-limit include fails
+  its fetch and renders the empty `IncludeErrorMarker` (or the tag's
+  fallback body / `onerror="continue"` behaviour). Unset (default) is
+  **unlimited** — libgomesi leaves `EsiParserConfig.MaxResponseSize`
+  at `0`, which the core treats as "no limit" (`mesi/fetch.go` only
+  limits when `MaxResponseSize > 0`), so omitting the directive is
+  byte-identical to previous behaviour. There is **no implicit 10 MB
+  default**: the 10 MB of `mesi.CreateDefaultConfig()` only reaches
+  Go callers using that constructor, never libgomesi's positional
+  `Parse*` entry points. Explicit `0` also means "unlimited" and is a
+  legitimate configured value — it overrides an inherited global limit
+  (`-1` unset sentinel, same rule as `MesiMaxDepth`/`MesiTimeout`).
+  Must be an integer in `[0, 9223372036854775806]`
+  (`math.MaxInt64 - 1` — the core computes `MaxResponseSize+1` for
+  its `io.LimitReader` bound in `mesi/fetch.go`, which would wrap
+  negative at `math.MaxInt64` and silently yield empty bodies).
+  Negatives (`-1`), signs (`+1`), decimals (`2.5`), non-digits
+  (`abc`), trailing garbage (`100abc`), empty values and anything
+  above the cap are rejected at config load with an error naming the
+  directive (parsed via the strict `parse_nonneg_off` helper — no
+  silent `atoi`/`apr_strtoff` coercion). **Merge:** a vhost's value
+  overrides the global one; unset vhosts inherit it. The value
+  travels to libgomesi through the `ParseJson` entry point as the
+  `{"maxResponseSize":N}` byte-count key; requires a `libgomesi.so`
+  exporting `ParseJson` — older builds log `MesiMaxResponseSize set
+  but libgomesi lacks ParseJson; MesiMaxResponseSize ignored
+  (unlimited response size applies, the pre-#169 behaviour)` and keep
+  unlimited.
+
+  ```apache
+  EnableMesi On
+  MesiMaxResponseSize 10485760
+  ```
 - `MesiAllowedHosts host1 host2 …` — Space-separated list of hostnames
   allowed in `<esi:include src=…>`. Matches `isURLSafe` from libgomesi.
 - `MesiBlockPrivateIPs on|off` — Enable/disable SSRF dial-time private-IP
@@ -221,7 +257,8 @@ docker compose up --build
    `MesiCacheBackend memory` is configured (TTL/size from
    `MesiCacheTTL`/`MesiCacheSize`).
 6. Processes the buffered body through `libgomesi.ParseJson()` when
-   `MesiTimeout` is set (the JSON blob carries the timeout plus depth,
+   `MesiTimeout` or `MesiMaxResponseSize` is set (the JSON blob
+   carries whichever of those two directives is configured plus depth,
    base URL, SSRF flags and, when configured, the cache key template +
    request context), through `libgomesi.ParseWithConfigCtx()` when only
    `MesiCacheKeyTemplate` is set (headers/cookies from the incoming

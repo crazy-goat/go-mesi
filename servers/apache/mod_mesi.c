@@ -115,6 +115,20 @@ typedef struct {
     // every include immediately with ErrTimeBudgetExceeded
     // (mesi/fetch.go) — it does NOT mean "no timeout".
     int timeout_seconds;  // -1=unset, >=1 = configured
+    // Cap on a single <esi:include> response body, in bytes (#169).
+    // -1 = unset: the filter stays on the legacy parse path and
+    // libgomesi leaves EsiParserConfig.MaxResponseSize at 0, which the
+    // core treats as "unlimited" (mesi/fetch.go: the limiting branch
+    // is MaxResponseSize > 0) — byte-identical to pre-#169 Apache
+    // behaviour. There is NO implicit 10 MB default on this path: the
+    // 10 MB of mesi.CreateDefaultConfig() only reaches Go callers
+    // using that constructor, never libgomesi's positional Parse*
+    // entry points. Explicit 0 is a legitimate configured value with
+    // the same "unlimited" meaning (documented contract shared with
+    // Caddy `max_response_size 0`), so the unset sentinel MUST stay
+    // -1 for 0 to survive the merge below. Range [0,
+    // MESI_MAX_MAX_RESPONSE_SIZE].
+    apr_off_t max_response_size;  // -1=unset, >=0 = configured (bytes)
 } mesi_config;
 
 // Default memory cache size when MesiCacheSize is not set.
@@ -146,6 +160,16 @@ typedef struct {
 // with libgomesi/internal/config/timeout.go.
 #define MESI_MAX_TIMEOUT_SECONDS (24 * 60 * 60)
 #define MESI_DEFAULT_TIMEOUT_SECONDS 30
+// Cap on the MesiMaxResponseSize directive (#169). Matches libgomesi's
+// config.MaxMaxResponseSize (math.MaxInt64 - 1): the value is an
+// int64 byte count the core feeds into io.LimitReader as
+// `MaxResponseSize + 1` (mesi/fetch.go) — at math.MaxInt64 that
+// bound wraps negative, LimitedReader returns EOF immediately and the
+// include would silently render an EMPTY body instead of failing, so
+// the largest safe value is MaxInt64 - 1. apr_off_t is int64 on every
+// platform Apache 2.4 supports. Keep in sync with
+// libgomesi/internal/config/max_response_size.go.
+#define MESI_MAX_MAX_RESPONSE_SIZE ((apr_off_t)9223372036854775806LL)
 
 static void *create_server_config(apr_pool_t *p, server_rec *s) {
     mesi_config *conf = apr_pcalloc(p, sizeof(*conf));
@@ -168,6 +192,7 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     conf->cache_key_template = NULL;
     conf->max_depth = -1;  // -1 = unset, default 5 applied in filter
     conf->timeout_seconds = -1;  // -1 = unset: legacy parse path, libgomesi applies its 30s Go-side (macro documents it only)
+    conf->max_response_size = -1;  // -1 = unset: legacy parse path, libgomesi leaves 0 = unlimited (pre-#169 behaviour)
     return conf;
 }
 
@@ -211,6 +236,12 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     // (0 can never be stored — set_timeout rejects it — so the -1
     // sentinel is unambiguous).
     conf->timeout_seconds = (add->timeout_seconds != -1) ? add->timeout_seconds : base->timeout_seconds;
+    // Max response size: child wins when explicitly set; -1 sentinel
+    // inherits. Unlike timeout, 0 IS storable (explicit "unlimited"),
+    // and -1 can never be stored (set_max_response_size rejects it),
+    // so the sentinel stays unambiguous and a vhost's explicit 0
+    // overrides a global limit.
+    conf->max_response_size = (add->max_response_size != -1) ? add->max_response_size : base->max_response_size;
     return conf;
 }
 
@@ -295,14 +326,17 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
         (void) dlerror();
     }
     // ParseJson is optional: JSON config entry point that carries the
-    // timeoutSeconds field (#167). When present AND MesiTimeout is set,
-    // the filter uses it so the directive takes effect (the blob also
-    // carries cache-key templating when configured). Older libgomesi
-    // builds without it fall back to the existing
-    // ParseWithConfigCtx/Ex/Config chain and MesiTimeout is ignored
-    // with a logged warning — never a crash, never a silently wrong
-    // config (same graceful-fallback pattern as ParseWithConfigEx
-    // above; Apache and libgomesi normally ship together).
+    // timeoutSeconds (#167) and maxResponseSize (#169) fields. When
+    // present AND MesiTimeout or MesiMaxResponseSize is set, the
+    // filter uses it so the directives take effect (the blob also
+    // carries cache-key templating when configured, and each of the
+    // two keys is only rendered when its own directive is set). Older
+    // libgomesi builds without it fall back to the existing
+    // ParseWithConfigCtx/Ex/Config chain and the configured
+    // directives are ignored with a logged warning — never a crash,
+    // never a silently wrong config (same graceful-fallback pattern
+    // as ParseWithConfigEx above; Apache and libgomesi normally ship
+    // together).
     EsiParseJson = (ParseJsonFunc)dlsym(go_module, "ParseJson");
     if (dlerror() != NULL) {
         EsiParseJson = NULL;
@@ -737,6 +771,59 @@ static const char *set_max_depth(cmd_parms *cmd, void *cfg, const char *arg) {
     return NULL;
 }
 
+// Parse a non-negative decimal integer into an apr_off_t (int64 on
+// every platform Apache 2.4 supports). Same strict contract as
+// parse_nonneg_int — empty input, non-digit characters (including
+// '-', '+', '.') and values outside [min, max] are rejected with an
+// error naming the directive — but that helper's 9-digit guard keeps
+// it inside int32 range, which cannot express byte counts, and its
+// `int *out` cannot store them. Here overflow is guarded per digit
+// against `max` BEFORE the multiply (val > (max - d) / 10 means
+// val*10 + d would exceed max), so no intermediate ever wraps, and
+// the full 19-digit range below the cap parses. `directive` is the
+// Apache directive name used in every error string.
+// Returns NULL on success (parsed value stored in *out) or an
+// Apache-pool-allocated error string suitable as set_* return value.
+static const char *parse_nonneg_off(apr_pool_t *pool, const char *arg,
+                                    const char *directive,
+                                    apr_off_t min, apr_off_t max,
+                                    apr_off_t *out) {
+    const char *p = arg ? arg : "";
+    // Skip leading spaces and tabs only (no newlines per Apache directive).
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '\0') {
+        return apr_psprintf(pool,
+            "%s requires a non-negative integer argument", directive);
+    }
+    const char *digits = p;
+    while (*p >= '0' && *p <= '9') p++;
+    if (*p != '\0') {
+        return apr_psprintf(pool,
+            "%s must be a non-negative integer (got: %s)", directive, arg);
+    }
+    if (digits == p) {
+        return apr_psprintf(pool,
+            "%s must contain at least one digit (got: %s)", directive, arg);
+    }
+    apr_off_t val = 0;
+    for (const char *q = digits; q < p; q++) {
+        apr_off_t d = (apr_off_t)(*q - '0');
+        if (val > (max - d) / 10) {
+            return apr_psprintf(pool,
+                "%s value %s exceeds maximum allowed (%" APR_INT64_T_FMT ")",
+                directive, arg, (apr_int64_t)max);
+        }
+        val = val * 10 + d;
+    }
+    if (val < min || val > max) {
+        return apr_psprintf(pool,
+            "%s value %s out of range [%" APR_INT64_T_FMT ", %" APR_INT64_T_FMT "]",
+            directive, arg, (apr_int64_t)min, (apr_int64_t)max);
+    }
+    *out = val;
+    return NULL;
+}
+
 // MesiTimeout — global per-include fetch budget in seconds (#167).
 // Parsed with parse_nonneg_int (NOT atoi — the issue's sketch used
 // atoi, but the project forbids silent coercion: atoi would turn
@@ -756,6 +843,36 @@ static const char *set_timeout(cmd_parms *cmd, void *cfg, const char *arg) {
         return err;
     }
     conf->timeout_seconds = v;
+    return NULL;
+}
+
+// MesiMaxResponseSize — cap on a single <esi:include> response body
+// in bytes (#169). Parsed with parse_nonneg_off (64-bit strict digit
+// parser) with range [0, MESI_MAX_MAX_RESPONSE_SIZE]. NOT the issue's
+// apr_strtoff sketch: with end=NULL apr_strtoff silently accepts
+// trailing garbage ("100abc"), a leading '+' and leading whitespace
+// — a malformed explicit value would pass config load — and NOT
+// parse_nonneg_int, whose 9-digit int32 guard cannot express byte
+// counts. 0 is a LEGITIMATE configured value: the core only limits
+// the body when MaxResponseSize > 0 (mesi/fetch.go), so 0 means
+// "unlimited" — the documented contract shared with Caddy
+// `max_response_size 0`. Negatives are rejected (the core's > 0
+// check would silently treat them like 0 = unlimited). Unset (-1
+// sentinel) keeps the legacy parse path, where libgomesi leaves the
+// field at 0 — byte-identical to pre-#169 Apache behaviour. The
+// upper bound exists because the core computes MaxResponseSize+1 for
+// its io.LimitReader (mesi/fetch.go) — MaxInt64+1 wraps negative and
+// the include would silently render an empty body. Helper errors
+// already name MesiMaxResponseSize.
+static const char *set_max_response_size(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    apr_off_t v = 0;
+    const char *err = parse_nonneg_off(cmd->pool, arg, "MesiMaxResponseSize",
+                                       0, MESI_MAX_MAX_RESPONSE_SIZE, &v);
+    if (err) {
+        return err;
+    }
+    conf->max_response_size = v;
     return NULL;
 }
 
@@ -1269,17 +1386,21 @@ static const char *json_string(apr_pool_t *pool, const char *s) {
 
 // build_parse_json_config renders the fully-resolved per-request parse
 // configuration into the JSON blob accepted by libgomesi's ParseJson
-// entry point (#167). Only called when MesiTimeout is set (that is what
-// routes a request through ParseJson). Every other key mirrors exactly
-// what the legacy positional path would pass, so behaviour is identical
-// except for the timeout. Timeouts travel in SECONDS
-// ("timeoutSeconds":N) — the nanosecond conversion happens Go-side in
-// config.ResolveTimeout (deviation from the issue's nanosecond snippet,
-// which sketched a different key). cacheKeyTemplate/requestCtx are
-// included only when a template is configured, mirroring
-// ParseWithConfigCtx's contract (absent/empty template → URL-only keys;
-// requestCtx is passed through verbatim as pre-rendered JSON, omitted
-// when build_request_ctx_json returned "").
+// entry point (#167). Only called when MesiTimeout or
+// MesiMaxResponseSize is set (those are what route a request through
+// ParseJson). Every other key mirrors exactly what the legacy
+// positional path would pass, so behaviour is identical except for
+// the two directives the blob carries. timeoutSeconds travels in
+// SECONDS ("timeoutSeconds":N) and maxResponseSize in BYTES
+// ("maxResponseSize":N); both keys are rendered ONLY when their
+// directive is configured — an absent key resolves to the same
+// documented default the positional path uses Go-side (30s /
+// 0 = unlimited), so a config that sets only one directive produces
+// exactly the legacy behaviour for the other. cacheKeyTemplate/
+// requestCtx are included only when a template is configured,
+// mirroring ParseWithConfigCtx's contract (absent/empty template →
+// URL-only keys; requestCtx is passed through verbatim as
+// pre-rendered JSON, omitted when build_request_ctx_json returned "").
 static const char *build_parse_json_config(mesi_config *conf,
                                            int depth,
                                            const char *base_url,
@@ -1288,8 +1409,18 @@ static const char *build_parse_json_config(mesi_config *conf,
                                            int allow_private_for_allowed,
                                            const char *ctx_json,
                                            apr_pool_t *pool) {
+    const char *timeout_part = "";
+    const char *mrs_part = "";
     const char *tmpl_part = "";
     const char *ctx_part = "";
+    if (conf->timeout_seconds != -1) {
+        timeout_part = apr_psprintf(pool, ",\"timeoutSeconds\":%d",
+                                    conf->timeout_seconds);
+    }
+    if (conf->max_response_size != -1) {
+        mrs_part = apr_psprintf(pool, ",\"maxResponseSize\":%" APR_INT64_T_FMT,
+                                (apr_int64_t)conf->max_response_size);
+    }
     if (conf->cache_key_template && conf->cache_key_template[0] != '\0') {
         tmpl_part = apr_psprintf(pool, ",\"cacheKeyTemplate\":%s",
                                  json_string(pool, conf->cache_key_template));
@@ -1299,14 +1430,15 @@ static const char *build_parse_json_config(mesi_config *conf,
     }
     return apr_psprintf(pool,
         "{\"maxDepth\":%d,\"defaultUrl\":%s,\"allowedHosts\":%s,"
-        "\"blockPrivateIPs\":%s,\"allowPrivateIPsForAllowedHosts\":%s,"
-        "\"timeoutSeconds\":%d%s%s}",
+        "\"blockPrivateIPs\":%s,\"allowPrivateIPsForAllowedHosts\":%s"
+        "%s%s%s%s}",
         depth,
         json_string(pool, base_url),
         json_string(pool, allowed_hosts_str),
         block_private ? "true" : "false",
         allow_private_for_allowed ? "true" : "false",
-        conf->timeout_seconds,
+        timeout_part,
+        mrs_part,
         tmpl_part,
         ctx_part);
 }
@@ -1492,20 +1624,25 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     char *base_url = build_base_url(f->r, f->r->pool);
     char *esi = NULL;
 
-    // MesiTimeout (#167): when set AND libgomesi exports ParseJson, the
-    // whole parse is routed through the JSON entry point so the
-    // timeoutSeconds field reaches the core. The blob carries every
-    // other resolved setting (depth, base URL, SSRF flags, optional
-    // cache key template + request context), so behaviour matches the
-    // positional path exactly except for the timeout. When the symbol
-    // is missing (older libgomesi.so), fall through to the legacy chain
-    // below with a logged warning — the directive is ignored (default
-    // 30s applies), never a crash and never a silently wrong config.
+    // MesiTimeout (#167) / MesiMaxResponseSize (#169): when either is
+    // set AND libgomesi exports ParseJson, the whole parse is routed
+    // through the JSON entry point so timeoutSeconds / maxResponseSize
+    // reach the core. The blob carries every other resolved setting
+    // (depth, base URL, SSRF flags, optional cache key template +
+    // request context), so behaviour matches the positional path
+    // exactly except for the directives it carries — and each key is
+    // only rendered when its directive is configured, so the other
+    // directive's absent key keeps its positional-path default
+    // (30s / unlimited). When the symbol is missing (older
+    // libgomesi.so), fall through to the legacy chain below with a
+    // logged warning per configured directive — the directive is
+    // ignored (its pre-existing default applies), never a crash and
+    // never a silently wrong config.
     // used_parse_json distinguishes "not attempted" from "ParseJson
     // returned NULL" — a NULL must NOT fall back silently; it fails the
     // request closed below (config errors are already logged Go-side).
     int used_parse_json = 0;
-    if (conf->timeout_seconds != -1) {
+    if (conf->timeout_seconds != -1 || conf->max_response_size != -1) {
         if (EsiParseJson) {
             used_parse_json = 1;
             const char *req_ctx_json = build_request_ctx_json(f->r, conf, f->r->pool);
@@ -1514,9 +1651,17 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
                 allow_private_for_allowed, req_ctx_json, f->r->pool);
             esi = EsiParseJson(html, (char *)parse_cfg_json);
         } else {
-            ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-                "mesi: MesiTimeout set but libgomesi lacks ParseJson; "
-                "MesiTimeout ignored (default 30s timeout applies). Upgrade libgomesi.so.");
+            if (conf->timeout_seconds != -1) {
+                ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+                    "mesi: MesiTimeout set but libgomesi lacks ParseJson; "
+                    "MesiTimeout ignored (default 30s timeout applies). Upgrade libgomesi.so.");
+            }
+            if (conf->max_response_size != -1) {
+                ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+                    "mesi: MesiMaxResponseSize set but libgomesi lacks ParseJson; "
+                    "MesiMaxResponseSize ignored (unlimited response size applies, "
+                    "the pre-#169 behaviour). Upgrade libgomesi.so.");
+            }
         }
     }
 
@@ -1594,6 +1739,7 @@ static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("EnableMesi", set_enable_mesi, NULL, RSRC_CONF, "Enable or disable the Mesi module"),
     AP_INIT_TAKE1("MesiMaxDepth", set_max_depth, NULL, RSRC_CONF, "Maximum ESI nesting depth (0..10000). Unset=5. 0=passthrough"),
     AP_INIT_TAKE1("MesiTimeout", set_timeout, NULL, RSRC_CONF, "ESI processing timeout per include in seconds (1..86400). Unset=30"),
+    AP_INIT_TAKE1("MesiMaxResponseSize", set_max_response_size, NULL, RSRC_CONF, "Maximum ESI include response body size in bytes (0=unlimited). Unset=unlimited"),
     AP_INIT_RAW_ARGS("MesiAllowedHosts", set_allowed_hosts, NULL, RSRC_CONF, "Space-separated list of allowed hostnames for ESI includes"),
     AP_INIT_FLAG("MesiBlockPrivateIPs", set_block_private_ips, NULL, RSRC_CONF, "Enable or disable private IP blocking (default: On)"),
     AP_INIT_FLAG("MesiAllowPrivateIPsForAllowedHosts", set_allow_private_for_allowed, NULL, RSRC_CONF, "Allow private IP access for hosts in MesiAllowedHosts when MesiBlockPrivateIPs is On (default: Off)"),

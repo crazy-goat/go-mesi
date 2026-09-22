@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Max Response Size Unset Test</title>
+</head>
+<body>
+    <h1>Max Response Size Unset Test</h1>
+    <!-- MesiMaxResponseSize is unset on the default vhost (*:80) →
+         unlimited (libgomesi leaves MaxResponseSize at 0; there is NO
+         implicit 10 MB default on this path). The backend returns a
+         10 MB + 1 byte body (/bytes/10485761): if unset ever became
+         a 10 MB cap (the issue's proposal) this include would be
+         rejected and the marker would be absent. Used by test.sh
+         (#169). -->
+    <esi:include src="http://backend:8000/bytes/10485761" />
+    <p>After unset include</p>
+</body>
+</html>

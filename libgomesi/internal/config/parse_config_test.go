@@ -16,6 +16,9 @@ func TestParseConfigFromJSONMalformed(t *testing.T) {
 		{name: "timeoutSeconds as string", blob: `{"timeoutSeconds":"10"}`},
 		{name: "fractional maxDepth", blob: `{"maxDepth":1.5}`},
 		{name: "blockPrivateIPs as string", blob: `{"blockPrivateIPs":"yes"}`},
+		{name: "maxResponseSize as string", blob: `{"maxResponseSize":"1048576"}`},
+		{name: "fractional maxResponseSize", blob: `{"maxResponseSize":1.5}`},
+		{name: "maxResponseSize above int64 range", blob: `{"maxResponseSize":9223372036854775808}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -56,6 +59,13 @@ func TestParseConfigDefaults(t *testing.T) {
 	if len(c.RequestCtx) != 0 {
 		t.Errorf("RequestCtx = %s, want absent", c.RequestCtx)
 	}
+
+	// Absent maxResponseSize → 0 (unlimited) — byte-identical to the
+	// positional Parse* paths, NOT the 10 MB of CreateDefaultConfig.
+	maxResp, err := c.ResolvedMaxResponseSize()
+	if err != nil || maxResp != 0 {
+		t.Errorf("ResolvedMaxResponseSize() = (%d, %v), want (0, nil)", maxResp, err)
+	}
 }
 
 func TestParseConfigExplicitValues(t *testing.T) {
@@ -67,7 +77,8 @@ func TestParseConfigExplicitValues(t *testing.T) {
 		"allowPrivateIPsForAllowedHosts": true,
 		"cacheKeyTemplate": "mesi:${url}",
 		"requestCtx": {"headers":{"X-A":"1"},"cookies":[{"name":"a","value":"b"}]},
-		"timeoutSeconds": 7
+		"timeoutSeconds": 7,
+		"maxResponseSize": 2048
 	}`))
 	if err != nil {
 		t.Fatalf("ParseConfigFromJSON = %v", err)
@@ -94,6 +105,11 @@ func TestParseConfigExplicitValues(t *testing.T) {
 	}
 	if len(c.RequestCtx) == 0 {
 		t.Error("requestCtx not preserved")
+	}
+
+	maxResp, err := c.ResolvedMaxResponseSize()
+	if err != nil || maxResp != 2048 {
+		t.Errorf("ResolvedMaxResponseSize() = (%d, %v), want (2048, nil)", maxResp, err)
 	}
 }
 
@@ -176,6 +192,58 @@ func TestParseConfigRangeBoundaries(t *testing.T) {
 			t.Fatal("ResolvedMaxDepth(-1) = nil error, want error")
 		}
 	})
+
+	t.Run("maxResponseSize accepted max", func(t *testing.T) {
+		c, err := ParseConfigFromJSON([]byte(`{"maxResponseSize":9223372036854775806}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		v, err := c.ResolvedMaxResponseSize()
+		if err != nil || v != MaxMaxResponseSize {
+			t.Errorf("ResolvedMaxResponseSize() = (%d, %v), want (%d, nil)", v, err, MaxMaxResponseSize)
+		}
+	})
+
+	t.Run("maxResponseSize max+1 rejected", func(t *testing.T) {
+		c, err := ParseConfigFromJSON([]byte(`{"maxResponseSize":9223372036854775807}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		if _, err := c.ResolvedMaxResponseSize(); err == nil {
+			t.Fatal("ResolvedMaxResponseSize(math.MaxInt64) = nil error, want *InvalidMaxResponseSizeError")
+		}
+		var ierr *InvalidMaxResponseSizeError
+		if err := func() error { _, e := c.ResolvedMaxResponseSize(); return e }(); !errors.As(err, &ierr) {
+			t.Fatalf("error type = %T, want *InvalidMaxResponseSizeError", err)
+		}
+	})
+
+	t.Run("negative maxResponseSize rejected", func(t *testing.T) {
+		c, err := ParseConfigFromJSON([]byte(`{"maxResponseSize":-1}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		if _, err := c.ResolvedMaxResponseSize(); err == nil {
+			t.Fatal("ResolvedMaxResponseSize(-1) = nil error, want *InvalidMaxResponseSizeError")
+		}
+	})
+
+	t.Run("explicit maxResponseSize 0 accepted as unlimited", func(t *testing.T) {
+		// Unlike timeoutSeconds, 0 is a legitimate documented value
+		// (unlimited) — it must survive the round-trip, not be
+		// rejected and not be confused with an absent key.
+		c, err := ParseConfigFromJSON([]byte(`{"maxResponseSize":0}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		if c.MaxResponseSize == nil {
+			t.Fatal("MaxResponseSize pointer is nil for explicit 0 — key must be distinguishable from absent")
+		}
+		v, err := c.ResolvedMaxResponseSize()
+		if err != nil || v != 0 {
+			t.Errorf("ResolvedMaxResponseSize() = (%d, %v), want (0, nil)", v, err)
+		}
+	})
 }
 
 func TestParseConfigUnknownKeysIgnored(t *testing.T) {
@@ -203,5 +271,19 @@ func TestParseConfigNullTimeoutTreatedAsAbsent(t *testing.T) {
 	d, err := c.ResolvedTimeout()
 	if err != nil || d != 30*time.Second {
 		t.Errorf("ResolvedTimeout() = (%v, %v), want default (30s, nil)", d, err)
+	}
+}
+
+func TestParseConfigNullMaxResponseSizeTreatedAsAbsent(t *testing.T) {
+	// null is the encoding/json "not set" signal — same as an absent
+	// key (documented: null = unset → 0 = unlimited), NOT an explicit
+	// value that could fail validation.
+	c, err := ParseConfigFromJSON([]byte(`{"maxResponseSize":null}`))
+	if err != nil {
+		t.Fatalf("ParseConfigFromJSON = %v", err)
+	}
+	v, err := c.ResolvedMaxResponseSize()
+	if err != nil || v != 0 {
+		t.Errorf("ResolvedMaxResponseSize() = (%d, %v), want default (0, nil)", v, err)
 	}
 }

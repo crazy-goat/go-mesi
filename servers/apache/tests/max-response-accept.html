@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Max Response Size Accept Test</title>
+</head>
+<body>
+    <h1>Max Response Size Accept Test</h1>
+    <!-- Vhost *:8090 sets MesiMaxResponseSize 1048576 (1 MB); the
+         backend returns a 500 KB body (/bytes/512000), comfortably
+         under the cap, so the full fragment must arrive. Used by
+         test.sh (#169). -->
+    <esi:include src="http://backend:8000/bytes/512000" />
+    <p>After accept include</p>
+</body>
+</html>
