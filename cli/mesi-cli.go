@@ -57,6 +57,36 @@ func validateMaxResponseSize(v int64) error {
 	return nil
 }
 
+// maxMaxConcurrentRequests mirrors libgomesi's
+// config.MaxMaxConcurrentRequests (libgomesi/internal/config/
+// max_concurrent_requests.go, #170). That package lives under
+// libgomesi/internal and cannot be imported from the separate cli module,
+// so the bound is mirrored here (the same keep-in-sync pattern as
+// maxMaxResponseSize and Apache's MESI_MAX_MAX_CONCURRENT_REQUESTS).
+// Neither the core nor Caddy caps the value; 999999999 is derived from
+// the transport — the field crosses to the Apache module as a C `int`
+// (32-bit on every platform Apache 2.4 supports) parsed by the shared
+// strict parse_nonneg_int, which guards at 9 digits. The semaphore is a
+// `chan struct{}` of zero-size elements, so the cap is about portability,
+// not memory.
+const maxMaxConcurrentRequests = 999999999
+
+// validateMaxConcurrentRequests rejects -max-concurrent-requests values
+// outside [0, maxMaxConcurrentRequests]. 0 is the documented "unlimited"
+// value (the core only installs the admission-control semaphore when
+// MaxConcurrentRequests > 0, mesi/parser.go:78); negatives are rejected
+// instead of reaching the core, where #329 would only warn
+// ("max_concurrent_requests_invalid") and normalize them to 0 =
+// unlimited — a malformed explicit value must never pass as the
+// documented one (same no-silent-default rule as -max-response-size and
+// -max-depth).
+func validateMaxConcurrentRequests(v int) error {
+	if v < 0 || v > maxMaxConcurrentRequests {
+		return fmt.Errorf("max-concurrent-requests must be in [0, %d], got %d", maxMaxConcurrentRequests, v)
+	}
+	return nil
+}
+
 func main() {
 	defaultUrl := flag.String("default-url", "http://127.0.0.1/", "Default URL to parse")
 	maxDepth := flag.Uint("max-depth", 5, "Maximum depth of parsing")
@@ -92,6 +122,18 @@ func main() {
 	maxResponseSize := flag.Int64("max-response-size",
 		mesi.CreateDefaultConfig().MaxResponseSize,
 		"Max ESI include response size in bytes (0 = unlimited)")
+	// Default derived from CreateDefaultConfig() so that an absent flag is
+	// byte-identical to the pre-flag CLI behaviour: the CLI builds its
+	// config from that constructor, which never sets MaxConcurrentRequests,
+	// so the field always stayed at its zero value 0 = unlimited. Unlike
+	// -max-response-size (where the constructor sets a historical 10 MB),
+	// here the derived default equals a plain 0 — same value the issue
+	// sketched, but drift-proof (the #186 pattern). This is the
+	// CreateDefaultConfig path, which for this field coincides exactly with
+	// the libgomesi/Caddy unset → 0 = unlimited contract (#170).
+	maxConcurrentRequests := flag.Int("max-concurrent-requests",
+		mesi.CreateDefaultConfig().MaxConcurrentRequests,
+		"Max concurrent ESI include HTTP fetches (0 = unlimited)")
 	sharedHTTPClient := flag.Bool("shared-http-client", false,
 		"Share HTTP client across ESI includes for connection pooling")
 	includeErrorMarker := flag.String("include-error-marker", "",
@@ -103,6 +145,10 @@ func main() {
 		os.Exit(1)
 	}
 	if err := validateMaxResponseSize(*maxResponseSize); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
+	}
+	if err := validateMaxConcurrentRequests(*maxConcurrentRequests); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
@@ -128,6 +174,11 @@ func main() {
 	// same value: the flag default IS that value, so an absent flag stays
 	// byte-identical, while an explicit 0 means "unlimited" (#169 contract).
 	config.MaxResponseSize = *maxResponseSize
+	// Same pattern: the flag default IS CreateDefaultConfig()'s value
+	// (0 = unlimited), so an absent flag stays byte-identical, while an
+	// explicit 0 also means "unlimited" (#170 contract — the core only
+	// installs the admission semaphore when the value is > 0).
+	config.MaxConcurrentRequests = *maxConcurrentRequests
 	config.IncludeErrorMarker = *includeErrorMarker
 
 	if *sharedHTTPClient {

@@ -348,6 +348,90 @@ else
 fi
 
 echo ""
+echo "--- Max Concurrent Requests Tests ---"
+
+# Deterministic peak-concurrency tracker (#192): tests/server serves
+# /hold/<millis>/<label> — it increments a server-side peak counter at
+# request start, sleeps <millis>, then returns a "<label> Held <millis>"
+# fragment; /track/reset and /track/max zero/read the counter (mirrored
+# from servers/apache/tests/server.py's endpoints added for #170). The
+# peak is an observable counter, not a wall-clock assertion. Each page
+# fans out to 20 DISTINCT labels so every include reaches the counter;
+# the CLI's cache is off by default (no -cache-backend), so no dedup can
+# swallow fetches either.
+#
+# Fan-out bound for the "unlimited" cases: MESIParse drains includes
+# through a worker pool of min(MaxWorkers=NumCPU*4, 20) goroutines
+# (mesi/parser.go), i.e. at least 4 on any machine — with 1500 ms holds,
+# an uncapped parse must show peak >= 4, while a cap of 3 can never
+# exceed 3 (hard semaphore invariant, mesi/fetch.go:148), and >= 2
+# proves the cap is a multi-slot queue rather than a serialisation to 1
+# (an exact peak == 3 would require all three first-wave dials to
+# overlap — scheduling-dependent, deliberately not asserted, same as
+# Apache Test 36).
+#
+# -timeout 60: the semaphore wait is bounded by the per-include fetch
+# budget counted from fetch ENTRY (context.WithTimeout before the
+# admission wait, mesi/fetch.go:139-154). Under the cap the first-wave
+# waiters hold a budget started at t≈0 while later waves still queue
+# behind 1500 ms holds (~10.5 s end-to-end) — only ~1 s of margin
+# against the default 10 s, so an explicit budget removes timing
+# sensitivity on slow CI runners.
+
+cat > "$TEST_DIR/concurrent-20.html" <<'EOF'
+<html><body>
+<esi:include src="hold/1500/label1"/><esi:include src="hold/1500/label2"/><esi:include src="hold/1500/label3"/><esi:include src="hold/1500/label4"/><esi:include src="hold/1500/label5"/>
+<esi:include src="hold/1500/label6"/><esi:include src="hold/1500/label7"/><esi:include src="hold/1500/label8"/><esi:include src="hold/1500/label9"/><esi:include src="hold/1500/label10"/>
+<esi:include src="hold/1500/label11"/><esi:include src="hold/1500/label12"/><esi:include src="hold/1500/label13"/><esi:include src="hold/1500/label14"/><esi:include src="hold/1500/label15"/>
+<esi:include src="hold/1500/label16"/><esi:include src="hold/1500/label17"/><esi:include src="hold/1500/label18"/><esi:include src="hold/1500/label19"/><esi:include src="hold/1500/label20"/>
+</body></html>
+EOF
+
+echo "Test 28: -max-concurrent-requests 3 funnels 20 includes (peak <= 3, all delivered)"
+curl -s "http://127.0.0.1:18080/track/reset" > /dev/null
+RESULT=$("$CLI_BINARY" -max-concurrent-requests=3 -timeout 60 -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/concurrent-20.html" 2>/dev/null)
+PEAK=$(curl -s "http://127.0.0.1:18080/track/max" || true)
+FRAGMENTS=$(echo "$RESULT" | grep -o "Held 1500" | wc -l | tr -d ' ' || true)
+if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 2 ] && [ "$PEAK" -le 3 ] && ! echo "$RESULT" | grep -q '<esi:include'; then
+	pass "cap 3 funneled: peak=$PEAK (<= 3 cap, >= 2 parallel slots), 20/20 fragments queued and delivered"
+else
+	fail "max-concurrent-requests 3 funnel" "peak=$PEAK fragments=$FRAGMENTS (expected peak in [2,3], 20 fragments)"
+fi
+
+echo "Test 29: absent -max-concurrent-requests is unlimited (peak >= 4)"
+curl -s "http://127.0.0.1:18080/track/reset" > /dev/null
+RESULT=$("$CLI_BINARY" -timeout 60 -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/concurrent-20.html" 2>/dev/null)
+PEAK=$(curl -s "http://127.0.0.1:18080/track/max" || true)
+FRAGMENTS=$(echo "$RESULT" | grep -o "Held 1500" | wc -l | tr -d ' ' || true)
+if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 4 ] && ! echo "$RESULT" | grep -q '<esi:include'; then
+	pass "absent flag unlimited: peak=$PEAK >= 4, 20/20 fragments delivered"
+else
+	fail "absent -max-concurrent-requests default" "peak=$PEAK fragments=$FRAGMENTS (expected peak >= 4, 20 fragments)"
+fi
+
+echo "Test 30: explicit -max-concurrent-requests 0 is unlimited (peak >= 4)"
+curl -s "http://127.0.0.1:18080/track/reset" > /dev/null
+RESULT=$("$CLI_BINARY" -max-concurrent-requests=0 -timeout 60 -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/concurrent-20.html" 2>/dev/null)
+PEAK=$(curl -s "http://127.0.0.1:18080/track/max" || true)
+FRAGMENTS=$(echo "$RESULT" | grep -o "Held 1500" | wc -l | tr -d ' ' || true)
+if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 4 ] && ! echo "$RESULT" | grep -q '<esi:include'; then
+	pass "explicit 0 unlimited: peak=$PEAK >= 4, 20/20 fragments delivered"
+else
+	fail "explicit -max-concurrent-requests 0" "peak=$PEAK fragments=$FRAGMENTS (expected peak >= 4, 20 fragments)"
+fi
+
+echo "Test 31: -max-concurrent-requests=-1 is rejected"
+set +e
+OVER_ERR=$("$CLI_BINARY" -max-concurrent-requests=-1 "$ROOT_DIR/tests/fixtures/05-comment.html" 2>&1)
+OVER_CODE=$?
+set -e
+if [ "$OVER_CODE" -ne 0 ] && echo "$OVER_ERR" | grep -q "max-concurrent-requests"; then
+	pass "max-concurrent-requests=-1 rejected"
+else
+	fail "max-concurrent-requests=-1 reject" "exit=$OVER_CODE err=$OVER_ERR"
+fi
+
+echo ""
 echo "--- Fixture Comparison (Inline Fixtures) ---"
 
 FIXTURE_PASS=0

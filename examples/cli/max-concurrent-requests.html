@@ -1,0 +1,21 @@
+<!-- Example: cap concurrent ESI include fetches -->
+<!-- Run (test server must be running: go run ./tests/server):
+     mesi-cli -max-concurrent-requests=3 -timeout 60 -allow-private-ips -default-url http://127.0.0.1:18080/ examples/cli/max-concurrent-requests.html -->
+<html>
+<body>
+  <h1>Max Concurrent Requests Example</h1>
+  <esi:include src="hold/1500/part1" />
+  <esi:include src="hold/1500/part2" />
+  <esi:include src="hold/1500/part3" />
+  <esi:include src="hold/1500/part4" />
+  <esi:include src="hold/1500/part5" />
+  <esi:include src="hold/1500/part6" />
+  <!-- Unit: concurrent include fetches per invocation (admission
+       semaphore, one MESIParse call). Range [0, 999999999]; 0 (and the
+       default) = unlimited. Under -max-concurrent-requests=3 at most 3
+       of the six fragments above are fetched at once — the rest queue
+       behind them and all are still delivered. Watch the backend's peak
+       concurrency at http://127.0.0.1:18080/track/max (reset with
+       /track/reset); reset between runs. -->
+</body>
+</html>
