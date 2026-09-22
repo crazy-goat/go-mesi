@@ -35,3 +35,11 @@
 !concurrent-capped.html
 !concurrent-unlimited.html
 !concurrent-unset.html
+!max-workers-deep.html
+!max-workers-pool.html
+!max-workers-zero.html
+!max-workers-unset.html
+!mw-lvl-1.html
+!mw-lvl-2.html
+!mw-lvl-3.html
+!mw-lvl-4.html

@@ -202,6 +202,61 @@ MesiCacheTTL 60
   EnableMesi On
   MesiMaxConcurrentRequests 5
   ```
+- `MesiMaxWorkers N` — Caps the size of the include worker pool that
+  drains `<esi:include>` ESI jobs within one page render (`RSRC_CONF`,
+  server context; example: `MesiMaxWorkers 2` next to `EnableMesi On`).
+  Scope: one `MESIParse` call — one nesting level in one Apache worker
+  thread/process, NOT process-wide or vhost-wide: each nested parse
+  spawns its own pool and inherits the cap, multiple concurrent page
+  requests each get their own pool, and under MPM worker/event each
+  thread applies the limit independently. The core spawns
+  `min(MaxWorkers, job count)` goroutines (`mesi/parser.go`) and each
+  processes one include at a time. **Distinction from
+  `MesiMaxConcurrentRequests`:** that directive bounds concurrent
+  `<esi:include>` HTTP fetches (an admission semaphore — connection
+  fan-out against the backend); this one bounds the CPU-side goroutine
+  pool that processes tokens/includes — since each goroutine fetches
+  one include at a time, on a flat page it also caps fetch concurrency
+  at that level, but it additionally bounds token-processing work
+  (the failure mode this directive exists for: CPU-intensive
+  include-tree traversal on deeply nested pages; `MesiMaxWorkers 1`
+  serializes token processing — useful for debugging). Unset (default)
+  is the **library default** `runtime.NumCPU()*4` — libgomesi leaves
+  `EsiParserConfig.MaxWorkers` at `0`, which the core replaces with
+  `NumCPU*4` for any value `<= 0` (`mesi/parser.go`), so omitting the
+  directive is byte-identical to previous behaviour (the same contract
+  as the core's "Zero means runtime.NumCPU()*4" and Caddy's unset
+  `max_workers`). Explicit `0` also means "library default" and is a
+  legitimate configured value — it overrides an inherited global cap
+  (`-1` unset sentinel, same rule as
+  `MesiMaxDepth`/`MesiTimeout`/`MesiMaxResponseSize`/`MesiMaxConcurrentRequests`).
+  Must be an integer in `[0, 999999999]` — neither core nor Caddy caps
+  the value (Caddy's bare `strconv.Atoi` accepts negatives and
+  unbounded values — not inherited here); this bound is the portable
+  transport range (the field is a C `int` parsed by
+  `parse_nonneg_int`'s 9-digit guard, kept in sync with libgomesi's
+  `config.MaxMaxWorkers` and validated Go-side in
+  `ParseConfig.ResolvedMaxWorkers` so Apache and the Go side can never
+  disagree). Negatives (`-1`), signs (`+4`), decimals (`2.5`),
+  non-digits (`abc`), trailing garbage (`4foo`), empty values and
+  anything above the cap are rejected at config load with an error
+  naming the directive (parsed via `parse_nonneg_int` — no silent
+  `atoi` coercion, which would turn `abc`/`""` into `0` = library
+  default). A negative in particular must never reach the core, which
+  substitutes the default for any `<= 0` **silently, with no warning**
+  (no `#329`-style diagnostic exists for `MaxWorkers`).
+  **Merge:** a vhost's value overrides the global one; unset vhosts
+  inherit it. The value travels to libgomesi through the `ParseJson`
+  entry point as the `{"maxWorkers":N}` count key; requires a
+  `libgomesi.so` exporting `ParseJson` — older builds log
+  `MesiMaxWorkers set but libgomesi lacks ParseJson; MesiMaxWorkers
+  ignored (library default NumCPU*4 worker pool applies, the pre-#171
+  behaviour)` and keep the library default.
+
+  ```apache
+  EnableMesi On
+  MesiMaxWorkers 8
+  ```
 - `MesiAllowedHosts host1 host2 …` — Space-separated list of hostnames
   allowed in `<esi:include src=…>`. Matches `isURLSafe` from libgomesi.
 - `MesiBlockPrivateIPs on|off` — Enable/disable SSRF dial-time private-IP
@@ -303,10 +358,11 @@ docker compose up --build
    `MesiCacheBackend memory` is configured (TTL/size from
    `MesiCacheTTL`/`MesiCacheSize`).
 6. Processes the buffered body through `libgomesi.ParseJson()` when
-   `MesiTimeout`, `MesiMaxResponseSize` or `MesiMaxConcurrentRequests`
-   is set (the JSON blob carries whichever of those three directives
-   are configured plus depth, base URL, SSRF flags and, when
-   configured, the cache key template + request context), through
+   `MesiTimeout`, `MesiMaxResponseSize`, `MesiMaxConcurrentRequests`
+   or `MesiMaxWorkers` is set (the JSON blob carries whichever of
+   those four directives are configured plus depth, base URL, SSRF
+   flags and, when configured, the cache key template + request
+   context), through
    `libgomesi.ParseWithConfigCtx()` when only
    `MesiCacheKeyTemplate` is set (headers/cookies from the incoming
    request are serialised as JSON context for `mesi.BuildCacheKey`),

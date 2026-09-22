@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Max Workers Unset Test</title>
+</head>
+<body>
+    <h1>Max Workers Unset Test</h1>
+    <!-- The default vhost (*:80) leaves MesiMaxWorkers unset; the 20 slow includes below must fan out through the library-default pool (backward compat, pre-#171 behaviour).
+         Used by test.sh (#171). Do not mention the fragment
+         marker text or a literal ESI tag in this comment —
+         test.sh greps the rendered response. -->
+    <esi:include src="http://backend:8000/hold/1500/501" />
+    <esi:include src="http://backend:8000/hold/1500/502" />
+    <esi:include src="http://backend:8000/hold/1500/503" />
+    <esi:include src="http://backend:8000/hold/1500/504" />
+    <esi:include src="http://backend:8000/hold/1500/505" />
+    <esi:include src="http://backend:8000/hold/1500/506" />
+    <esi:include src="http://backend:8000/hold/1500/507" />
+    <esi:include src="http://backend:8000/hold/1500/508" />
+    <esi:include src="http://backend:8000/hold/1500/509" />
+    <esi:include src="http://backend:8000/hold/1500/510" />
+    <esi:include src="http://backend:8000/hold/1500/511" />
+    <esi:include src="http://backend:8000/hold/1500/512" />
+    <esi:include src="http://backend:8000/hold/1500/513" />
+    <esi:include src="http://backend:8000/hold/1500/514" />
+    <esi:include src="http://backend:8000/hold/1500/515" />
+    <esi:include src="http://backend:8000/hold/1500/516" />
+    <esi:include src="http://backend:8000/hold/1500/517" />
+    <esi:include src="http://backend:8000/hold/1500/518" />
+    <esi:include src="http://backend:8000/hold/1500/519" />
+    <esi:include src="http://backend:8000/hold/1500/520" />
+    <p>After unset-maxworkers include</p>
+</body>
+</html>

@@ -63,6 +63,11 @@ typedef struct {
      * -1 = unset (libgomesi leaves 0 = unlimited). 0 IS a storable
      * configured value — "unlimited" — so the sentinel must stay -1. */
     int max_concurrent_requests;
+    /* Worker-pool cap per parse level (#171).
+     * -1 = unset (libgomesi leaves 0 = library default NumCPU*4). 0 IS
+     * a storable configured value — the same "library default" — so
+     * the sentinel must stay -1. */
+    int max_workers;
 } mesi_config;
 
 /* Sentinel/constant values copied from mod_mesi.c */
@@ -90,6 +95,12 @@ typedef struct {
  * int32-safe guard, the largest value the C `int` field and the
  * helper can both represent without a wrap. */
 #define MESI_MAX_MAX_CONCURRENT_REQUESTS 999999999
+/* Worker-pool cap (#171) — mirrors mod_mesi.c; keep in sync with
+ * libgomesi config.MaxMaxWorkers. Neither core nor Caddy caps the
+ * value; the bound is parse_nonneg_int's 9-digit int32-safe guard,
+ * the largest value the C `int` field and the helper can both
+ * represent without a wrap. */
+#define MESI_MAX_MAX_WORKERS 999999999
 
 /* Directive parsing functions (copied from mod_mesi.c for testing) */
 static const char *parse_allowed_hosts(mesi_config *conf, const char *arg) {
@@ -321,6 +332,26 @@ static const char *set_max_concurrent_requests(mesi_config *conf, const char *ar
         return err;
     }
     conf->max_concurrent_requests = v;
+    return NULL;
+}
+
+/* MesiMaxWorkers — mirrors set_max_workers in mod_mesi.c (#171). Uses
+ * parse_nonneg_int (never the issue's atoi sketch — atoi coerces
+ * "abc"/"" to 0 = library default and accepts trailing garbage like
+ * "4foo") with range [0, MESI_MAX_MAX_WORKERS]. 0 is a LEGITIMATE
+ * configured value ("library default": mesi/parser.go substitutes
+ * runtime.NumCPU()*4 for any value <= 0); negatives are rejected (the
+ * core would silently substitute that default with NO warning — there
+ * is no #329-style warn+normalize for MaxWorkers). Helper errors
+ * already name MesiMaxWorkers. */
+static const char *set_max_workers(mesi_config *conf, const char *arg) {
+    int v = 0;
+    const char *err = parse_nonneg_int(pool, arg, "MesiMaxWorkers",
+                                       0, MESI_MAX_MAX_WORKERS, &v);
+    if (err) {
+        return err;
+    }
+    conf->max_workers = v;
     return NULL;
 }
 
@@ -559,6 +590,7 @@ static void init_config(mesi_config *conf) {
     conf->timeout_seconds = -1;
     conf->max_response_size = -1;
     conf->max_concurrent_requests = -1;
+    conf->max_workers = -1;
 }
 
 static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merged) {
@@ -587,6 +619,9 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
     merged->max_concurrent_requests = (add->max_concurrent_requests != -1)
         ? add->max_concurrent_requests
         : base->max_concurrent_requests;
+    merged->max_workers = (add->max_workers != -1)
+        ? add->max_workers
+        : base->max_workers;
 }
 
 /* Test cases */
@@ -2581,6 +2616,198 @@ TEST(merge_mcr_both_unset) {
     ASSERT_EQ(merged.max_concurrent_requests, -1);
 }
 
+/* --- MesiMaxWorkers directive tests (#171) --- */
+
+TEST(mw_default_unset) {
+    /* Fresh config: sentinel -1 (unset). The filter then stays on the
+     * legacy parse path and LIBGOMESI leaves MaxWorkers at 0 — the
+     * library default runtime.NumCPU()*4, the exact pre-#171 Apache
+     * behaviour (mesi/parser.go substitutes it for any value <= 0). */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_EQ(conf.max_workers, -1);
+}
+
+TEST(mw_zero_accepted) {
+    /* AC: MesiMaxWorkers 0 = library default (NumCPU*4). Unlike
+     * MesiTimeout, 0 is a legitimate configured value (mesi/parser.go
+     * substitutes NumCPU*4 for <= 0), so it must parse AND be storable
+     * — the -1 sentinel is what keeps it distinct from "unset" so it
+     * can override an inherited global cap. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_workers(&conf, "0"));
+    ASSERT_EQ(conf.max_workers, 0);
+}
+
+TEST(mw_typical_accepted) {
+    /* AC: MesiMaxWorkers 4 (the issue's unit-test value) — and the
+     * functional pool-2 variant runs on vhost 8094. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_workers(&conf, "4"));
+    ASSERT_EQ(conf.max_workers, 4);
+}
+
+TEST(mw_cap_accepted) {
+    /* Boundary: 999999999 (MESI_MAX_MAX_WORKERS) is the configured
+     * max — the 9-digit int32-safe bound shared with libgomesi
+     * config.MaxMaxWorkers (neither core nor Caddy caps the value;
+     * this is the transport's portable range). */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_workers(&conf, "999999999"));
+    ASSERT_EQ(conf.max_workers, MESI_MAX_MAX_WORKERS);
+    ASSERT_EQ(MESI_MAX_MAX_WORKERS, 999999999);
+}
+
+TEST(mw_cap_plus_one_rejected) {
+    /* Boundary: 1000000000 (10 digits) trips parse_nonneg_int's
+     * 9-digit overflow guard before any intermediate wraps. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_workers(&conf, "1000000000");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxWorkers");
+    ASSERT_STR_CONTAINS(err, "exceeds");
+    ASSERT_EQ(conf.max_workers, -1);
+}
+
+TEST(mw_negative_rejected) {
+    /* AC: -1 is an error. The core would silently substitute
+     * runtime.NumCPU()*4 for any value <= 0 with NO warning
+     * (mesi/parser.go — there is no #329-style warn+normalize for
+     * MaxWorkers) — a malformed explicit value must never pass as the
+     * documented "library default". */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_workers(&conf, "-1");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxWorkers");
+    ASSERT_EQ(conf.max_workers, -1);
+}
+
+TEST(mw_plus_sign_rejected) {
+    /* "+4" is rejected — the strict digits-only parser (which skips
+     * leading spaces/tabs, like parse_nonneg_int everywhere) requires
+     * a plain decimal form; the issue's atoi sketch would accept the
+     * sign. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_workers(&conf, "+4");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxWorkers");
+    ASSERT_EQ(conf.max_workers, -1);
+}
+
+TEST(mw_alpha_rejected) {
+    /* atoi("abc") → 0 would silently mean "library default". Reject. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_workers(&conf, "abc");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxWorkers");
+    ASSERT_EQ(conf.max_workers, -1);
+}
+
+TEST(mw_trailing_garbage_rejected) {
+    /* atoi("4foo") → 4 would silently accept. Reject. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_workers(&conf, "4foo");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxWorkers");
+    ASSERT_EQ(conf.max_workers, -1);
+}
+
+TEST(mw_decimal_rejected) {
+    /* Decimals must fail-fast — atoi("2.5") would truncate to 2. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_workers(&conf, "2.5");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxWorkers");
+    ASSERT_EQ(conf.max_workers, -1);
+}
+
+TEST(mw_empty_rejected) {
+    /* atoi("") → 0 would silently mean "library default". Reject. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_workers(&conf, "");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxWorkers");
+    ASSERT_EQ(conf.max_workers, -1);
+}
+
+TEST(mw_oversize_rejected) {
+    /* 12345678901 (11 digits) — the digit-count guard fires before
+     * the range check. Must fail with an error naming the directive. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_workers(&conf, "12345678901");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxWorkers");
+    ASSERT_STR_CONTAINS(err, "exceeds");
+    ASSERT_EQ(conf.max_workers, -1);
+}
+
+TEST(merge_mw_child_overrides) {
+    /* Child 8 / parent 4 → 8 (add overrides base). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.max_workers = 4;
+    add.max_workers = 8;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_workers, 8);
+}
+
+TEST(merge_mw_child_inherits) {
+    /* Base 4 + unset add → 4 (unset child inherits the parent). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.max_workers = 4;
+    add.max_workers = -1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_workers, 4);
+}
+
+TEST(merge_mw_child_zero_overrides) {
+    /* Explicit 0 ("library default") must win over a parent cap — 0
+     * is configured, not unset. This is the whole reason the sentinel
+     * is -1 and not 0 (a `>= 0` merge would silently inherit the
+     * parent's cap and the operator's "library default" would be
+     * lost). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.max_workers = 4;
+    add.max_workers = 0;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_workers, 0);
+}
+
+TEST(merge_mw_both_unset) {
+    /* Both unset → -1 sentinel → legacy path; LIBGOMESI leaves 0
+     * (library default NumCPU*4) — byte-identical to pre-#171
+     * behaviour. */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_workers, -1);
+}
+
 int main(int argc, char *argv[]) {
     printf("=== Apache Module Directive Unit Tests ===\n\n");
 
@@ -2829,6 +3056,26 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_mcr_child_inherits);
     RUN_TEST(merge_mcr_child_zero_overrides);
     RUN_TEST(merge_mcr_both_unset);
+
+    printf("\nTesting set_max_workers() (#171):\n");
+    RUN_TEST(mw_default_unset);
+    RUN_TEST(mw_zero_accepted);
+    RUN_TEST(mw_typical_accepted);
+    RUN_TEST(mw_cap_accepted);
+    RUN_TEST(mw_cap_plus_one_rejected);
+    RUN_TEST(mw_negative_rejected);
+    RUN_TEST(mw_plus_sign_rejected);
+    RUN_TEST(mw_alpha_rejected);
+    RUN_TEST(mw_trailing_garbage_rejected);
+    RUN_TEST(mw_decimal_rejected);
+    RUN_TEST(mw_empty_rejected);
+    RUN_TEST(mw_oversize_rejected);
+
+    printf("\nTesting merge_server_config() max_workers fields (#171):\n");
+    RUN_TEST(merge_mw_child_overrides);
+    RUN_TEST(merge_mw_child_inherits);
+    RUN_TEST(merge_mw_child_zero_overrides);
+    RUN_TEST(merge_mw_both_unset);
 
 
     apr_pool_destroy(pool);
