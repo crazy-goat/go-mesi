@@ -1,0 +1,27 @@
+# RoadRunner max_depth Configuration Example
+#
+# Limits how many levels of <esi:include> are recursively processed by
+# the mesi middleware. Unset → 5 (the historical hardcoded default,
+# backward compatible). Explicit 0 is valid passthrough: no
+# <esi:include> is fetched; the tags are stripped through the
+# include-error path (empty default marker), never left raw in the
+# response. Range [0, 10000] matches mesi.MaxMaxDepth / Apache
+# MesiMaxDepth / nginx mesi_max_depth / Caddy max_depth. Invalid
+# values (negative, above the cap) fail plugin Init() at startup with
+# an error naming the field — never silently coerced.
+#
+# Usage:
+#   Merge these keys into your .rr.yaml under http.middleware.mesi
+#   (see servers/roadrunner/README.md for the full options table).
+
+http:
+  address: "0.0.0.0:8080"
+  middleware:
+    mesi:
+      # Process exactly one include level: the outer include is
+      # fetched, then the fragment is re-parsed with MaxDepth=0
+      # (ParseOnly). Inner <esi:include> tags are replaced with the
+      # empty IncludeErrorMarker (not fetched, not left in the HTML).
+      # Use 5 (or omit max_depth) for the historical default; use 0
+      # to disable ESI fetching entirely.
+      max_depth: 1

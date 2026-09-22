@@ -603,6 +603,25 @@ func TestInitNilMaxDepthDefaultsToFive(t *testing.T) {
 	}
 }
 
+func TestInitExplicitCustomMaxDepthKept(t *testing.T) {
+	// AC (#183): max_depth: 3 must round-trip — a custom value is neither
+	// coerced to the default 5 nor rejected, and maxDepth() (the accessor
+	// feeding EsiParserConfig.MaxDepth in Middleware) returns it verbatim.
+	config := CreateConfig()
+	config.MaxDepth = intPtr(3)
+
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if p.config.MaxDepth == nil || *p.config.MaxDepth != 3 {
+		t.Errorf("expected max_depth 3 to be kept, got %v", p.config.MaxDepth)
+	}
+	if p.maxDepth() != 3 {
+		t.Errorf("expected maxDepth()=3, got %d", p.maxDepth())
+	}
+}
+
 func TestInitRejectsNegativeMaxDepth(t *testing.T) {
 	p := &Plugin{config: &Config{MaxDepth: intPtr(-1)}}
 	err := p.Init()
@@ -622,6 +641,19 @@ func TestInitRejectsMaxDepthAboveCap(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "max_depth") {
 		t.Errorf("expected max_depth in error, got %v", err)
+	}
+}
+
+func TestInitAcceptsMaxMaxDepth(t *testing.T) {
+	// Boundary: mesi.MaxMaxDepth is the inclusive upper bound — the
+	// rejection above it (max+1) must not come with an off-by-one that
+	// also rejects the accepted max itself.
+	p := &Plugin{config: &Config{MaxDepth: intPtr(int(mesi.MaxMaxDepth))}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init rejected max_depth == MaxMaxDepth (%d): %v", mesi.MaxMaxDepth, err)
+	}
+	if p.maxDepth() != int(mesi.MaxMaxDepth) {
+		t.Errorf("expected maxDepth()=%d, got %d", mesi.MaxMaxDepth, p.maxDepth())
 	}
 }
 
@@ -653,5 +685,76 @@ func TestMiddlewareMaxDepthZeroPassthrough(t *testing.T) {
 	}
 	if rec.Body.String() != "<html><body></body></html>" {
 		t.Errorf("expected passthrough empty include, got %q", rec.Body.String())
+	}
+}
+
+// newNestedChainServer serves a chain of nested ESI pages on one test
+// server: /level-1 → /level-2 → … → /level-<levels>, where /level-<levels>
+// has no include. Every level body carries a LEVEL-<n>-BODY marker, so the
+// final response proves exactly how many include levels were fetched and
+// inlined — the same per-level marker scheme as
+// servers/nginx/tests/nested_depth_{outer,inner}.txt (issue #428: a
+// marker-less fixture cannot distinguish "not fetched" from "fetched but
+// empty"). Returns the server's base URL.
+func newNestedChainServer(t *testing.T, levels int) string {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	for i := 1; i <= levels; i++ {
+		body := fmt.Sprintf("LEVEL-%d-BODY", i)
+		if i < levels {
+			body += fmt.Sprintf(`<esi:include src="%s/level-%d" />`, srv.URL, i+1)
+		}
+		mux.HandleFunc(fmt.Sprintf("/level-%d", i), func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.Write([]byte(body))
+		})
+	}
+
+	return srv.URL
+}
+
+func TestMiddlewareCustomMaxDepthThreeProcessesExactLevels(t *testing.T) {
+	// AC (#183): a custom max_depth: 3 must reach EsiParserConfig.MaxDepth
+	// unchanged. The chain requires exactly three fetches at depth 3:
+	// levels 1-3 are inlined (markers present), while the level-3 include's
+	// target is parsed with MaxDepth=0 — not fetched (LEVEL-4 marker
+	// absent) and stripped through the include-error path (no raw tag left).
+	// A regression to the default 5 would fetch LEVEL-4; a regression to 1
+	// would stop after LEVEL-1 — both fail this test.
+	baseURL := newNestedChainServer(t, 4)
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<html><body><esi:include src="` + baseURL + `/level-1" /></body></html>`))
+	})
+
+	block := false
+	config := CreateConfig()
+	config.MaxDepth = intPtr(3)
+	config.BlockPrivateIPs = &block
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	p.Middleware(upstream).ServeHTTP(rec, httptest.NewRequest("GET", "http://example.com/", nil))
+
+	body := rec.Body.String()
+	for _, want := range []string{"LEVEL-1-BODY", "LEVEL-2-BODY", "LEVEL-3-BODY"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %s at max_depth 3, got body: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "LEVEL-4-BODY") {
+		t.Errorf("expected level-4 include NOT fetched at max_depth 3, got body: %s", body)
+	}
+	if strings.Contains(body, "esi:include") {
+		t.Errorf("expected leftover include tag stripped, got body: %s", body)
 	}
 }
