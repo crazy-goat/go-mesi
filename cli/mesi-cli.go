@@ -87,6 +87,37 @@ func validateMaxConcurrentRequests(v int) error {
 	return nil
 }
 
+// maxMaxWorkers mirrors libgomesi's config.MaxMaxWorkers
+// (libgomesi/internal/config/max_workers.go, #171). That package lives
+// under libgomesi/internal and cannot be imported from the separate cli
+// module, so the bound is mirrored here (the same keep-in-sync pattern
+// as maxMaxResponseSize, maxMaxConcurrentRequests and Apache's
+// MESI_MAX_MAX_WORKERS). Neither the core nor Caddy caps the value, so
+// 999999999 is derived from the transport — the field crosses to the
+// Apache module as a C `int` (32-bit on every platform Apache 2.4
+// supports) parsed by the shared strict parse_nonneg_int, which guards
+// at 9 digits. The value only bounds a drain pool the core additionally
+// clamps to the job count (workerCount = min(maxWorkers, len(esiJobs)),
+// mesi/parser.go:126-129), so an over-large value is a no-op — the cap
+// is about portability, not semantics.
+const maxMaxWorkers = 999999999
+
+// validateMaxWorkers rejects -max-workers values outside
+// [0, maxMaxWorkers]. 0 is the documented "library default" value: the
+// core substitutes runtime.NumCPU()*4 for any value <= 0
+// (mesi/parser.go:119-122). Negatives are rejected instead of reaching
+// that branch, where they are silently replaced with NO warning at all
+// — the exact silent substitution #456 files against the core — i.e. a
+// malformed explicit value would silently pass as the documented
+// "library default" (same no-silent-default rule as -max-depth,
+// -max-response-size and -max-concurrent-requests).
+func validateMaxWorkers(v int) error {
+	if v < 0 || v > maxMaxWorkers {
+		return fmt.Errorf("max-workers must be in [0, %d], got %d", maxMaxWorkers, v)
+	}
+	return nil
+}
+
 func main() {
 	defaultUrl := flag.String("default-url", "http://127.0.0.1/", "Default URL to parse")
 	maxDepth := flag.Uint("max-depth", 5, "Maximum depth of parsing")
@@ -114,7 +145,19 @@ func main() {
 	allowedHosts := flag.String("allowed-hosts", "", "Comma-separated list of allowed hosts for ESI includes")
 	allowPrivateIPsForAllowedHosts := flag.Bool("allowPrivateIPsForAllowedHosts", false,
 		"Allow ESI includes to private/reserved IP ranges for hosts listed in -allowed-hosts (trusts DNS)")
-	maxWorkers := flag.Int("max-workers", 0,
+	// Default derived from CreateDefaultConfig() so that an absent flag is
+	// byte-identical to the pre-flag CLI behaviour: the CLI builds its
+	// config from that constructor, which never sets MaxWorkers, so the
+	// field always stayed at its zero value 0 — which the core resolves
+	// to runtime.NumCPU()*4 (mesi/parser.go:119-122). Same value as the
+	// issue's plain 0, but drift-proof (the #186/#192 constructor-derived
+	// pattern). Explicit 0 is the documented "library default" (#171
+	// contract); unlike Apache there is no unset sentinel/merge layer on
+	// this path, so absent and explicit 0 assign the same 0 and are
+	// genuinely identical in the CLI (no observable difference between
+	// them — both take the core's <= 0 substitution branch).
+	maxWorkers := flag.Int("max-workers",
+		mesi.CreateDefaultConfig().MaxWorkers,
 		"Max concurrent ESI include goroutines (0 = NumCPU*4)")
 	// Default derived from CreateDefaultConfig() so that an absent flag is
 	// byte-identical to the pre-flag CLI behaviour (which never overrode the
@@ -152,6 +195,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
+	if err := validateMaxWorkers(*maxWorkers); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
+	}
 	args := flag.Args()
 	if len(args) < 1 {
 		fmt.Println("Error: Missing file|url path argument.")
@@ -169,6 +216,13 @@ func main() {
 	config.BlockPrivateIPs = !*allowPrivateIPs
 	config.AllowedHosts = allowedHostsFromFlag(*allowedHosts)
 	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
+	// Explicitly assigned even though CreateDefaultConfig() already set
+	// the same value: the flag default IS that value (0), so an absent
+	// flag stays byte-identical (0 → the core's NumCPU*4 library default,
+	// mesi/parser.go:119-122), while an explicit 0 documents the same
+	// "library default" contract (#171) and an explicit N caps the
+	// per-MESIParse drain pool (each nested parse spawns its own pool and
+	// inherits the cap).
 	config.MaxWorkers = *maxWorkers
 	// Explicitly assigned even though CreateDefaultConfig() already set the
 	// same value: the flag default IS that value, so an absent flag stays

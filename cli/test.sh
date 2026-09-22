@@ -432,6 +432,143 @@ else
 fi
 
 echo ""
+echo "--- Max Workers Tests ---"
+
+# Observable for -max-workers is the DRAIN POOL, not a semaphore (#171):
+# MESIParse spawns min(MaxWorkers, job count) goroutines
+# (mesi/parser.go:118-129) and each processes one include at a time, so
+# on a flat page the backend peak-concurrency counter can never exceed
+# the pool size — with -max-workers 2 that is a hard peak <= 2 (a
+# regression to the default pool min(NumCPU*4, 20) >= 4 would show
+# peak >= 4 instead and fail this bound). The exact lower bound
+# peak == 2 mirrors Apache Test 40 (#171), which accepted the
+# exact-cap invariant for the identical mechanism: both goroutines grab
+# their first (buffered, parser.go:132,175-178) job within microseconds
+# while each backend hold lasts 1500 ms, so the two holds must overlap —
+# the ceiling is the hard pool invariant, the floor proves the pool has
+# both slots working in parallel rather than serializing to 1. (#192's
+# semaphore tests deliberately asserted only >= 2 for their cap of 3
+# because a semaphore admits whichever dials arrive first; here the two
+# jobs are handed to exactly two pre-spawned goroutines, the same setup
+# #171 shipped peak == 2 against.)
+#
+# Fan-out floor for the "library default" cases (absent / explicit 0):
+# the pool is min(NumCPU*4, 20) goroutines, i.e. at least 4 on any
+# machine (NumCPU >= 1) — with 1500 ms holds an unthrottled parse must
+# show peak >= 4 (the same bound #192's Tests 29-30 and #171's Test 41
+# rely on). Each page fans out to 20 DISTINCT /hold labels (mw1-mw20,
+# distinct from #192's label1-label20 so no reading can bleed across
+# tests) so every include reaches the counter; the CLI's cache is off by
+# default (no -cache-backend), so no dedup can swallow fetches either.
+#
+# -timeout 60: REQUIRED, not belt-and-braces. The fetch budget is
+# config.Timeout REDUCED by parse-elapsed time (WithElapsedTime at
+# mesi/parser.go:158, floors at 0 in mesi/config.go:128-135), so it
+# shrinks as the parse runs — and T33's wall time at cap 2 is ~10 waves
+# x 1500 ms = ~15 s. With the default 10 s, includes picked up after
+# ~10 s get Timeout <= 0 -> ErrTimeBudgetExceeded (mesi/fetch.go:131-134)
+# and late fragments go missing (FRAGMENTS < 20 -> T33 FAILS). Includes
+# beyond the pool are queued in the jobs channel (mesi/parser.go:132-178),
+# never dropped — the queue wait itself is not the problem; the eroding
+# budget is. The explicit budget keeps every timing gate irrelevant on
+# slow CI runners and matches Tests 28-31.
+
+echo "Test 32: -max-workers 2 - deeply nested page expands completely (issue AC)"
+# The issue's AC stress case: a nested chain parsed under a 2-goroutine
+# cap must be fully expanded with correct output. tests/server serves no
+# static files, so the chain is built on its self-referencing
+# /recursive endpoint (returns an ESI include of itself plus the
+# Edge-control header): with an explicit -max-depth 4 the core fetches
+# exactly 4 levels — parse(d) fetches, then recurses via
+# DecreaseMaxDepth while CanGoDeeper holds (mesi/parser.go:161-163) —
+# and the depth-0 parse strips the innermost tag WITHOUT fetching
+# (include.toString checks ParseOnly first, mesi/include.go:46-48), so
+# the output must contain exactly 4 nested "included: [" level markers,
+# the fixture's trailing paragraph, and no raw <esi:include>. Each level
+# is its own MESIParse spawning its own pool of min(2, 1 job) = 1
+# goroutine that inherits the cap — completion + exact output is the
+# assertion (Apache Test 39 asserts the same for the four DISTINCT-level
+# fixture there; -max-depth pinned so the count does not drift with the
+# default-depth flag).
+cat > "$TEST_DIR/maxworkers-deep.html" <<'EOF'
+<html><body>
+<esi:include src="http://127.0.0.1:18080/recursive"/>
+<p>After deep include</p>
+</body></html>
+EOF
+RESULT=$("$CLI_BINARY" -max-workers=2 -max-depth 4 -timeout 60 -allow-private-ips "$TEST_DIR/maxworkers-deep.html" 2>/dev/null)
+FLAT=$(echo "$RESULT" | tr -d '\n')
+LEVELS=$(echo "$FLAT" | grep -o "included:" | wc -l | tr -d ' ' || true)
+if [ "$LEVELS" -eq 4 ] && echo "$FLAT" | grep -q "After deep include" && ! echo "$FLAT" | grep -q '<esi:include'; then
+	pass "four-level nested chain fully expanded under -max-workers 2 ($LEVELS level markers, no raw tags)"
+else
+	fail "max-workers deep nesting" "levels=$LEVELS (expected 4) out=$(echo "$FLAT" | head -c 300)"
+fi
+
+cat > "$TEST_DIR/maxworkers-20.html" <<'EOF'
+<html><body>
+<esi:include src="hold/1500/mw1"/><esi:include src="hold/1500/mw2"/><esi:include src="hold/1500/mw3"/><esi:include src="hold/1500/mw4"/><esi:include src="hold/1500/mw5"/>
+<esi:include src="hold/1500/mw6"/><esi:include src="hold/1500/mw7"/><esi:include src="hold/1500/mw8"/><esi:include src="hold/1500/mw9"/><esi:include src="hold/1500/mw10"/>
+<esi:include src="hold/1500/mw11"/><esi:include src="hold/1500/mw12"/><esi:include src="hold/1500/mw13"/><esi:include src="hold/1500/mw14"/><esi:include src="hold/1500/mw15"/>
+<esi:include src="hold/1500/mw16"/><esi:include src="hold/1500/mw17"/><esi:include src="hold/1500/mw18"/><esi:include src="hold/1500/mw19"/><esi:include src="hold/1500/mw20"/>
+</body></html>
+EOF
+
+echo "Test 33: -max-workers 2 funnels 20 includes through a 2-goroutine pool (peak == 2, all delivered)"
+curl -s "http://127.0.0.1:18080/track/reset" > /dev/null
+RESULT=$("$CLI_BINARY" -max-workers=2 -timeout 60 -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/maxworkers-20.html" 2>/dev/null)
+PEAK=$(curl -s "http://127.0.0.1:18080/track/max" || true)
+FRAGMENTS=$(echo "$RESULT" | grep -o "Held 1500" | wc -l | tr -d ' ' || true)
+if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -eq 2 ] && ! echo "$RESULT" | grep -q '<esi:include'; then
+	pass "pool capped: peak=$PEAK == 2 (hard pool bound + both slots parallel), 20/20 fragments queued and delivered"
+else
+	fail "max-workers 2 pool bound" "peak=$PEAK fragments=$FRAGMENTS (expected peak == 2, 20 fragments)"
+fi
+
+echo "Test 34: absent -max-workers uses the library default pool NumCPU*4 (peak >= 4)"
+curl -s "http://127.0.0.1:18080/track/reset" > /dev/null
+RESULT=$("$CLI_BINARY" -timeout 60 -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/maxworkers-20.html" 2>/dev/null)
+PEAK=$(curl -s "http://127.0.0.1:18080/track/max" || true)
+FRAGMENTS=$(echo "$RESULT" | grep -o "Held 1500" | wc -l | tr -d ' ' || true)
+if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 4 ] && ! echo "$RESULT" | grep -q '<esi:include'; then
+	pass "absent flag library default: peak=$PEAK >= 4, 20/20 fragments delivered"
+else
+	fail "absent -max-workers default" "peak=$PEAK fragments=$FRAGMENTS (expected peak >= 4, 20 fragments)"
+fi
+
+echo "Test 35: explicit -max-workers 0 is the library default (peak >= 4)"
+# Explicit 0 and absent assign the SAME 0 (the constructor-derived flag
+# default IS CreateDefaultConfig()'s value — unlike Apache there is no
+# -1 unset sentinel/merge layer, so there is no observable difference
+# between the two in the CLI); this run documents that an explicit 0
+# reaches the core as 0 and takes the NumCPU*4 substitution branch
+# (a rejection/clamp of the explicit value would fail the bound).
+curl -s "http://127.0.0.1:18080/track/reset" > /dev/null
+RESULT=$("$CLI_BINARY" -max-workers=0 -timeout 60 -allow-private-ips -default-url "http://127.0.0.1:18080/" "$TEST_DIR/maxworkers-20.html" 2>/dev/null)
+PEAK=$(curl -s "http://127.0.0.1:18080/track/max" || true)
+FRAGMENTS=$(echo "$RESULT" | grep -o "Held 1500" | wc -l | tr -d ' ' || true)
+if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 4 ] && ! echo "$RESULT" | grep -q '<esi:include'; then
+	pass "explicit 0 library default: peak=$PEAK >= 4, 20/20 fragments delivered"
+else
+	fail "explicit -max-workers 0" "peak=$PEAK fragments=$FRAGMENTS (expected peak >= 4, 20 fragments)"
+fi
+
+echo "Test 36: -max-workers=-1 is rejected"
+# The core would silently substitute NumCPU*4 for -1 with NO warning
+# (mesi/parser.go:119-122, #456) — the CLI fails loud instead
+# (deviation from the issue's AC "negative -> default", per the
+# #415/#186/#192 no-silent-default precedent).
+set +e
+OVER_ERR=$("$CLI_BINARY" -max-workers=-1 "$ROOT_DIR/tests/fixtures/05-comment.html" 2>&1)
+OVER_CODE=$?
+set -e
+if [ "$OVER_CODE" -ne 0 ] && echo "$OVER_ERR" | grep -q "max-workers"; then
+	pass "max-workers=-1 rejected"
+else
+	fail "max-workers=-1 reject" "exit=$OVER_CODE err=$OVER_ERR"
+fi
+
+echo ""
 echo "--- Fixture Comparison (Inline Fixtures) ---"
 
 FIXTURE_PASS=0

@@ -1,0 +1,23 @@
+<!-- Example: cap the per-parse ESI token-processing worker pool -->
+<!-- Run (test server must be running: go run ./tests/server):
+     mesi-cli -max-workers=2 -timeout 60 -allow-private-ips -default-url http://127.0.0.1:18080/ examples/cli/max-workers.html -->
+<html>
+<body>
+  <h1>Max Workers Example</h1>
+  <esi:include src="hold/1500/w1" />
+  <esi:include src="hold/1500/w2" />
+  <esi:include src="hold/1500/w3" />
+  <esi:include src="hold/1500/w4" />
+  <esi:include src="hold/1500/w5" />
+  <esi:include src="hold/1500/w6" />
+  <!-- Unit: goroutines in the per-MESIParse drain pool (min(MaxWorkers,
+       job count); each nested parse spawns its own pool and inherits
+       the cap — one invocation is NOT process-wide across runs). Range
+       [0, 999999999]; 0 (and the default) = library default
+       runtime.NumCPU()*4. Under -max-workers=2 at most 2 of the six
+       fragments above are fetched at once — the rest queue in the
+       drain pool and all are still delivered. Watch the backend's peak
+       concurrency at http://127.0.0.1:18080/track/max (reset with
+       /track/reset); reset between runs. -->
+</body>
+</html>
