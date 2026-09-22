@@ -27,15 +27,22 @@ func main() {
 	config.BlockPrivateIPs = blockPrivateIPs
 	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
 	// Only override CreateConfig()'s default (5) when -max-depth is
-	// explicitly passed, so an omitted flag exercises the plugin's
-	// unset → 5 path while `-max-depth 0` stays the documented
-	// passthrough (Init keeps an explicit 0 verbatim).
+	// explicitly passed; when omitted, reset to nil so the plugin's
+	// Init() takes its genuine unset branch (nil → 5). `-max-depth 0`
+	// stays the documented passthrough (Init keeps an explicit 0
+	// verbatim).
+	maxDepthSet := false
 	flag.Visit(func(f *flag.Flag) {
 		if f.Name == "max-depth" {
-			depth := *maxDepth
-			config.MaxDepth = &depth
+			maxDepthSet = true
 		}
 	})
+	if maxDepthSet {
+		depth := *maxDepth
+		config.MaxDepth = &depth
+	} else {
+		config.MaxDepth = nil
+	}
 
 	plugin := roadrunner.NewWithConfig(config)
 	if err := plugin.Init(); err != nil {

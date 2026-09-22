@@ -173,9 +173,9 @@ else
 fi
 
 echo "=== Test 12: max_depth unset → 5 (backward compat, #183) ==="
-# No -max-depth flag: the plugin default (5) must keep behaving exactly
-# like the historical hardcoded 5 — both nest levels processed (the
-# marker assertions from Test 11, now covering the omitted-flag path).
+# No -max-depth flag: rrtest resets Config.MaxDepth to nil so Init()'s
+# genuine unset branch maps it to 5 — behaviour must match the historical
+# hardcoded 5 exactly (both nest levels processed; omitted-flag path).
 start_rr -block-private-ips=false
 RESPONSE=$(curl -s http://localhost:9090/nested-depth)
 if echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
@@ -183,6 +183,24 @@ if echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
     echo "PASS: unset max_depth defaults to 5 (both nest levels processed)"
 else
     echo "FAIL: unset max_depth no longer behaves like depth 5"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 13: max_depth 0 (explicit, flag path) — passthrough, nothing fetched (#183) ==="
+# The flag.Visit branch most at risk of a silent regression: explicit 0
+# must reach Init() verbatim (kept as passthrough, NOT defaulted to 5),
+# so no include is fetched — neither marker may appear and no raw
+# <esi:include> tag may survive (tags are stripped via the include-error
+# path with the empty default marker).
+start_rr -block-private-ips=false -max-depth 0
+RESPONSE=$(curl -s http://localhost:9090/nested-depth)
+if ! echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q "INNER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: explicit max_depth 0 fetched nothing and stripped both tags"
+else
+    echo "FAIL: explicit max_depth 0 did not stay a passthrough"
     echo "Response: $RESPONSE"
     exit 1
 fi
