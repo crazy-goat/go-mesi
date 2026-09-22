@@ -108,6 +108,7 @@ $html = \mesi\parse_with_config(
 | `request_cookies` | optional | array | String keys (cookie names, non-empty, no spaces/control) → string values (no control chars, `"` or `\`; spaces allowed in values). Empty array = no cookies. Only rendered when a non-empty `cache_key_template` is set and `cache_backend != ""` |
 | `timeout` | optional | int | Global per-include fetch budget in **seconds**; range `[1, 86_400]`; absent = `30` (libgomesi's historical default — omitting the key is backward compatible). **`0` is rejected**: the core makes every include fail immediately with `ErrTimeBudgetExceeded` when `Timeout <= 0` — it does **not** mean "no timeout". Non-integer values (string `"10"`, float `1.5`, `"abc"`, `""`, bool, null, array) and out-of-range values are rejected with `E_WARNING` and the function returns `false`. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"timeoutSeconds":N}`; on an older `libgomesi.so` without `ParseJson` a warning is emitted and the timeout is ignored (30s applies) |
 | `max_response_size` | optional | int | Caps a single `<esi:include>` response body in **bytes**; range `[0, 9223372036854775806]` (`MaxInt64 - 1`); absent = `0` = **unlimited** (backward compatible — omitting the key is byte-identical to previous behaviour; there is **no implicit 10 MB default** on this path). **`0` is the documented "unlimited" value** (the core only limits when `MaxResponseSize > 0`). Non-integer values (string `"10"`, float `1.5`, `"abc"`, `""`, bool, null, array), negatives and values above the cap are rejected with `E_WARNING` and the function returns `false`. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"maxResponseSize":N}` (#169 schema key); on an older `libgomesi.so` without `ParseJson` a warning is emitted and the cap is ignored (unlimited applies) |
+| `max_concurrent_requests` | optional | int | Caps the number of **concurrent** `<esi:include>` HTTP fetches within ONE `parse_with_config()` call (the admission semaphore — per call, **not** global across PHP calls or requests); range `[0, 999999999]` (`MaxMaxConcurrentRequests`, #170); absent = `0` = **unlimited** (backward compatible — omitting the key is byte-identical to previous behaviour). **`0` is the documented "unlimited" value** (the core only installs the semaphore when the value is `> 0`); includes queued beyond the cap are still delivered, never dropped. Non-integer values (string `"10"`, float `1.5`, `"abc"`, `""`, bool, null, array), negatives and values above the cap are rejected with `E_WARNING` and the function returns `false`. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"maxConcurrentRequests":N}` (#170 schema key); on an older `libgomesi.so` without `ParseJson` a warning is emitted and the cap is ignored (unlimited applies) |
 
 Validation is strict: an unknown `cache_backend`, mismatched Redis-vs-Memcached key, out-of-range numeric value, non-integer value, malformed `host:port`, or a non-string memcached server entry emits an `E_WARNING` and returns `false`. The function never silently degrades to "no cache" on a typo — a wrong host:port or empty memcached list surfaces as `E_WARNING`, matching the validation pattern in `parse_with_config()` for the in-memory backend and the equivalent `MesiCache*` directives in `servers/apache`. The same applies to `allowed_hosts`: a non-string or whitespace-only value is rejected (a whitespace-only list would silently tokenize to an empty allowlist = allow all hosts — the same fail-open typo nginx hardens against, #354). The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
 
@@ -446,6 +447,63 @@ Semantics (identical to Apache's `MesiMaxResponseSize` #169 and libgomesi's
   older `libgomesi.so` without the `ParseJson` symbol emits a warning
   (`max_response_size ignored … Upgrade libgomesi.so.`) and falls back to
   that path unlimited — never a crash.
+
+#### Max concurrent requests (`max_concurrent_requests`)
+
+Since #206. `max_concurrent_requests` caps the number of **concurrent**
+`<esi:include>` HTTP fetches within a **single** `parse_with_config()` call —
+the admission-control semaphore libgomesi's core installs for that one
+`MESIParse`. It is **per call**, not global across PHP calls or requests:
+each call builds its own semaphore (the issue's own scope note):
+
+```php
+// Fetch at most 3 includes at a time within this one parse:
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    ['max_concurrent_requests' => 3]
+);
+```
+
+Semantics (identical to Apache's `MesiMaxConcurrentRequests` #170, CLI
+`-max-concurrent-requests` #192 and libgomesi's `ParseJson`
+`maxConcurrentRequests`):
+
+- Unit: concurrent `<esi:include>` fetches within ONE call. Includes queued
+  beyond the cap are **queued, never dropped** — every include is still
+  delivered, just funnelled.
+- Integer range `[0, 999999999]` — the #170 transport-derived cap (the value
+  crosses as a JSON number and out to Apache as a C `int` guarded at 9
+  digits), mirrored as the C `MESI_MAX_MAX_CONCURRENT_REQUESTS`, keep in
+  sync with Go's `config.MaxMaxConcurrentRequests`.
+- **Absent key → `0` → unlimited** — the value every positional
+  `ParseWithConfig*` path leaves in `EsiParserConfig.MaxConcurrentRequests`
+  (byte-identical to previous behaviour).
+- **Explicit `0` = the documented "unlimited" value** — the core only
+  installs the semaphore when the value is `> 0` (`mesi/parser.go`); with a
+  current `libgomesi.so` there is **no observable difference** between an
+  explicit `0` and an absent key (both resolve to `0` Go-side; the only
+  difference is the routing — an explicit key routes through `ParseJson`,
+  so against an old `libgomesi.so` without that symbol only the explicit
+  key warns).
+- A malformed explicit value is never silently coerced: non-integers (numeric
+  string `"10"` does not coerce, floats `1.5`/`10.0`, `"abc"`, `""`, bool,
+  null, array), negatives (the core only warns and normalizes them to
+  `0` = unlimited, #329 — a malformed value must never pass as the
+  documented one) and values above the cap (`1000000000`, `PHP_INT_MAX`)
+  emit an `E_WARNING` naming `max_concurrent_requests` and
+  `parse_with_config()` returns `false` — the same strict contract as
+  `timeout` / `max_response_size` / `cache_ttl`.
+- The key is passed through libgomesi's `ParseJson` entry point (#167) as
+  `{"maxConcurrentRequests":N}` (#170 schema key) together with every other
+  resolved option; **each key is only rendered when set**, so a
+  `max_concurrent_requests`-only call keeps the positional 30s timeout and
+  unlimited size (and a `timeout`-only call gains no `maxConcurrentRequests`
+  key). An absent key keeps the exact positional `ParseWithConfigCtx` path.
+  An older `libgomesi.so` without the `ParseJson` symbol emits a warning
+  (`max_concurrent_requests ignored … Upgrade libgomesi.so.`) and falls back
+  to that path unlimited — never a crash.
 
 ### Cache scope
 

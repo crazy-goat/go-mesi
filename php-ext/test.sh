@@ -374,7 +374,72 @@ else
     exit 1
 fi
 
-[ -n "$BYTES_PID" ] && kill "$BYTES_PID" 2>/dev/null || true
+# Reap the bytes server (#469: kill without wait leaves the job table
+# noisy / the zombie around until the shell exits).
+if [ -n "$BYTES_PID" ]; then
+    kill "$BYTES_PID" 2>/dev/null || true
+    wait "$BYTES_PID" 2>/dev/null || true
+fi
+
+echo ""
+echo "=== Test 22: max_concurrent_requests=3 funnels 20 includes (peak <= 3) (#206) ==="
+# Deterministic peak-concurrency tracker (the #170/#192 pattern): the
+# test-server (Go — CONCURRENT, unlike the single-threaded php -S app
+# server which would serialize every hold into a peak of 1) serves
+# /hold/<millis>/<label> (registers in the peak counter, sleeps, returns a
+# "<label> Held <millis>" fragment) and /track/reset //track/max zero and
+# read the counter — the router.php fixtures reset the counter before
+# each parse and proxy /track/max through /max-concurrent-requests-peak
+# (docker mode does not publish the test-server port to the host).
+# Fan-out bound: MESIParse drains includes through a worker pool of
+# min(MaxWorkers=NumCPU*4, 20) >= 4 goroutines (mesi/parser.go), so an
+# uncapped parse must show peak >= 4, while cap 3 can never exceed 3 (the
+# admission semaphore, mesi/fetch.go) and >= 2 proves the cap is a
+# multi-slot queue rather than a serialisation to 1. The absent timeout
+# key keeps the documented 30s default — well above the ~10.5s worst case
+# of 20 x 1500ms queued 3 at a time.
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-concurrent-requests-cap)
+FRAGMENTS=$(printf '%s' "$RESPONSE" | grep -o 'Held 1500' | wc -l | tr -d ' ')
+PEAK=$(curl -s http://localhost:$TEST_PORT/max-concurrent-requests-peak)
+if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 2 ] && [ "$PEAK" -le 3 ] \
+   && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: cap 3 funneled: peak=$PEAK (<=3 cap, >=2 parallel slots), 20/20 fragments delivered"
+else
+    echo "FAIL: max_concurrent_requests=3 did not funnel (peak=$PEAK, fragments=$FRAGMENTS)"
+    echo "Response: ${RESPONSE:0:300}"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 23: max_concurrent_requests=0 -> unlimited (peak >= 4) (#206) ==="
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-concurrent-requests-zero)
+FRAGMENTS=$(printf '%s' "$RESPONSE" | grep -o 'Held 1500' | wc -l | tr -d ' ')
+PEAK=$(curl -s http://localhost:$TEST_PORT/max-concurrent-requests-peak)
+if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 4 ] \
+   && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: explicit 0 unthrottled: peak=$PEAK >= 4, 20/20 fragments delivered"
+else
+    echo "FAIL: explicit 0 was not unlimited (peak=$PEAK, fragments=$FRAGMENTS)"
+    echo "Response: ${RESPONSE:0:300}"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 24: max_concurrent_requests absent -> unlimited (peak >= 4) (#206) ==="
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-concurrent-requests-absent)
+FRAGMENTS=$(printf '%s' "$RESPONSE" | grep -o 'Held 1500' | wc -l | tr -d ' ')
+PEAK=$(curl -s http://localhost:$TEST_PORT/max-concurrent-requests-peak)
+if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 4 ] \
+   && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: absent key unlimited: peak=$PEAK >= 4, 20/20 fragments delivered"
+else
+    echo "FAIL: absent key did not behave as unlimited (peak=$PEAK, fragments=$FRAGMENTS)"
+    echo "Response: ${RESPONSE:0:300}"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
 
 if [ "${CI:-}" != "true" ]; then
   docker compose down -v

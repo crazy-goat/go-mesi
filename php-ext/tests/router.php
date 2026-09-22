@@ -3,6 +3,24 @@ $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $backend = getenv('MESI_BACKEND_URL') ?: 'http://test-server/';
 $esiIncludeUrl = rtrim($backend, '/') . '/esi';
 
+// Helper for the max_concurrent_requests fixtures (#206): reset the
+// test-server's peak tracker before a parse (function declarations are
+// per-request, safe to redeclare across built-in-server requests).
+function mcr_reset($backend) {
+    @file_get_contents(rtrim($backend, '/') . '/track/reset');
+}
+
+// 20 includes, one DISTINCT /hold label each, so every include reaches
+// the backend's peak-concurrency counter.
+function mcr_input($backend, $label) {
+    $base = rtrim($backend, '/') . '/hold/1500/' . $label;
+    $input = '<p>MCR-TEST</p>';
+    for ($i = 1; $i <= 20; $i++) {
+        $input .= '<esi:include src="' . $base . '-' . $i . '" />';
+    }
+    return $input;
+}
+
 if ($path === '/') {
     header('Content-Type: text/html');
     echo \mesi\parse(
@@ -241,6 +259,73 @@ if ($path === '/max-response-size-zero') {
         $backend,
         ['max_response_size' => 0, 'block_private_ips' => false]
     );
+    return true;
+}
+
+// max_concurrent_requests (#206): 20 x 1500 ms /hold includes against the
+// test-server (Go, CONCURRENT — a single-threaded php -S backend would
+// serialize every hold into a peak of 1 and prove nothing, which is why
+// these fixtures must never be served by this process). Each parse route
+// zeroes the backend's peak tracker first, so the /-peak control route
+// reads the peak OF THAT parse (only /hold touches the tracker, so the
+// other fixtures' traffic cannot pollute it; distinct label sets per
+// route keep every include its own URL). block_private_ips=false so the
+// loopback/container-IP dial is allowed; the timeout key stays ABSENT so
+// the documented 30s default applies — well above the ~10.5 s worst case
+// of 20 x 1500 ms queued 3 at a time (and the mcr-only blob then proves
+// the per-key conditional rendering end to end).
+if ($path === '/max-concurrent-requests-cap') {
+    header('Content-Type: text/html');
+    mcr_reset($backend);
+    echo \mesi\parse_with_config(
+        mcr_input($backend, 'mcr-cap'),
+        5,
+        $backend,
+        ['max_concurrent_requests' => 3, 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// explicit 0: the documented "unlimited" value (the core only installs
+// the admission semaphore when MaxConcurrentRequests > 0) — the fan-out
+// must NOT be throttled (peak >= 4, same bound as the CLI #192 tests:
+// the worker pool is min(NumCPU*4, 20) >= 4 goroutines).
+if ($path === '/max-concurrent-requests-zero') {
+    header('Content-Type: text/html');
+    mcr_reset($backend);
+    echo \mesi\parse_with_config(
+        mcr_input($backend, 'mcr-zero'),
+        5,
+        $backend,
+        ['max_concurrent_requests' => 0, 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// key absent: documented default 0 = UNLIMITED — the value every
+// positional path leaves; the call must stay on the exact backward-
+// compatible behaviour (fan-out peak >= 4).
+if ($path === '/max-concurrent-requests-absent') {
+    header('Content-Type: text/html');
+    mcr_reset($backend);
+    echo \mesi\parse_with_config(
+        mcr_input($backend, 'mcr-absent'),
+        5,
+        $backend,
+        ['block_private_ips' => false]
+    );
+    return true;
+}
+
+// Control endpoint: expose the test-server's recorded peak through this
+// app — docker mode does not publish the test-server's port to the host,
+// so test.sh must be able to read /track/max through the php-ext service
+// (file_get_contents here runs in the outer request, no deadlock: the
+// backend is the Go server, never this single-threaded process).
+if ($path === '/max-concurrent-requests-peak') {
+    header('Content-Type: text/plain');
+    $peak = @file_get_contents(rtrim($backend, '/') . '/track/max');
+    echo $peak === false ? 'unavailable' : $peak;
     return true;
 }
 
