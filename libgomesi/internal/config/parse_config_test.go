@@ -22,6 +22,9 @@ func TestParseConfigFromJSONMalformed(t *testing.T) {
 		{name: "maxConcurrentRequests as string", blob: `{"maxConcurrentRequests":"5"}`},
 		{name: "fractional maxConcurrentRequests", blob: `{"maxConcurrentRequests":1.5}`},
 		{name: "maxConcurrentRequests above int64 range", blob: `{"maxConcurrentRequests":9223372036854775808}`},
+		{name: "maxWorkers as string", blob: `{"maxWorkers":"4"}`},
+		{name: "fractional maxWorkers", blob: `{"maxWorkers":1.5}`},
+		{name: "maxWorkers above int64 range", blob: `{"maxWorkers":9223372036854775808}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,6 +80,14 @@ func TestParseConfigDefaults(t *testing.T) {
 	if err != nil || maxConc != 0 {
 		t.Errorf("ResolvedMaxConcurrentRequests() = (%d, %v), want (0, nil)", maxConc, err)
 	}
+
+	// Absent maxWorkers → 0 (library default NumCPU*4) — byte-identical
+	// to the positional Parse* paths, which leave
+	// EsiParserConfig.MaxWorkers at its zero value.
+	maxWorkers, err := c.ResolvedMaxWorkers()
+	if err != nil || maxWorkers != 0 {
+		t.Errorf("ResolvedMaxWorkers() = (%d, %v), want (0, nil)", maxWorkers, err)
+	}
 }
 
 func TestParseConfigExplicitValues(t *testing.T) {
@@ -90,7 +101,8 @@ func TestParseConfigExplicitValues(t *testing.T) {
 		"requestCtx": {"headers":{"X-A":"1"},"cookies":[{"name":"a","value":"b"}]},
 		"timeoutSeconds": 7,
 		"maxResponseSize": 2048,
-		"maxConcurrentRequests": 5
+		"maxConcurrentRequests": 5,
+		"maxWorkers": 4
 	}`))
 	if err != nil {
 		t.Fatalf("ParseConfigFromJSON = %v", err)
@@ -127,6 +139,11 @@ func TestParseConfigExplicitValues(t *testing.T) {
 	maxConc, err := c.ResolvedMaxConcurrentRequests()
 	if err != nil || maxConc != 5 {
 		t.Errorf("ResolvedMaxConcurrentRequests() = (%d, %v), want (5, nil)", maxConc, err)
+	}
+
+	maxWorkers, err := c.ResolvedMaxWorkers()
+	if err != nil || maxWorkers != 4 {
+		t.Errorf("ResolvedMaxWorkers() = (%d, %v), want (4, nil)", maxWorkers, err)
 	}
 }
 
@@ -317,6 +334,66 @@ func TestParseConfigRangeBoundaries(t *testing.T) {
 			t.Errorf("ResolvedMaxConcurrentRequests() = (%d, %v), want (0, nil)", v, err)
 		}
 	})
+
+	t.Run("maxWorkers accepted max", func(t *testing.T) {
+		c, err := ParseConfigFromJSON([]byte(`{"maxWorkers":999999999}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		v, err := c.ResolvedMaxWorkers()
+		if err != nil || v != MaxMaxWorkers {
+			t.Errorf("ResolvedMaxWorkers() = (%d, %v), want (%d, nil)", v, err, MaxMaxWorkers)
+		}
+	})
+
+	t.Run("maxWorkers max+1 rejected", func(t *testing.T) {
+		c, err := ParseConfigFromJSON([]byte(`{"maxWorkers":1000000000}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		if _, err := c.ResolvedMaxWorkers(); err == nil {
+			t.Fatal("ResolvedMaxWorkers(1000000000) = nil error, want *InvalidMaxWorkersError")
+		}
+		var ierr *InvalidMaxWorkersError
+		if err := func() error { _, e := c.ResolvedMaxWorkers(); return e }(); !errors.As(err, &ierr) {
+			t.Fatalf("error type = %T, want *InvalidMaxWorkersError", err)
+		}
+	})
+
+	t.Run("negative maxWorkers rejected", func(t *testing.T) {
+		// The core silently substitutes runtime.NumCPU()*4 for any
+		// value <= 0 with NO warning (mesi/parser.go — there is no
+		// #329-style warn+normalize here) — libgomesi must fail loud
+		// instead: a malformed explicit value must never pass as the
+		// documented "library default".
+		c, err := ParseConfigFromJSON([]byte(`{"maxWorkers":-1}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		if _, err := c.ResolvedMaxWorkers(); err == nil {
+			t.Fatal("ResolvedMaxWorkers(-1) = nil error, want *InvalidMaxWorkersError")
+		}
+	})
+
+	t.Run("explicit maxWorkers 0 accepted as library default", func(t *testing.T) {
+		// 0 is a legitimate documented value (library default — the
+		// core substitutes NumCPU*4 for <= 0) — it must survive the
+		// round-trip, not be rejected and not be confused with an
+		// absent key (Apache's -1-sentinel merge renders the key only
+		// for an explicitly configured 0, so the distinction has to
+		// hold through the schema too).
+		c, err := ParseConfigFromJSON([]byte(`{"maxWorkers":0}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		if c.MaxWorkers == nil {
+			t.Fatal("MaxWorkers pointer is nil for explicit 0 — key must be distinguishable from absent")
+		}
+		v, err := c.ResolvedMaxWorkers()
+		if err != nil || v != 0 {
+			t.Errorf("ResolvedMaxWorkers() = (%d, %v), want (0, nil)", v, err)
+		}
+	})
 }
 
 func TestParseConfigUnknownKeysIgnored(t *testing.T) {
@@ -375,5 +452,22 @@ func TestParseConfigNullMaxConcurrentRequestsTreatedAsAbsent(t *testing.T) {
 	v, err := c.ResolvedMaxConcurrentRequests()
 	if err != nil || v != 0 {
 		t.Errorf("ResolvedMaxConcurrentRequests() = (%d, %v), want default (0, nil)", v, err)
+	}
+}
+
+func TestParseConfigNullMaxWorkersTreatedAsAbsent(t *testing.T) {
+	// null is the encoding/json "not set" signal — same as an absent
+	// key (documented: null = unset → 0 = library default), NOT an
+	// explicit value that could fail validation.
+	c, err := ParseConfigFromJSON([]byte(`{"maxWorkers":null}`))
+	if err != nil {
+		t.Fatalf("ParseConfigFromJSON = %v", err)
+	}
+	if c.MaxWorkers != nil {
+		t.Fatal("MaxWorkers pointer non-nil for null — key must be distinguishable from absent")
+	}
+	v, err := c.ResolvedMaxWorkers()
+	if err != nil || v != 0 {
+		t.Errorf("ResolvedMaxWorkers() = (%d, %v), want default (0, nil)", v, err)
 	}
 }

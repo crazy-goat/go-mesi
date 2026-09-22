@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Max Workers Pool Test</title>
+</head>
+<body>
+    <h1>Max Workers Pool Test</h1>
+    <!-- Vhost *:8094 sets MesiMaxWorkers 2; the 20 slow includes below must drain through a 2-goroutine worker pool (backend peak tracked by the /hold counters: min(2,20) workers, one fetch at a time each).
+         Used by test.sh (#171). Do not mention the fragment
+         marker text or a literal ESI tag in this comment —
+         test.sh greps the rendered response. -->
+    <esi:include src="http://backend:8000/hold/1500/301" />
+    <esi:include src="http://backend:8000/hold/1500/302" />
+    <esi:include src="http://backend:8000/hold/1500/303" />
+    <esi:include src="http://backend:8000/hold/1500/304" />
+    <esi:include src="http://backend:8000/hold/1500/305" />
+    <esi:include src="http://backend:8000/hold/1500/306" />
+    <esi:include src="http://backend:8000/hold/1500/307" />
+    <esi:include src="http://backend:8000/hold/1500/308" />
+    <esi:include src="http://backend:8000/hold/1500/309" />
+    <esi:include src="http://backend:8000/hold/1500/310" />
+    <esi:include src="http://backend:8000/hold/1500/311" />
+    <esi:include src="http://backend:8000/hold/1500/312" />
+    <esi:include src="http://backend:8000/hold/1500/313" />
+    <esi:include src="http://backend:8000/hold/1500/314" />
+    <esi:include src="http://backend:8000/hold/1500/315" />
+    <esi:include src="http://backend:8000/hold/1500/316" />
+    <esi:include src="http://backend:8000/hold/1500/317" />
+    <esi:include src="http://backend:8000/hold/1500/318" />
+    <esi:include src="http://backend:8000/hold/1500/319" />
+    <esi:include src="http://backend:8000/hold/1500/320" />
+    <p>After pool-2 include</p>
+</body>
+</html>

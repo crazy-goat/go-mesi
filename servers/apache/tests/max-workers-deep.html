@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Max Workers Deep Nesting Test</title>
+</head>
+<body>
+    <h1>Max Workers Deep Nesting Test</h1>
+    <!-- Vhost *:8094 sets MesiMaxWorkers 2; the four-level nested chain below (mw-lvl-1 -> mw-lvl-2 -> mw-lvl-3 -> mw-lvl-4) must be fully expanded with every level marker present and in order.
+         Used by test.sh (#171). Do not mention the level marker text or a literal ESI tag in this comment — test.sh greps the rendered response. -->
+    <esi:include src="http://backend:8000/mw-lvl-1.html" />
+    <p>After deep include</p>
+</body>
+</html>

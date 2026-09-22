@@ -24,9 +24,12 @@ const DefaultMaxDepth = 5
 // maxResponseSize 0 (unlimited — the value every positional Parse*
 // entry point leaves in EsiParserConfig.MaxResponseSize, NOT the
 // 10 MB of mesi.CreateDefaultConfig, which only applies to Go
-// callers using that constructor), and maxConcurrentRequests 0
+// callers using that constructor), maxConcurrentRequests 0
 // (unlimited — likewise the value every positional Parse* entry
-// point leaves in EsiParserConfig.MaxConcurrentRequests).
+// point leaves in EsiParserConfig.MaxConcurrentRequests), and
+// maxWorkers 0 (the library default runtime.NumCPU()*4 applied Go-side
+// when the value is <= 0 — likewise the value every positional
+// Parse* entry point leaves in EsiParserConfig.MaxWorkers).
 //
 // Unknown keys are ignored (forward compatibility — a newer caller
 // must be able to talk to an older libgomesi). Type mismatches and
@@ -81,6 +84,21 @@ type ParseConfig struct {
 	// than silently behaving like 0 (the core only warns and
 	// normalizes them — #329 — libgomesi fails loud instead).
 	MaxConcurrentRequests *int `json:"maxConcurrentRequests"`
+	// MaxWorkers caps the size of the include worker pool that drains
+	// ESI jobs within one MESIParse call (the min(MaxWorkers, jobs)
+	// goroutine pool mesi/parser.go spawns per parse level). Pointer so
+	// an explicit 0 — a legitimate documented value meaning "library
+	// default", see the core's "Zero means runtime.NumCPU()*4" — is
+	// representable as a present key, matching the conditional
+	// rendering contract of the sibling keys (both an absent key and an
+	// explicit 0 resolve to 0, keeping the key's absence
+	// byte-identical to the positional Parse* paths, which leave
+	// EsiParserConfig.MaxWorkers at its zero value). Validated against
+	// [0, MaxMaxWorkers]; negatives are rejected rather than silently
+	// behaving like the default (the core substitutes NumCPU*4 for any
+	// value <= 0 with NO warning, mesi/parser.go — libgomesi fails
+	// loud instead).
+	MaxWorkers *int `json:"maxWorkers"`
 }
 
 // ParseConfigFromJSON decodes the ParseJson config blob. Malformed
@@ -149,6 +167,24 @@ func (c ParseConfig) ResolvedMaxConcurrentRequests() (int, error) {
 		return 0, err
 	}
 	return *c.MaxConcurrentRequests, nil
+}
+
+// ResolvedMaxWorkers returns the validated per-parse worker-pool cap:
+// the explicit value when set (0 = library default — the core
+// substitutes runtime.NumCPU()*4 for values <= 0, mesi/parser.go),
+// otherwise 0 (likewise the library default, byte-identical to every
+// positional Parse* entry point, which leaves
+// EsiParserConfig.MaxWorkers at its zero value). An out-of-range
+// explicit value (including negatives) errors — it is never silently
+// replaced by the default.
+func (c ParseConfig) ResolvedMaxWorkers() (int, error) {
+	if c.MaxWorkers == nil {
+		return 0, nil
+	}
+	if err := ValidateMaxWorkers(*c.MaxWorkers); err != nil {
+		return 0, err
+	}
+	return *c.MaxWorkers, nil
 }
 
 // ResolvedBlockPrivateIPs returns the effective SSRF dial-time block:

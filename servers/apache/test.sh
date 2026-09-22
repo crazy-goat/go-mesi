@@ -757,6 +757,124 @@ else
 fi
 rm -f /tmp/mesi-mcr-unset.html
 
+# --- MesiMaxWorkers tests (#171) ---
+# Observable for this directive is the DRAIN POOL, not a semaphore:
+# MESIParse spawns min(MaxWorkers, job count) goroutines
+# (mesi/parser.go) and each processes one include at a time, so on a
+# flat page the backend peak-concurrency counter can never exceed the
+# pool size — with MesiMaxWorkers 2 that is a hard peak <= 2 (a broken
+# route that never renders the "maxWorkers" key would use the library
+# default pool min(NumCPU*4, 20) >= 4 and show peak >= 4 instead).
+# Fan-out floor for the "library default" cases (explicit 0 / unset):
+# the pool is min(NumCPU*4, 20) goroutines, i.e. at least 4 in any
+# container — with 1500 ms holds an unthrottled parse must show
+# peak >= 4 (same bound the #170 tests rely on). Each page fans out to
+# 20 DISTINCT /hold labels (301-320, 401-420, 501-520) so every
+# include reaches the backend (duplicate URLs would be served from the
+# in-process cache, #174) and no label collides with the #170 tests
+# (cache TTL 60 s).
+
+echo "=== Test 39: MesiMaxWorkers 2 — deep-nesting stress completes correctly (#171) ==="
+# The issue's AC: a four-level nested chain (max-workers-deep.html ->
+# mw-lvl-1 -> mw-lvl-2 -> mw-lvl-3 -> mw-lvl-4) parsed under a
+# 2-goroutine cap must be fully expanded. The ordered marker assertion
+# (all seven markers — 3 STARTs, the level-4 body and 3 ENDs — in
+# nesting order after flattening newlines) proves
+# every level was fetched AND re-parsed; a raw tag left behind would
+# fail the tag check.
+curl -s --max-time 60 -o /tmp/mesi-mw-deep.html http://localhost:8094/max-workers-deep.html
+tr -d '\n' < /tmp/mesi-mw-deep.html > /tmp/mesi-mw-deep.flat
+if grep -q "MW-LVL-1-START.*MW-LVL-2-START.*MW-LVL-3-START.*MW-LVL-4-BODY.*MW-LVL-3-END.*MW-LVL-2-END.*MW-LVL-1-END" /tmp/mesi-mw-deep.flat \
+    && grep -q "After deep include" /tmp/mesi-mw-deep.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mw-deep.html; then
+    echo "PASS: four-level nested chain fully expanded under MesiMaxWorkers 2 (all level markers present, in order, no raw tags)"
+else
+    echo "FAIL: MesiMaxWorkers 2 did not complete the deep-nesting stress correctly"
+    head -c 500 /tmp/mesi-mw-deep.html
+    rm -f /tmp/mesi-mw-deep.html /tmp/mesi-mw-deep.flat
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-mw-deep.html /tmp/mesi-mw-deep.flat
+
+echo "=== Test 40: MesiMaxWorkers 2 — 20 includes drain through a 2-goroutine pool (#171) ==="
+# 8094 sets ONLY MesiMaxWorkers 2 (proving the routing condition
+# sends a maxworkers-only config through ParseJson with the
+# timeout/max-response-size/max-concurrent-requests keys absent).
+# Assertions: peak == 2 — the upper bound is the hard pool invariant
+# (workerCount = min(2, 20), each goroutine fetches one include at a
+# time, mesi/parser.go; an unrouted parse would reach >= 4 and fail
+# this bound) and the lower bound proves the pool has both slots
+# working in parallel rather than serializing to 1 (both goroutines
+# grab their first buffered job within microseconds while each
+# backend hold lasts 1500 ms). All 20 fragments must arrive: includes
+# beyond the pool are queued in the jobs channel, not dropped.
+curl -s http://localhost:18080/backend/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mw-pool.html http://localhost:8094/max-workers-pool.html
+PEAK=$(curl -s http://localhost:18080/backend/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mw-pool.html | wc -l | tr -d ' ')
+if [ "$PEAK" -eq 2 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After pool-2 include" /tmp/mesi-mw-pool.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mw-pool.html; then
+    echo "PASS: peak concurrent fetches $PEAK == 2 (drain-pool bound), all 20 fragments queued and delivered"
+else
+    echo "FAIL: MesiMaxWorkers 2 did not bound the drain pool (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mw-pool.html
+    rm -f /tmp/mesi-mw-pool.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-mw-pool.html
+
+echo "=== Test 41: MesiMaxWorkers 0 — explicit library default, pool unthrottled (#171) ==="
+# 8095 sets an explicit 0: the value must reach the core as
+# "library default" (ParseJson "maxWorkers":0 — an explicit 0
+# rejected Go-side would make ParseJson return NULL and the request
+# would fail closed with 500). Peak >= 4 (pool min(NumCPU*4, 20))
+# distinguishes this from the pool-2 vhost; the fan-out floor above
+# explains the bound.
+curl -s http://localhost:18080/backend/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mw-zero.html http://localhost:8095/max-workers-zero.html
+PEAK=$(curl -s http://localhost:18080/backend/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mw-zero.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 4 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After explicit-zero include" /tmp/mesi-mw-zero.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mw-zero.html; then
+    echo "PASS: peak concurrent fetches $PEAK >= 4 under explicit MesiMaxWorkers 0 (library default), all 20 fragments delivered"
+else
+    echo "FAIL: MesiMaxWorkers 0 did not behave as the library default (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mw-zero.html
+    rm -f /tmp/mesi-mw-zero.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-mw-zero.html
+
+echo "=== Test 42: MesiMaxWorkers unset — backward compat, pool unthrottled (#171) ==="
+# The default vhost (*:80) never sets the directive → the legacy parse
+# path (no ParseJson key rendered) with MaxWorkers left at 0 →
+# library default NumCPU*4, byte-identical to pre-#171 behaviour.
+# Peak >= 4 pins that unset never throttles the pool.
+curl -s http://localhost:18080/backend/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mw-unset.html http://localhost:18080/max-workers-unset.html
+PEAK=$(curl -s http://localhost:18080/backend/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mw-unset.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 4 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After unset-maxworkers include" /tmp/mesi-mw-unset.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mw-unset.html; then
+    echo "PASS: unset MesiMaxWorkers stayed at the library default — peak $PEAK >= 4, all 20 fragments delivered"
+else
+    echo "FAIL: unset MesiMaxWorkers did not behave as the library default (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mw-unset.html
+    rm -f /tmp/mesi-mw-unset.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-mw-unset.html
+
 docker compose down
 
 echo ""

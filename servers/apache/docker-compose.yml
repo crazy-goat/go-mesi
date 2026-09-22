@@ -24,6 +24,9 @@ services:
       # MesiMaxConcurrentRequests 0 (#170).
       - "8092:8092"
       - "8093:8093"
+      # 8094 = MesiMaxWorkers 2, 8095 = MesiMaxWorkers 0 (#171).
+      - "8094:8094"
+      - "8095:8095"
     environment:
       - MESI_FORCE_FLATTEN_ERROR=${MESI_FORCE_FLATTEN_ERROR:-}
     volumes:
