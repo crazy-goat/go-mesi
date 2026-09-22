@@ -85,6 +85,71 @@ func countHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(strconv.Itoa(n)))
 }
 
+// Peak-concurrency tracker for the CLI -max-concurrent-requests tests
+// (#192), mirroring servers/apache/tests/server.py's /hold + /track
+// endpoints (#170). holdHandler increments trackCurrent (guarded by
+// trackMu) BEFORE sleeping, records trackPeak, sleeps, then decrements —
+// so /track/max is the maximum number of /hold requests that had
+// STARTED-but-not-finished at any one time: a deterministic observable
+// instead of a wall-clock assertion. Only /hold touches these counters
+// and each test uses a fresh set of distinct labels (the CLI's cache is
+// off by default, so repeats would not be deduped anyway), so no other
+// traffic can pollute the reading.
+var (
+	trackMu      sync.Mutex
+	trackCurrent int
+	trackPeak    int
+)
+
+// holdHandler serves /hold/<millis>/<label>: it registers the request in
+// the peak-concurrency tracker, holds for <millis>, then returns a
+// "<label> Held <millis>" fragment body. Distinct label values give every
+// <esi:include> of a page its own URL so all of them reach this counter.
+func holdHandler(w http.ResponseWriter, r *http.Request) {
+	millis, err := strconv.Atoi(r.PathValue("millis"))
+	if err != nil || millis < 0 || millis > 60000 {
+		http.Error(w, "invalid hold duration", http.StatusBadRequest)
+		return
+	}
+	label := r.PathValue("label")
+	trackMu.Lock()
+	trackCurrent++
+	if trackCurrent > trackPeak {
+		trackPeak = trackCurrent
+	}
+	trackMu.Unlock()
+	defer func() {
+		trackMu.Lock()
+		trackCurrent--
+		trackMu.Unlock()
+	}()
+	time.Sleep(time.Duration(millis) * time.Millisecond)
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(label + " Held " + strconv.Itoa(millis)))
+}
+
+// trackHandler serves /track/reset (zero both counters) and /track/max
+// (the recorded peak) as text/plain control endpoints.
+func trackHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.PathValue("action") {
+	case "reset":
+		trackMu.Lock()
+		trackCurrent = 0
+		trackPeak = 0
+		trackMu.Unlock()
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("reset"))
+	case "max":
+		trackMu.Lock()
+		peak := strconv.Itoa(trackPeak)
+		trackMu.Unlock()
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte(peak))
+	default:
+		http.NotFound(w, r)
+	}
+}
+
 func main() {
 	srv := &http.Server{Addr: ":18080"}
 
@@ -97,6 +162,8 @@ func main() {
 	http.HandleFunc("/returnString/{data}", returnString)
 	http.HandleFunc("/bytes/{size}", bytesHandler)
 	http.HandleFunc("/count/{name}", countHandler)
+	http.HandleFunc("/hold/{millis}/{label}", holdHandler)
+	http.HandleFunc("/track/{action}", trackHandler)
 
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("ListenAndServe(): %v", err)

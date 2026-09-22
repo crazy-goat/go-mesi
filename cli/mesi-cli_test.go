@@ -765,3 +765,139 @@ func TestCLI_maxResponseSizeFlagValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateMaxConcurrentRequests(t *testing.T) {
+	// Boundary classes per project rules: accepted 0 / 1 / typical / max,
+	// rejected negative / large negative / max+1 (1000000000 — the
+	// #170 transport-derived 9-digit cap, C int / parse_nonneg_int).
+	rangeText := fmt.Sprintf("[0, %d]", maxMaxConcurrentRequests)
+	tests := []struct {
+		name    string
+		value   int
+		wantErr bool
+	}{
+		{"zero (documented unlimited) accepted", 0, false},
+		{"one accepted", 1, false},
+		{"typical 5 accepted", 5, false},
+		{"accepted max (999999999)", maxMaxConcurrentRequests, false},
+		{"rejected negative", -1, true},
+		{"rejected large negative", -1000000, true},
+		{"rejected max+1 (1000000000)", maxMaxConcurrentRequests + 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMaxConcurrentRequests(tt.value)
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("validateMaxConcurrentRequests(%d) = %v, want nil", tt.value, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateMaxConcurrentRequests(%d) = nil, want error", tt.value)
+			}
+			// The error must name the flag and the valid range.
+			if !strings.Contains(err.Error(), "max-concurrent-requests") {
+				t.Errorf("error %q does not name the flag", err)
+			}
+			if !strings.Contains(err.Error(), rangeText) {
+				t.Errorf("error %q does not contain the valid range %q", err, rangeText)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("%d", tt.value)) {
+				t.Errorf("error %q does not contain the offending value", err)
+			}
+		})
+	}
+}
+
+func TestCLI_maxConcurrentRequestsFlagInHelp(t *testing.T) {
+	stdout, stderr, _ := runCLI(t, "-h")
+	output := stdout + stderr
+	if !strings.Contains(output, "-max-concurrent-requests") {
+		t.Errorf("expected -max-concurrent-requests in help output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(output, "0 = unlimited") {
+		t.Errorf("expected '0 = unlimited' in help output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	// Pin the default: the flag package only prints "(default …)" for
+	// non-zero defaults, so the ABSENCE of "(default" on this flag's usage
+	// line proves the default is 0 (= unlimited, byte-identical to the
+	// pre-flag behaviour) — unlike -max-response-size, which pins
+	// "(default 10485760)".
+	lines := strings.Split(output, "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, "-max-concurrent-requests") {
+			continue
+		}
+		if i+1 >= len(lines) {
+			t.Fatalf("no usage line after %q in help output", line)
+		}
+		usage := lines[i+1]
+		if strings.Contains(usage, "(default") {
+			t.Errorf("expected default 0 (no \"(default …)\" suffix) on the usage line, got %q", usage)
+		}
+		return
+	}
+	t.Errorf("-max-concurrent-requests not found line-wise in help output")
+}
+
+func TestCLI_maxConcurrentRequestsFlagValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name     string
+		arg      string
+		wantExit int
+		wantErrs []string // asserted against stderr+stdout when non-empty
+	}{
+		{name: "accepted zero (unlimited)", arg: "-max-concurrent-requests=0", wantExit: 0},
+		{name: "accepted one", arg: "-max-concurrent-requests=1", wantExit: 0},
+		{name: "accepted typical", arg: "-max-concurrent-requests=5", wantExit: 0},
+		{name: "accepted max (999999999)", arg: "-max-concurrent-requests=999999999", wantExit: 0},
+		{
+			name: "rejected negative", arg: "-max-concurrent-requests=-1", wantExit: 1,
+			wantErrs: []string{"max-concurrent-requests", "999999999", "-1"},
+		},
+		{
+			name: "rejected large negative", arg: "-max-concurrent-requests=-1000000", wantExit: 1,
+			wantErrs: []string{"max-concurrent-requests", "999999999", "-1000000"},
+		},
+		{
+			// 1000000000 == maxMaxConcurrentRequests+1: the #170
+			// transport-derived 9-digit cap.
+			name: "rejected max+1 (1000000000)", arg: "-max-concurrent-requests=1000000000", wantExit: 1,
+			wantErrs: []string{"max-concurrent-requests", "999999999"},
+		},
+		{
+			name: "rejected above int64 (flag pkg parse error)", arg: "-max-concurrent-requests=9223372036854775808", wantExit: 2,
+			wantErrs: []string{"max-concurrent-requests"},
+		},
+		{
+			name: "rejected non-integer (flag pkg parse error)", arg: "-max-concurrent-requests=abc", wantExit: 2,
+			wantErrs: []string{"max-concurrent-requests"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, stderr, exitCode := runCLI(t, tt.arg, inputFile)
+			if exitCode != tt.wantExit {
+				t.Fatalf("exit code = %d, want %d (stdout=%q stderr=%q)", exitCode, tt.wantExit, stdout, stderr)
+			}
+			if tt.wantExit == 0 {
+				if !strings.Contains(stdout, "Hello") {
+					t.Errorf("expected 'Hello' in output, got %q", stdout)
+				}
+				return
+			}
+			out := stderr + stdout
+			for _, want := range tt.wantErrs {
+				if !strings.Contains(out, want) {
+					t.Errorf("expected %q in error output, got stdout=%q stderr=%q", want, stdout, stderr)
+				}
+			}
+		})
+	}
+}
