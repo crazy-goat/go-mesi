@@ -235,7 +235,11 @@ static int mesi_appendf(char *dst, size_t cap, size_t *pos, const char *fmt, ...
  * ParseJson #167).
  *
  * php-ext links libgomesi directly (no dlopen at startup like Apache), so
- * the symbol is resolved lazily via dladdr(&Parse) — &Parse is a hard link
+ * the symbol is resolved once at module init (PHP_MINIT) via
+ * dladdr(&Parse) — MINIT runs single-threaded before any request thread,
+ * so the check-then-set below is race-free even in ZTS builds, and the
+ * lazy call site in the request path is a no-op afterwards. &Parse is a
+ * hard link
  * dependency present in every libgomesi version, dladdr returns the exact
  * file backing it, and dlopen() of that same file returns the ALREADY
  * loaded library (never a second copy running a second Go runtime). Against
@@ -1362,7 +1366,7 @@ ctx_done: ;
      * default URL, allowed hosts, SSRF flags, optional cache key template
      * + request context), so behaviour matches the positional path exactly
      * except for the timeout (Apache #167 used_parse_json pattern). When
-     * the loaded libgomesi predates ParseJson (resolved lazily, see
+     * the loaded libgomesi predates ParseJson (resolved at module init, see
      * mesi_resolve_parse_json), fall through to the positional path with
      * an E_WARNING — the timeout is ignored (default 30s applies), never a
      * crash and never a silently wrong config. An absent `timeout` key
@@ -1427,6 +1431,11 @@ ctx_done: ;
 
 PHP_MINIT_FUNCTION(mesi) {
     InitHTTPClient(0);
+    /* Resolve the optional ParseJson symbol here rather than lazily in
+     * the request path: MINIT runs once, single-threaded, before any
+     * request thread exists — a lazy check-then-set on the three globals
+     * would be a data race under ZTS (multi-threaded SAPIs). */
+    mesi_resolve_parse_json();
     return SUCCESS;
 }
 
@@ -1434,6 +1443,15 @@ PHP_MSHUTDOWN_FUNCTION(mesi) {
     FreeHTTPClient();
     g_http_shared_client = 0;
     FreeCache();
+    /* Drop the extra dlopen ref held by the ParseJson lookup (the
+     * DT_NEEDED link dependency keeps libgomesi mapped regardless) and
+     * reset the resolver so a subsequent module load re-resolves. */
+    if (g_parse_json_handle != NULL) {
+        dlclose(g_parse_json_handle);
+        g_parse_json_handle = NULL;
+    }
+    g_parse_json = NULL;
+    g_parse_json_resolved = 0;
     /* g_cache_state will be re-initialised on next module load. */
     g_cache_state.backend[0] = '\0';
     g_cache_state.size = -1;
