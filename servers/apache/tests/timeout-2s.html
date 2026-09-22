@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Timeout 2s Test</title>
+</head>
+<body>
+    <h1>Timeout 2s Test</h1>
+    <!-- Backend sleeps 5s; vhost *:8087 sets MesiTimeout 2, so the
+         fetch budget must abort at ~2s and render nothing (empty
+         IncludeErrorMarker). Used by test.sh (#167). -->
+    <esi:include src="http://backend:8000/sleep/5/timeout2" />
+    <p>After timeout include</p>
+</body>
+</html>

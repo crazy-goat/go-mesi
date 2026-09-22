@@ -87,6 +87,39 @@ MesiCacheTTL 60
   expanded). `1` processes one include level (inner ESI is not
   processed). Negatives, empty values, non-digits, decimals, and
   values above `10000` are rejected at config load.
+- `MesiTimeout N` — Global per-include ESI fetch budget in seconds
+  (`RSRC_CONF`, server context; example: `MesiTimeout 10` next to
+  `EnableMesi On`). Unset (default) uses `30` — libgomesi's
+  historical hardcoded value, so omitting the directive is
+  byte-identical to previous behaviour. Must be an integer in
+  `[1, 86400]` (`24h`; matches libgomesi's `config.MaxTimeoutSeconds`
+  and the `MesiCacheTTL` ceiling). **`0` is rejected at config
+  load** — it does NOT mean "no timeout": the core fails every include
+  immediately when `Timeout <= 0` (`mesi/fetch.go` →
+  `ErrTimeBudgetExceeded`), and Caddy likewise rejects non-positive
+  `timeout` ("timeout must be positive"); an unlimited budget would
+  also pin a goroutine per queued include for as long as a backend
+  hangs (deliberately no "unlimited" mode). Parsed via the existing
+  `parse_nonneg_int` helper — negatives (`-1`), `0`, empty values,
+  non-digits (`abc`), trailing garbage (`3foo`), decimals (`2.5`) and
+  overflow are rejected with an error naming the directive (no silent
+  `atoi` coercion). **Merge:** a vhost's value overrides the global
+  one; unset vhosts inherit it (`-1` sentinel, same rule as
+  `MesiMaxDepth`). The value travels to libgomesi through the new
+  `ParseJson` entry point as `{"timeoutSeconds":N}` in **seconds**
+  (nanosecond conversion happens Go-side); requires a `libgomesi.so`
+  exporting `ParseJson` — older builds log `MesiTimeout set but
+  libgomesi lacks ParseJson; MesiTimeout ignored (default 30s timeout
+  applies)` and keep the 30s default. **SLA note:** the budget bounds
+  every fetch of a single parse — redirect hops, body reads and the
+  admission-control waits share it — so worst-case ESI latency is
+  ≈ `MesiTimeout` plus render time; failed includes render the empty
+  `IncludeErrorMarker` (or the tag's fallback body).
+
+  ```apache
+  EnableMesi On
+  MesiTimeout 10
+  ```
 - `MesiAllowedHosts host1 host2 …` — Space-separated list of hostnames
   allowed in `<esi:include src=…>`. Matches `isURLSafe` from libgomesi.
 - `MesiBlockPrivateIPs on|off` — Enable/disable SSRF dial-time private-IP
@@ -187,7 +220,13 @@ docker compose up --build
 5. Calls `InitCache(...)` from libgomesi once per worker process when
    `MesiCacheBackend memory` is configured (TTL/size from
    `MesiCacheTTL`/`MesiCacheSize`).
-6. Processes the buffered body through `libgomesi.ParseWithConfigCtx()` when `MesiCacheKeyTemplate` is set (headers/cookies from the incoming request are serialised as JSON context for `mesi.BuildCacheKey`), otherwise through `libgomesi.ParseWithConfigEx()`
+6. Processes the buffered body through `libgomesi.ParseJson()` when
+   `MesiTimeout` is set (the JSON blob carries the timeout plus depth,
+   base URL, SSRF flags and, when configured, the cache key template +
+   request context), through `libgomesi.ParseWithConfigCtx()` when only
+   `MesiCacheKeyTemplate` is set (headers/cookies from the incoming
+   request are serialised as JSON context for `mesi.BuildCacheKey`),
+   otherwise through `libgomesi.ParseWithConfigEx()`
    (or `ParseWithConfig()` on older `libgomesi.so` builds without the
    extended entry point). Repeated `<esi:include>` URLs within TTL are
    served from the cache.

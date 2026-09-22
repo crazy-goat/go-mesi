@@ -423,6 +423,188 @@ int main(void) {
         if (r) FreeString(r);
     }
 
+    /* ---- #167: ParseJson entry point + timeoutSeconds bounds ----
+     *
+     * ParseJson takes a JSON config blob instead of positional args.
+     * Absent keys resolve to the documented defaults (byte-identical to
+     * the positional entry points — absent timeoutSeconds is the
+     * historical 30s). Malformed JSON, type mismatches and out-of-range
+     * values must return NULL (fail loud, never substitute a default);
+     * 0 is rejected because the core fails every include with
+     * ErrTimeBudgetExceeded when Timeout <= 0 (mesi/fetch.go) — it is
+     * not "no timeout".
+     */
+    {
+        printf("Test 23: ParseJson NULL config uses defaults (non-NULL)\n");
+        char *r = ParseJson("plain-ok", NULL);
+        if (r == NULL) {
+            printf("  FAIL: ParseJson(plain-ok, NULL) returned NULL\n");
+            failed++;
+        } else if (strcmp(r, "plain-ok") != 0) {
+            printf("  FAIL: expected 'plain-ok', got: %s\n", r);
+            failed++;
+        } else {
+            printf("  PASS: NULL config parsed with defaults\n");
+        }
+        if (r) FreeString(r);
+    }
+    {
+        printf("Test 23b: ParseJson empty config uses defaults (non-NULL)\n");
+        char *r = ParseJson("plain-ok", "");
+        if (r == NULL || strcmp(r, "plain-ok") != 0) {
+            printf("  FAIL: empty config must behave like {}, got: %s\n", r ? r : "NULL");
+            failed++;
+        } else {
+            printf("  PASS: empty config parsed with defaults\n");
+        }
+        if (r) FreeString(r);
+    }
+    {
+        printf("Test 23c: ParseJson timeoutSeconds 10 accepted (non-NULL)\n");
+        char *r = ParseJson("plain-ok", "{\"timeoutSeconds\":10}");
+        if (r == NULL) {
+            printf("  FAIL: timeoutSeconds 10 must be accepted\n");
+            failed++;
+        } else {
+            printf("  PASS: timeoutSeconds 10 accepted\n");
+        }
+        if (r) FreeString(r);
+    }
+    {
+        printf("Test 23d: ParseJson timeoutSeconds 0 rejected (NULL)\n");
+        /* Boundary: 0 would make EVERY include fail immediately in the
+         * core — it is not an "unlimited" timeout (AC deviation from
+         * issue #167's "0 = no timeout" proposal, verified in
+         * mesi/fetch.go). */
+        char *r = ParseJson("plain-ok", "{\"timeoutSeconds\":0}");
+        if (r != NULL) {
+            printf("  FAIL: timeoutSeconds 0 must return NULL, got: %s\n", r);
+            FreeString(r);
+            failed++;
+        } else {
+            printf("  PASS: timeoutSeconds 0 returned NULL\n");
+        }
+    }
+    {
+        printf("Test 23e: ParseJson timeoutSeconds -1 rejected (NULL)\n");
+        char *r = ParseJson("plain-ok", "{\"timeoutSeconds\":-1}");
+        if (r != NULL) {
+            printf("  FAIL: timeoutSeconds -1 must return NULL, got: %s\n", r);
+            FreeString(r);
+            failed++;
+        } else {
+            printf("  PASS: timeoutSeconds -1 returned NULL\n");
+        }
+    }
+    {
+        printf("Test 23f: ParseJson timeoutSeconds 86400 accepted (non-NULL)\n");
+        char *r = ParseJson("plain-ok", "{\"timeoutSeconds\":86400}");
+        if (r == NULL) {
+            printf("  FAIL: timeoutSeconds 86400 (max) must be accepted\n");
+            failed++;
+        } else {
+            printf("  PASS: timeoutSeconds 86400 accepted\n");
+        }
+        if (r) FreeString(r);
+    }
+    {
+        printf("Test 23g: ParseJson timeoutSeconds 86401 rejected (NULL)\n");
+        char *r = ParseJson("plain-ok", "{\"timeoutSeconds\":86401}");
+        if (r != NULL) {
+            printf("  FAIL: timeoutSeconds 86401 must return NULL, got: %s\n", r);
+            FreeString(r);
+            failed++;
+        } else {
+            printf("  PASS: timeoutSeconds 86401 returned NULL\n");
+        }
+    }
+    {
+        printf("Test 23h: ParseJson timeoutSeconds type mismatch rejected (NULL)\n");
+        /* A string where an int belongs must fail loud — never be
+         * coerced or defaulted. */
+        char *r = ParseJson("plain-ok", "{\"timeoutSeconds\":\"10\"}");
+        if (r != NULL) {
+            printf("  FAIL: timeoutSeconds \"10\" must return NULL, got: %s\n", r);
+            FreeString(r);
+            failed++;
+        } else {
+            printf("  PASS: timeoutSeconds \"10\" returned NULL\n");
+        }
+    }
+    {
+        printf("Test 23i: ParseJson malformed JSON rejected (NULL)\n");
+        char *r = ParseJson("plain-ok", "{\"maxDepth\":");
+        if (r != NULL) {
+            printf("  FAIL: malformed JSON must return NULL, got: %s\n", r);
+            FreeString(r);
+            failed++;
+        } else {
+            printf("  PASS: malformed JSON returned NULL\n");
+        }
+    }
+    {
+        printf("Test 23j: ParseJson maxDepth bounds enforced (0 passthrough, 10001 NULL)\n");
+        char *r = ParseJson("plain-ok", "{\"maxDepth\":0}");
+        if (r == NULL || strcmp(r, "plain-ok") != 0) {
+            printf("  FAIL: maxDepth 0 passthrough broken, got: %s\n", r ? r : "NULL");
+            failed++;
+        } else {
+            printf("  PASS: maxDepth 0 accepted\n");
+        }
+        if (r) FreeString(r);
+        r = ParseJson("plain-ok", "{\"maxDepth\":10001}");
+        if (r != NULL) {
+            printf("  FAIL: maxDepth 10001 must return NULL, got: %s\n", r);
+            FreeString(r);
+            failed++;
+        } else {
+            printf("  PASS: maxDepth 10001 returned NULL\n");
+        }
+    }
+    {
+        printf("Test 23k: ParseJson ignores unknown keys (non-NULL)\n");
+        char *r = ParseJson("plain-ok", "{\"futureOption\":true,\"timeoutSeconds\":5}");
+        if (r == NULL) {
+            printf("  FAIL: unknown keys must not fail the parse\n");
+            failed++;
+        } else {
+            printf("  PASS: unknown keys ignored\n");
+        }
+        if (r) FreeString(r);
+    }
+    {
+        /* End-to-end: the blob must actually reach the core — with
+         * blockPrivateIPs=false the loopback fragment fetch succeeds
+         * and the rendered body proves the parse ran with the
+         * supplied config (not some default). */
+        printf("Test 23l: ParseJson full config fetches a loopback fragment\n");
+        frag_server_t srv;
+        if (frag_server_start(&srv, 1) != 0) {
+            printf("  FAIL: could not start fragment server\n");
+            failed++;
+        } else {
+            char src[256];
+            snprintf(src, sizeof(src),
+                     "<esi:include src=\"http://127.0.0.1:%d/frag\" />", srv.port);
+            char cfg[256];
+            snprintf(cfg, sizeof(cfg),
+                     "{\"maxDepth\":5,\"defaultUrl\":\"http://127.0.0.1/\","
+                     "\"blockPrivateIPs\":false,\"timeoutSeconds\":10}");
+            char *r = ParseJson(src, cfg);
+            if (r == NULL) {
+                printf("  FAIL: ParseJson returned NULL\n");
+                failed++;
+            } else if (strstr(r, "FRAGMENT-OK") == NULL) {
+                printf("  FAIL: blob config did not reach the core, got: %s\n", r);
+                failed++;
+            } else {
+                printf("  PASS: ParseJson fetched the fragment with the blob config\n");
+            }
+            if (r) FreeString(r);
+            frag_server_stop(&srv);
+        }
+    }
+
     /* ---- #196: shared-client yield for allowPrivateIPsForAllowedHosts ----
      *
      * The PHP extension (and any C consumer) runs with the shared HTTP

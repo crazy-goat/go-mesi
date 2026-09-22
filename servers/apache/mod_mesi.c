@@ -19,6 +19,7 @@ typedef char *(*ParseFunc)(char *, int, char *);
 typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
 typedef char *(*ParseWithConfigExFunc)(char *, int, char *, char *, int, int);
 typedef char *(*ParseWithConfigCtxFunc)(char *, int, char *, char *, int, int, char *, char *);
+typedef char *(*ParseJsonFunc)(char *, char *);
 typedef void (*FreeFunc)(char *);
 typedef int (*InitCacheFunc)(char *, int, int);
 typedef int (*InitCacheWithConfigFunc)(char *, int, int, char *);
@@ -31,6 +32,7 @@ static ParseFunc EsiParse = NULL;
 static ParseWithConfigFunc EsiParseWithConfig = NULL;
 static ParseWithConfigExFunc EsiParseWithConfigEx = NULL;
 static ParseWithConfigCtxFunc EsiParseWithConfigCtx = NULL;
+static ParseJsonFunc EsiParseJson = NULL;
 static FreeFunc EsiFreeString = NULL;
 static InitCacheFunc EsiInitCache = NULL;
 static InitCacheWithConfigFunc EsiInitCacheWithConfig = NULL;
@@ -103,6 +105,14 @@ typedef struct {
     // is valid passthrough (no ESI fetch). Range [0, MESI_MAX_MAX_DEPTH]
     // matches mesi.MaxMaxDepth / Caddy.
     int max_depth;  // -1=unset, >=0 = configured
+    // Global per-include fetch budget in seconds (#167). -1 = unset
+    // (filter uses MESI_DEFAULT_TIMEOUT_SECONDS — 30, libgomesi's
+    // historical hardcoded value). Range [1, MESI_MAX_TIMEOUT_SECONDS];
+    // 0 is REJECTED at config load: the core treats Timeout <= 0 as
+    // "budget already exhausted" and fails every include immediately
+    // with ErrTimeBudgetExceeded (mesi/fetch.go) — it does NOT mean
+    // "no timeout".
+    int timeout_seconds;  // -1=unset, >=1 = configured
 } mesi_config;
 
 // Default memory cache size when MesiCacheSize is not set.
@@ -126,6 +136,12 @@ typedef struct {
 // Global ESI nesting depth (#166). Matches mesi.MaxMaxDepth (10,000).
 #define MESI_MAX_MAX_DEPTH 10000
 #define MESI_DEFAULT_MAX_DEPTH 5
+// Global ESI per-include fetch timeout (#167). Bounds match libgomesi's
+// config.MaxTimeoutSeconds (86400 = 24h); the default is libgomesi's
+// historical hardcoded 30s (config.DefaultTimeoutSeconds). Keep both in
+// sync with libgomesi/internal/config/timeout.go.
+#define MESI_MAX_TIMEOUT_SECONDS (24 * 60 * 60)
+#define MESI_DEFAULT_TIMEOUT_SECONDS 30
 
 static void *create_server_config(apr_pool_t *p, server_rec *s) {
     mesi_config *conf = apr_pcalloc(p, sizeof(*conf));
@@ -147,6 +163,7 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     conf->cache_memcached_servers = apr_array_make(p, 2, sizeof(const char *));
     conf->cache_key_template = NULL;
     conf->max_depth = -1;  // -1 = unset, default 5 applied in filter
+    conf->timeout_seconds = -1;  // -1 = unset, default 30s applied in filter
     return conf;
 }
 
@@ -186,6 +203,10 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     // Max depth: child wins when explicitly set; -1 sentinel inherits.
     // Explicit 0 (passthrough) is a configured value and must win.
     conf->max_depth = (add->max_depth != -1) ? add->max_depth : base->max_depth;
+    // Timeout: child wins when explicitly set; -1 sentinel inherits
+    // (0 can never be stored — set_timeout rejects it — so the -1
+    // sentinel is unambiguous).
+    conf->timeout_seconds = (add->timeout_seconds != -1) ? add->timeout_seconds : base->timeout_seconds;
     return conf;
 }
 
@@ -205,6 +226,7 @@ static apr_status_t mesi_child_cleanup(void *data) {
     EsiParseWithConfig = NULL;
     EsiParseWithConfigEx = NULL;
     EsiParseWithConfigCtx = NULL;
+    EsiParseJson = NULL;
     EsiFreeString = NULL;
     EsiInitCache = NULL;
     EsiInitCacheWithConfig = NULL;
@@ -266,6 +288,20 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     EsiParseWithConfigCtx = (ParseWithConfigCtxFunc)dlsym(go_module, "ParseWithConfigCtx");
     if (dlerror() != NULL) {
         EsiParseWithConfigCtx = NULL;
+        (void) dlerror();
+    }
+    // ParseJson is optional: JSON config entry point that carries the
+    // timeoutSeconds field (#167). When present AND MesiTimeout is set,
+    // the filter uses it so the directive takes effect (the blob also
+    // carries cache-key templating when configured). Older libgomesi
+    // builds without it fall back to the existing
+    // ParseWithConfigCtx/Ex/Config chain and MesiTimeout is ignored
+    // with a logged warning — never a crash, never a silently wrong
+    // config (same graceful-fallback pattern as ParseWithConfigEx
+    // above; Apache and libgomesi normally ship together).
+    EsiParseJson = (ParseJsonFunc)dlsym(go_module, "ParseJson");
+    if (dlerror() != NULL) {
+        EsiParseJson = NULL;
         (void) dlerror();
     }
     EsiFreeString = (FreeFunc)dlsym(go_module, "FreeString");
@@ -687,6 +723,28 @@ static const char *set_max_depth(cmd_parms *cmd, void *cfg, const char *arg) {
         return err;
     }
     conf->max_depth = v;
+    return NULL;
+}
+
+// MesiTimeout — global per-include fetch budget in seconds (#167).
+// Parsed with parse_nonneg_int (NOT atoi — the issue's sketch used
+// atoi, but the project forbids silent coercion: atoi would turn
+// "abc"/"" into 0 and "2.5" into 2) with range
+// [1, MESI_MAX_TIMEOUT_SECONDS]. 0 is deliberately REJECTED: the core
+// fails every include immediately when Timeout <= 0 with
+// ErrTimeBudgetExceeded (mesi/fetch.go) — it is NOT "no timeout"
+// (same rationale as Caddy's "timeout must be positive"). The range
+// matches libgomesi's config.ValidateTimeout, so Apache and the
+// Go side can never disagree. Helper errors already name MesiTimeout.
+static const char *set_timeout(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    int v = 0;
+    const char *err = parse_nonneg_int(cmd->pool, arg, "MesiTimeout",
+                                       1, MESI_MAX_TIMEOUT_SECONDS, &v);
+    if (err) {
+        return err;
+    }
+    conf->timeout_seconds = v;
     return NULL;
 }
 
@@ -1168,6 +1226,80 @@ static const char *build_request_ctx_json(request_rec *r, mesi_config *conf, apr
     return buf;
 }
 
+// json_string renders s as a quoted, JSON-escaped string for the
+// ParseJson config blob: '"' / '\\' escaped, bytes < 0x20 as \u00XX.
+// Sized for the worst case (6 output bytes per input byte + quotes +
+// NUL) because APR pools have no realloc.
+static const char *json_string(apr_pool_t *pool, const char *s) {
+    if (!s) {
+        s = "";
+    }
+    apr_size_t len = strlen(s);
+    char *buf = apr_palloc(pool, len * 6 + 3);
+    char *w = buf;
+    *w++ = '"';
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p == '"') {
+            *w++ = '\\'; *w++ = '"';
+        } else if (*p == '\\') {
+            *w++ = '\\'; *w++ = '\\';
+        } else if (*p < 0x20) {
+            static const char hex[] = "0123456789abcdef";
+            *w++ = '\\'; *w++ = 'u'; *w++ = '0'; *w++ = '0';
+            *w++ = hex[(*p >> 4) & 0xf]; *w++ = hex[*p & 0xf];
+        } else {
+            *w++ = (char)*p;
+        }
+    }
+    *w++ = '"';
+    *w = '\0';
+    return buf;
+}
+
+// build_parse_json_config renders the fully-resolved per-request parse
+// configuration into the JSON blob accepted by libgomesi's ParseJson
+// entry point (#167). Only called when MesiTimeout is set (that is what
+// routes a request through ParseJson). Every other key mirrors exactly
+// what the legacy positional path would pass, so behaviour is identical
+// except for the timeout. Timeouts travel in SECONDS
+// ("timeoutSeconds":N) — the nanosecond conversion happens Go-side in
+// config.ResolveTimeout (deviation from the issue's nanosecond snippet,
+// which sketched a different key). cacheKeyTemplate/requestCtx are
+// included only when a template is configured, mirroring
+// ParseWithConfigCtx's contract (absent/empty template → URL-only keys;
+// requestCtx is passed through verbatim as pre-rendered JSON, omitted
+// when build_request_ctx_json returned "").
+static const char *build_parse_json_config(mesi_config *conf,
+                                           int depth,
+                                           const char *base_url,
+                                           const char *allowed_hosts_str,
+                                           int block_private,
+                                           int allow_private_for_allowed,
+                                           const char *ctx_json,
+                                           apr_pool_t *pool) {
+    const char *tmpl_part = "";
+    const char *ctx_part = "";
+    if (conf->cache_key_template && conf->cache_key_template[0] != '\0') {
+        tmpl_part = apr_psprintf(pool, ",\"cacheKeyTemplate\":%s",
+                                 json_string(pool, conf->cache_key_template));
+        if (ctx_json && ctx_json[0] != '\0') {
+            ctx_part = apr_psprintf(pool, ",\"requestCtx\":%s", ctx_json);
+        }
+    }
+    return apr_psprintf(pool,
+        "{\"maxDepth\":%d,\"defaultUrl\":%s,\"allowedHosts\":%s,"
+        "\"blockPrivateIPs\":%s,\"allowPrivateIPsForAllowedHosts\":%s,"
+        "\"timeoutSeconds\":%d%s%s}",
+        depth,
+        json_string(pool, base_url),
+        json_string(pool, allowed_hosts_str),
+        block_private ? "true" : "false",
+        allow_private_for_allowed ? "true" : "false",
+        conf->timeout_seconds,
+        tmpl_part,
+        ctx_part);
+}
+
 static int mesi_request_handler(request_rec *r) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(r->server->module_config, &mesi_module);
     if (conf->enable_mesi) {
@@ -1349,41 +1481,71 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     char *base_url = build_base_url(f->r, f->r->pool);
     char *esi = NULL;
 
-    if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && !EsiParseWithConfigCtx) {
-        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-            "mesi: MesiCacheKeyTemplate set but libgomesi lacks ParseWithConfigCtx; templated keys disabled. Upgrade libgomesi.so.");
-    }
-    if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && EsiParseWithConfigCtx) {
-        const char *ctx_json = build_request_ctx_json(f->r, conf, f->r->pool);
-        esi = EsiParseWithConfigCtx(html, depth, base_url, allowed_hosts_str,
-                                    block_private, allow_private_for_allowed,
-                                    (char *)conf->cache_key_template, (char *)ctx_json);
-    } else if (EsiParseWithConfigEx) {
-        esi = EsiParseWithConfigEx(html, depth, base_url, allowed_hosts_str,
-                                   block_private, allow_private_for_allowed);
-    } else if (EsiParseWithConfig) {
-        if (allow_private_for_allowed) {
+    // MesiTimeout (#167): when set AND libgomesi exports ParseJson, the
+    // whole parse is routed through the JSON entry point so the
+    // timeoutSeconds field reaches the core. The blob carries every
+    // other resolved setting (depth, base URL, SSRF flags, optional
+    // cache key template + request context), so behaviour matches the
+    // positional path exactly except for the timeout. When the symbol
+    // is missing (older libgomesi.so), fall through to the legacy chain
+    // below with a logged warning — the directive is ignored (default
+    // 30s applies), never a crash and never a silently wrong config.
+    // used_parse_json distinguishes "not attempted" from "ParseJson
+    // returned NULL" — a NULL must NOT fall back silently; it fails the
+    // request closed below (config errors are already logged Go-side).
+    int used_parse_json = 0;
+    if (conf->timeout_seconds != -1) {
+        if (EsiParseJson) {
+            used_parse_json = 1;
+            const char *req_ctx_json = build_request_ctx_json(f->r, conf, f->r->pool);
+            const char *parse_cfg_json = build_parse_json_config(
+                conf, depth, base_url, allowed_hosts_str, block_private,
+                allow_private_for_allowed, req_ctx_json, f->r->pool);
+            esi = EsiParseJson(html, (char *)parse_cfg_json);
+        } else {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-                "mesi: MesiAllowPrivateIPsForAllowedHosts set but libgomesi lacks ParseWithConfigEx; bypass disabled. Upgrade libgomesi.so.");
+                "mesi: MesiTimeout set but libgomesi lacks ParseJson; "
+                "MesiTimeout ignored (default 30s timeout applies). Upgrade libgomesi.so.");
         }
-        esi = EsiParseWithConfig(html, depth, base_url, allowed_hosts_str, block_private);
-    } else {
-        int has_security_config = (conf->allowed_hosts && conf->allowed_hosts->nelts > 0)
-                               || (conf->block_private_ips != -1 && conf->block_private_ips == 1);
-        if (has_security_config) {
-            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r,
-                "mesi: ParseWithConfig not found but security directives are configured. "
-                "SSRF protection disabled! Upgrade libgomesi.so or remove MesiAllowedHosts/MesiBlockPrivateIPs directives.");
-            apr_brigade_cleanup(ctx->bb);
-            b = apr_bucket_pool_create(html, strlen(html), f->r->pool, ctx->bb->bucket_alloc);
-            APR_BRIGADE_INSERT_TAIL(ctx->bb, b);
-            APR_BRIGADE_INSERT_TAIL(ctx->bb, apr_bucket_eos_create(ctx->bb->bucket_alloc));
-            return ap_pass_brigade(f->next, ctx->bb);
+    }
+
+    if (!used_parse_json) {
+        if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && !EsiParseWithConfigCtx) {
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+                "mesi: MesiCacheKeyTemplate set but libgomesi lacks ParseWithConfigCtx; templated keys disabled. Upgrade libgomesi.so.");
         }
-        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-            "mesi: ParseWithConfig not found, falling back to Parse (no SSRF protection)");
-        if (EsiParse) {
-            esi = EsiParse(html, depth, base_url);
+        if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && EsiParseWithConfigCtx) {
+            const char *ctx_json = build_request_ctx_json(f->r, conf, f->r->pool);
+            esi = EsiParseWithConfigCtx(html, depth, base_url, allowed_hosts_str,
+                                        block_private, allow_private_for_allowed,
+                                        (char *)conf->cache_key_template, (char *)ctx_json);
+        } else if (EsiParseWithConfigEx) {
+            esi = EsiParseWithConfigEx(html, depth, base_url, allowed_hosts_str,
+                                       block_private, allow_private_for_allowed);
+        } else if (EsiParseWithConfig) {
+            if (allow_private_for_allowed) {
+                ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+                    "mesi: MesiAllowPrivateIPsForAllowedHosts set but libgomesi lacks ParseWithConfigEx; bypass disabled. Upgrade libgomesi.so.");
+            }
+            esi = EsiParseWithConfig(html, depth, base_url, allowed_hosts_str, block_private);
+        } else {
+            int has_security_config = (conf->allowed_hosts && conf->allowed_hosts->nelts > 0)
+                                   || (conf->block_private_ips != -1 && conf->block_private_ips == 1);
+            if (has_security_config) {
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r,
+                    "mesi: ParseWithConfig not found but security directives are configured. "
+                    "SSRF protection disabled! Upgrade libgomesi.so or remove MesiAllowedHosts/MesiBlockPrivateIPs directives.");
+                apr_brigade_cleanup(ctx->bb);
+                b = apr_bucket_pool_create(html, strlen(html), f->r->pool, ctx->bb->bucket_alloc);
+                APR_BRIGADE_INSERT_TAIL(ctx->bb, b);
+                APR_BRIGADE_INSERT_TAIL(ctx->bb, apr_bucket_eos_create(ctx->bb->bucket_alloc));
+                return ap_pass_brigade(f->next, ctx->bb);
+            }
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+                "mesi: ParseWithConfig not found, falling back to Parse (no SSRF protection)");
+            if (EsiParse) {
+                esi = EsiParse(html, depth, base_url);
+            }
         }
     }
 
@@ -1420,6 +1582,7 @@ static void register_hooks(apr_pool_t *p) {
 static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("EnableMesi", set_enable_mesi, NULL, RSRC_CONF, "Enable or disable the Mesi module"),
     AP_INIT_TAKE1("MesiMaxDepth", set_max_depth, NULL, RSRC_CONF, "Maximum ESI nesting depth (0..10000). Unset=5. 0=passthrough"),
+    AP_INIT_TAKE1("MesiTimeout", set_timeout, NULL, RSRC_CONF, "ESI processing timeout per include in seconds (1..86400). Unset=30"),
     AP_INIT_RAW_ARGS("MesiAllowedHosts", set_allowed_hosts, NULL, RSRC_CONF, "Space-separated list of allowed hostnames for ESI includes"),
     AP_INIT_FLAG("MesiBlockPrivateIPs", set_block_private_ips, NULL, RSRC_CONF, "Enable or disable private IP blocking (default: On)"),
     AP_INIT_FLAG("MesiAllowPrivateIPsForAllowedHosts", set_allow_private_for_allowed, NULL, RSRC_CONF, "Allow private IP access for hosts in MesiAllowedHosts when MesiBlockPrivateIPs is On (default: Off)"),
