@@ -53,6 +53,24 @@ func returnString(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(r.PathValue("data")))
 }
 
+// bytesHandler serves an exactly-N-byte body, mirroring the
+// `/bytes/<size>` generator in servers/apache/tests/server.py (#169):
+// a marker string repeated and truncated to the requested size. Used by
+// cli/test.sh to prove -max-response-size caps a single include fetch.
+func bytesHandler(w http.ResponseWriter, r *http.Request) {
+	size, _ := strconv.Atoi(r.PathValue("size"))
+	if size < 0 {
+		size = 0
+	}
+	w.Header().Set("Content-Type", "text/html")
+	const marker = "MesiBytesPayload"
+	body := make([]byte, 0, size)
+	for len(body) < size {
+		body = append(body, marker...)
+	}
+	w.Write(body[:size])
+}
+
 var (
 	countersMu sync.Mutex
 	counters   = map[string]int{}
@@ -77,6 +95,7 @@ func main() {
 	http.HandleFunc("/returnNonEsiHeader", returnEsiNoHeader)
 	http.HandleFunc("/recursive", recursive)
 	http.HandleFunc("/returnString/{data}", returnString)
+	http.HandleFunc("/bytes/{size}", bytesHandler)
 	http.HandleFunc("/count/{name}", countHandler)
 
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {

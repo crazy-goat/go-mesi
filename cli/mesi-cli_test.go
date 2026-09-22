@@ -647,3 +647,121 @@ func TestCLI_sharedHTTPClientFlagFalseByDefault(t *testing.T) {
 		t.Errorf("expected 'Hello' in output, got %q", stdout)
 	}
 }
+
+func TestValidateMaxResponseSize(t *testing.T) {
+	// Boundary classes per project rules: accepted 0 / 1 / typical / max,
+	// rejected negative / max+1 (== math.MaxInt64, the core's +1
+	// LimitReader wrap, #448).
+	rangeText := fmt.Sprintf("[0, %d]", maxMaxResponseSize)
+	tests := []struct {
+		name    string
+		value   int64
+		wantErr bool
+	}{
+		{"zero (documented unlimited) accepted", 0, false},
+		{"one byte accepted", 1, false},
+		{"typical 1 MiB accepted", 1024 * 1024, false},
+		{"accepted max (MaxInt64-1)", maxMaxResponseSize, false},
+		{"rejected negative", -1, true},
+		{"rejected large negative", -1024 * 1024, true},
+		{"rejected max+1 (math.MaxInt64)", maxMaxResponseSize + 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMaxResponseSize(tt.value)
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("validateMaxResponseSize(%d) = %v, want nil", tt.value, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateMaxResponseSize(%d) = nil, want error", tt.value)
+			}
+			// The error must name the flag and the valid range.
+			if !strings.Contains(err.Error(), "max-response-size") {
+				t.Errorf("error %q does not name the flag", err)
+			}
+			if !strings.Contains(err.Error(), rangeText) {
+				t.Errorf("error %q does not contain the valid range %q", err, rangeText)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("%d", tt.value)) {
+				t.Errorf("error %q does not contain the offending value", err)
+			}
+		})
+	}
+}
+
+func TestCLI_maxResponseSizeFlagInHelp(t *testing.T) {
+	stdout, stderr, _ := runCLI(t, "-h")
+	output := stdout + stderr
+	if !strings.Contains(output, "-max-response-size") {
+		t.Errorf("expected -max-response-size in help output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(output, "0 = unlimited") {
+		t.Errorf("expected '0 = unlimited' in help output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	// Absent flag must keep CreateDefaultConfig()'s 10 MB default — the
+	// flag package only prints "(default …)" for non-zero defaults, so
+	// this also pins that the default is NOT 0.
+	if !strings.Contains(output, "(default 10485760)") {
+		t.Errorf("expected '(default 10485760)' in help output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestCLI_maxResponseSizeFlagValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name     string
+		arg      string
+		wantExit int
+		wantErrs []string // asserted against stderr+stdout when non-empty
+	}{
+		{name: "accepted zero (unlimited)", arg: "-max-response-size=0", wantExit: 0},
+		{name: "accepted one byte", arg: "-max-response-size=1", wantExit: 0},
+		{name: "accepted typical", arg: "-max-response-size=1048576", wantExit: 0},
+		{name: "accepted max (MaxInt64-1)", arg: "-max-response-size=9223372036854775806", wantExit: 0},
+		{
+			name: "rejected negative", arg: "-max-response-size=-1", wantExit: 1,
+			wantErrs: []string{"max-response-size", "9223372036854775806", "-1"},
+		},
+		{
+			// math.MaxInt64 == maxMaxResponseSize+1: the core's
+			// MaxResponseSize+1 LimitReader bound would wrap negative (#448).
+			name: "rejected MaxInt64 (max+1)", arg: "-max-response-size=9223372036854775807", wantExit: 1,
+			wantErrs: []string{"max-response-size", "9223372036854775806"},
+		},
+		{
+			name: "rejected above int64 (flag pkg parse error)", arg: "-max-response-size=9223372036854775808", wantExit: 2,
+			wantErrs: []string{"max-response-size"},
+		},
+		{
+			name: "rejected non-integer (flag pkg parse error)", arg: "-max-response-size=abc", wantExit: 2,
+			wantErrs: []string{"max-response-size"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, stderr, exitCode := runCLI(t, tt.arg, inputFile)
+			if exitCode != tt.wantExit {
+				t.Fatalf("exit code = %d, want %d (stdout=%q stderr=%q)", exitCode, tt.wantExit, stdout, stderr)
+			}
+			if tt.wantExit == 0 {
+				if !strings.Contains(stdout, "Hello") {
+					t.Errorf("expected 'Hello' in output, got %q", stdout)
+				}
+				return
+			}
+			out := stderr + stdout
+			for _, want := range tt.wantErrs {
+				if !strings.Contains(out, want) {
+					t.Errorf("expected %q in error output, got stdout=%q stderr=%q", want, stdout, stderr)
+				}
+			}
+		})
+	}
+}
