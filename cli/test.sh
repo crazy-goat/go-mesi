@@ -461,14 +461,17 @@ echo "--- Max Workers Tests ---"
 # tests) so every include reaches the counter; the CLI's cache is off by
 # default (no -cache-backend), so no dedup can swallow fetches either.
 #
-# -timeout 60: unlike the semaphore tests above, jobs-channel queueing
-# happens BEFORE fetch entry (mesi/parser.go:132-178), so each include's
-# fetch budget (counted from fetch entry, mesi/fetch.go) only ever
-# covers its own 1500 ms hold and the default 10 s would suffice — the
-# explicit budget is passed anyway to match Tests 28-31 and keep every
-# timing gate irrelevant on slow CI runners (wall time at cap 2 is
-# ~10 waves x 1500 ms = ~15 s; includes beyond the pool are queued in
-# the jobs channel, never dropped).
+# -timeout 60: REQUIRED, not belt-and-braces. The fetch budget is
+# config.Timeout REDUCED by parse-elapsed time (WithElapsedTime at
+# mesi/parser.go:158, floors at 0 in mesi/config.go:128-135), so it
+# shrinks as the parse runs — and T33's wall time at cap 2 is ~10 waves
+# x 1500 ms = ~15 s. With the default 10 s, includes picked up after
+# ~10 s get Timeout <= 0 -> ErrTimeBudgetExceeded (mesi/fetch.go:131-134)
+# and late fragments go missing (FRAGMENTS < 20 -> T33 FAILS). Includes
+# beyond the pool are queued in the jobs channel (mesi/parser.go:132-178),
+# never dropped — the queue wait itself is not the problem; the eroding
+# budget is. The explicit budget keeps every timing gate irrelevant on
+# slow CI runners and matches Tests 28-31.
 
 echo "Test 32: -max-workers 2 - deeply nested page expands completely (issue AC)"
 # The issue's AC stress case: a nested chain parsed under a 2-goroutine
