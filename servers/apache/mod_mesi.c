@@ -349,6 +349,13 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
         EsiParse = NULL;
         EsiParseWithConfig = NULL;
         EsiParseWithConfigEx = NULL;
+        // Every optional symbol must be cleared too — leaving a pointer
+        // into the dlclosed library invites a call into unmapped memory
+        // (mesi_init_http_client runs before the filter's NULL-guard).
+        EsiParseWithConfigCtx = NULL;
+        EsiParseJson = NULL;
+        EsiInitHTTPClient = NULL;
+        EsiFreeHTTPClient = NULL;
         EsiFreeString = NULL;
         EsiInitCache = NULL;
         EsiInitCacheWithConfig = NULL;
