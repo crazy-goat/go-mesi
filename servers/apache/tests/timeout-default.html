@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Timeout Default Test</title>
+</head>
+<body>
+    <h1>Timeout Default Test</h1>
+    <!-- MesiTimeout is unset on the default vhost (*:80) → 30s default.
+         Backend sleeps 31s: the budget must abort at ~30s and render
+         nothing (if 0 were honoured as "no timeout" the fragment would
+         arrive at ~31s). Used by test.sh (#167). -->
+    <esi:include src="http://backend:8000/sleep/31/timeoutdefault" />
+    <p>After default include</p>
+</body>
+</html>

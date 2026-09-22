@@ -12,6 +12,9 @@ services:
       - "8084:8084"
       - "8085:8085"
       - "8086:8086"
+      # 8087 = MesiTimeout 2, 8088 = MesiTimeout 30 (#167).
+      - "8087:8087"
+      - "8088:8088"
     environment:
       - MESI_FORCE_FLATTEN_ERROR=${MESI_FORCE_FLATTEN_ERROR:-}
     volumes:
@@ -31,6 +34,10 @@ services:
     working_dir: /data
     volumes:
       - ./tests:/data:ro
-    command: python -m http.server 8000
+    # server.py = SimpleHTTPRequestHandler static serving (same
+    # behaviour as the previous `python -m http.server 8000`) plus the
+    # slow /sleep/<seconds>/<label> endpoints the MesiTimeout tests use
+    # (#167).
+    command: python /data/server.py
     expose:
       - "8000"

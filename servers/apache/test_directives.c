@@ -52,6 +52,9 @@ typedef struct {
     const char *cache_key_template;
     /* ESI nesting depth (#166). -1 = unset (filter uses 5). */
     int max_depth;
+    /* Global per-include fetch timeout in seconds (#167).
+     * -1 = unset (filter uses 30). 0 can never be stored — rejected. */
+    int timeout_seconds;
 } mesi_config;
 
 /* Sentinel/constant values copied from mod_mesi.c */
@@ -64,6 +67,10 @@ typedef struct {
 #define MESI_MAX_CACHE_KEY_TEMPLATE 4096
 #define MESI_MAX_MAX_DEPTH 10000
 #define MESI_DEFAULT_MAX_DEPTH 5
+/* Global ESI timeout bounds (#167) — mirrors mod_mesi.c; keep in sync
+ * with libgomesi config.MaxTimeoutSeconds / DefaultTimeoutSeconds. */
+#define MESI_MAX_TIMEOUT_SECONDS (24 * 60 * 60)
+#define MESI_DEFAULT_TIMEOUT_SECONDS 30
 
 /* Directive parsing functions (copied from mod_mesi.c for testing) */
 static const char *parse_allowed_hosts(mesi_config *conf, const char *arg) {
@@ -195,6 +202,22 @@ static const char *set_max_depth(mesi_config *conf, const char *arg) {
         return err;
     }
     conf->max_depth = v;
+    return NULL;
+}
+
+/* MesiTimeout — mirrors set_timeout in mod_mesi.c (#167). Uses
+ * parse_nonneg_int (never atoi) with range [1, MESI_MAX_TIMEOUT_SECONDS]:
+ * 0 is rejected because the core fails EVERY include when Timeout <= 0
+ * (mesi/fetch.go → ErrTimeBudgetExceeded) — it is not "no timeout".
+ * Helper errors already name MesiTimeout. */
+static const char *set_timeout(mesi_config *conf, const char *arg) {
+    int v = 0;
+    const char *err = parse_nonneg_int(pool, arg, "MesiTimeout",
+                                       1, MESI_MAX_TIMEOUT_SECONDS, &v);
+    if (err) {
+        return err;
+    }
+    conf->timeout_seconds = v;
     return NULL;
 }
 
@@ -430,6 +453,7 @@ static void init_config(mesi_config *conf) {
     conf->cache_memcached_servers = apr_array_make(pool, 2, sizeof(const char *));
     conf->cache_key_template = NULL;
     conf->max_depth = -1;
+    conf->timeout_seconds = -1;
 }
 
 static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merged) {
@@ -453,6 +477,7 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
                                       : base->cache_memcached_servers;
     merged->cache_key_template = add->cache_key_template ? add->cache_key_template : base->cache_key_template;
     merged->max_depth = (add->max_depth != -1) ? add->max_depth : base->max_depth;
+    merged->timeout_seconds = (add->timeout_seconds != -1) ? add->timeout_seconds : base->timeout_seconds;
 }
 
 /* Test cases */
@@ -1879,6 +1904,174 @@ TEST(merge_max_depth_child_zero_overrides) {
     ASSERT_EQ(merged.max_depth, 0);
 }
 
+/* --- MesiTimeout directive tests (#167) --- */
+
+TEST(timeout_default_unset) {
+    /* Fresh config: sentinel -1 (unset). The filter then stays on the
+     * legacy parse path and LIBGOMESI applies its default 30s
+     * (config.DefaultTimeoutSeconds) Go-side; MESI_DEFAULT_TIMEOUT_SECONDS
+     * only documents that value (pinned to 30 here) so "unset → 30s" is
+     * asserted at unit level alongside the functional default-timeout
+     * case. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_EQ(conf.timeout_seconds, -1);
+    ASSERT_EQ(MESI_DEFAULT_TIMEOUT_SECONDS, 30);
+}
+
+TEST(timeout_ten_accepted) {
+    /* Issue example: MesiTimeout 10. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_timeout(&conf, "10"));
+    ASSERT_EQ(conf.timeout_seconds, 10);
+}
+
+TEST(timeout_min_accepted) {
+    /* Boundary: 1 is the smallest legal timeout. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_timeout(&conf, "1"));
+    ASSERT_EQ(conf.timeout_seconds, 1);
+}
+
+TEST(timeout_max_accepted) {
+    /* Boundary: 86400 (24h) is the configured max. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_timeout(&conf, "86400"));
+    ASSERT_EQ(conf.timeout_seconds, MESI_MAX_TIMEOUT_SECONDS);
+}
+
+TEST(timeout_max_plus_one_rejected) {
+    /* Boundary: 86401 must be rejected. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_timeout(&conf, "86401");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiTimeout");
+    ASSERT_STR_CONTAINS(err, "out of range");
+    ASSERT_EQ(conf.timeout_seconds, -1);
+}
+
+TEST(timeout_zero_rejected) {
+    /* Boundary + AC deviation: the issue proposed 0 = "no timeout /
+     * unlimited", but the core fails EVERY include immediately when
+     * Timeout <= 0 (mesi/fetch.go → ErrTimeBudgetExceeded) — 0 would
+     * brick all ESI. Rejected at config load instead (like Caddy's
+     * "timeout must be positive"). */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_timeout(&conf, "0");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiTimeout");
+    ASSERT_EQ(conf.timeout_seconds, -1);
+}
+
+TEST(timeout_negative_rejected) {
+    /* AC: MesiTimeout -1 is an error (atoi would silently coerce it). */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_timeout(&conf, "-1");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiTimeout");
+    ASSERT_EQ(conf.timeout_seconds, -1);
+}
+
+TEST(timeout_alpha_rejected) {
+    /* atoi("abc") → 0 would silently mean... a broken config. Reject. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_timeout(&conf, "abc");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiTimeout");
+    ASSERT_EQ(conf.timeout_seconds, -1);
+}
+
+TEST(timeout_trailing_garbage_rejected) {
+    /* atoi("3foo") → 3 would silently accept. Reject. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_timeout(&conf, "3foo");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiTimeout");
+    ASSERT_EQ(conf.timeout_seconds, -1);
+}
+
+TEST(timeout_decimal_rejected) {
+    /* Decimals must fail-fast — atoi("2.5") would truncate to 2. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_timeout(&conf, "2.5");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiTimeout");
+    ASSERT_EQ(conf.timeout_seconds, -1);
+}
+
+TEST(timeout_empty_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_timeout(&conf, "");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiTimeout");
+    ASSERT_EQ(conf.timeout_seconds, -1);
+}
+
+TEST(timeout_oversize_rejected) {
+    /* 12345678901 (11 digits) — overflow guard fires before the range
+     * check; 999999999 (9 digits) passes the digit-count guard but is
+     * caught by the [1, 86400] range. Both must fail. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_timeout(&conf, "12345678901");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "exceeds");
+    ASSERT_EQ(conf.timeout_seconds, -1);
+
+    err = set_timeout(&conf, "999999999");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "out of range");
+    ASSERT_EQ(conf.timeout_seconds, -1);
+}
+
+TEST(merge_timeout_child_overrides) {
+    /* Child 30 / parent 10 → 30 (add overrides base). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.timeout_seconds = 10;
+    add.timeout_seconds = 30;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.timeout_seconds, 30);
+}
+
+TEST(merge_timeout_child_inherits) {
+    /* Base 10 + unset add → 10 (unset child inherits the parent). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.timeout_seconds = 10;
+    add.timeout_seconds = -1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.timeout_seconds, 10);
+}
+
+TEST(merge_timeout_both_unset) {
+    /* Both unset → -1 sentinel → legacy path; LIBGOMESI applies the
+     * 30s default Go-side. */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.timeout_seconds, -1);
+}
+
 int main(int argc, char *argv[]) {
     printf("=== Apache Module Directive Unit Tests ===\n\n");
 
@@ -2067,6 +2260,25 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_max_depth_child_overrides);
     RUN_TEST(merge_max_depth_child_inherits);
     RUN_TEST(merge_max_depth_child_zero_overrides);
+
+    printf("\nTesting set_timeout() (#167):\n");
+    RUN_TEST(timeout_default_unset);
+    RUN_TEST(timeout_ten_accepted);
+    RUN_TEST(timeout_min_accepted);
+    RUN_TEST(timeout_max_accepted);
+    RUN_TEST(timeout_max_plus_one_rejected);
+    RUN_TEST(timeout_zero_rejected);
+    RUN_TEST(timeout_negative_rejected);
+    RUN_TEST(timeout_alpha_rejected);
+    RUN_TEST(timeout_trailing_garbage_rejected);
+    RUN_TEST(timeout_decimal_rejected);
+    RUN_TEST(timeout_empty_rejected);
+    RUN_TEST(timeout_oversize_rejected);
+
+    printf("\nTesting merge_server_config() timeout fields (#167):\n");
+    RUN_TEST(merge_timeout_child_overrides);
+    RUN_TEST(merge_timeout_child_inherits);
+    RUN_TEST(merge_timeout_both_unset);
 
 
     apr_pool_destroy(pool);

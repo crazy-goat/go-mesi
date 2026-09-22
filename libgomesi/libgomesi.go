@@ -149,7 +149,7 @@ func ParseDefault(input *C.char) *C.char {
 	config := mesi.EsiParserConfig{
 		DefaultUrl: "http://127.0.0.1/",
 		MaxDepth:   5,
-		Timeout:    30 * time.Second,
+		Timeout:    defaultParseTimeout(),
 	}
 	applySharedConfig(&config)
 	result := mesi.MESIParse(goInput, config)
@@ -195,7 +195,7 @@ func Parse(input *C.char, maxDepth C.int, defaultUrl *C.char) *C.char {
 	config := mesi.EsiParserConfig{
 		DefaultUrl: goDefaultUrl,
 		MaxDepth:   goMaxDepth,
-		Timeout:    30 * time.Second,
+		Timeout:    defaultParseTimeout(),
 	}
 	applySharedConfig(&config)
 	result := mesi.MESIParse(goInput, config)
@@ -310,11 +310,23 @@ func buildRequestFromJSON(jsonStr string) *http.Request {
 	return req
 }
 
-// parseWithConfigInternal is the common implementation for ParseWithConfigEx
-// and ParseWithConfigCtx. When cacheKeyTemplate is non-empty it installs a
-// CacheKeyFunc that delegates to mesi.BuildCacheKey with a request built from
-// requestCtxJSON. When empty the behaviour is identical to ParseWithConfigEx.
-func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int, cacheKeyTemplate *C.char, requestCtxJSON *C.char) *C.char {
+// defaultParseTimeout is the per-include fetch budget used by every
+// positional Parse* entry point: 30s, the value libgomesi has always
+// hardcoded. Single source of truth (config.DefaultTimeoutSeconds) so
+// the positional exports and ParseJson's absent-timeoutSeconds default
+// can never drift apart (#167).
+func defaultParseTimeout() time.Duration {
+	return time.Duration(config.DefaultTimeoutSeconds) * time.Second
+}
+
+// parseWithConfigInternal is the common implementation for ParseWithConfigEx,
+// ParseWithConfigCtx and ParseJson. When cacheKeyTemplate is non-empty it
+// installs a CacheKeyFunc that delegates to mesi.BuildCacheKey with a request
+// built from requestCtxJSON. When empty the behaviour is identical to
+// ParseWithConfigEx. timeout is the global per-include fetch budget — every
+// caller but ParseJson passes defaultParseTimeout() (the historical 30s), so
+// the positional exports keep their exact pre-#167 behaviour.
+func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int, cacheKeyTemplate *C.char, requestCtxJSON *C.char, timeout time.Duration) *C.char {
 	goInput := C.GoString(input)
 	goMaxDepth, err := resolveMaxDepth(maxDepth)
 	if err != nil {
@@ -341,7 +353,7 @@ func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, 
 	cfg := mesi.EsiParserConfig{
 		DefaultUrl:                     goDefaultUrl,
 		MaxDepth:                       goMaxDepth,
-		Timeout:                        30 * time.Second,
+		Timeout:                        timeout,
 		AllowedHosts:                   hosts,
 		BlockPrivateIPs:                blockPrivateIPs != 0,
 		AllowPrivateIPsForAllowedHosts: allowPrivateIPsForAllowedHosts != 0,
@@ -366,7 +378,7 @@ func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, 
 }
 
 func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int) *C.char {
-	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, nil, nil)
+	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, nil, nil, defaultParseTimeout())
 }
 
 // ParseWithConfigCtx extends ParseWithConfigEx with cache key templating.
@@ -376,7 +388,84 @@ func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedH
 //
 //export ParseWithConfigCtx
 func ParseWithConfigCtx(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int, cacheKeyTemplate *C.char, requestCtxJSON *C.char) *C.char {
-	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, cacheKeyTemplate, requestCtxJSON)
+	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, cacheKeyTemplate, requestCtxJSON, defaultParseTimeout())
+}
+
+// ParseJson parses ESI tags with a JSON-encoded configuration blob — the
+// additive, future-proof alternative to growing the positional
+// ParseWithConfig* signatures (#167). configJSON decodes to config.ParseConfig:
+//
+//	{"maxDepth":5,"defaultUrl":"http://…/","allowedHosts":"a b",
+//	 "blockPrivateIPs":true,"allowPrivateIPsForAllowedHosts":false,
+//	 "cacheKeyTemplate":"mesi:${url}","requestCtx":{…},"timeoutSeconds":30}
+//
+// Every key is optional; an absent key resolves to the same documented
+// default the corresponding positional entry point uses (timeoutSeconds
+// absent → 30s — libgomesi's historical hardcoded value, so ParseJson with
+// an absent timeout is byte-identical to ParseWithConfigCtx). Unknown keys
+// are ignored (forward compatibility). configJSON may be NULL or "" — both
+// mean "{}" (pure defaults).
+//
+// Malformed JSON, a type mismatch (e.g. "timeoutSeconds":"10"), or an
+// out-of-range value (maxDepth outside [0, mesi.MaxMaxDepth];
+// timeoutSeconds outside [1, 86400] — 0 is rejected because the core fails
+// every include with ErrTimeBudgetExceeded when Timeout <= 0, see
+// mesi/fetch.go) logs a warning naming the offending input and returns
+// NULL. A default is NEVER substituted for a malformed explicit value.
+//
+// Returns parsed HTML with ESI tags replaced by their content, or NULL on
+// any config error. Caller must free a non-NULL return with FreeString.
+//
+//export ParseJson
+func ParseJson(input *C.char, configJSON *C.char) *C.char {
+	raw := ""
+	if configJSON != nil {
+		raw = C.GoString(configJSON)
+	}
+	if raw == "" {
+		// NULL and "" both mean "no config" — same contract as
+		// InitCacheWithConfig's configJSON (documented "" or "{}").
+		raw = "{}"
+	}
+	cfg, err := config.ParseConfigFromJSON([]byte(raw))
+	if err != nil {
+		mesi.DefaultLoggerNew().Warn("parse_config_json_malformed", "error", err.Error())
+		return nil
+	}
+	depth, err := cfg.ResolvedMaxDepth()
+	if err != nil {
+		rejectMaxDepth(err)
+		return nil
+	}
+	timeout, err := cfg.ResolvedTimeout()
+	if err != nil {
+		mesi.DefaultLoggerNew().Warn("invalid_timeout", "error", err.Error())
+		return nil
+	}
+	// Hand the Go-side strings to parseWithConfigInternal as C strings;
+	// freed when this function returns (parseWithConfigInternal copies
+	// everything it needs via C.GoString).
+	cDefaultUrl := C.CString(cfg.DefaultUrl)
+	defer C.free(unsafe.Pointer(cDefaultUrl))
+	cAllowedHosts := C.CString(cfg.AllowedHosts)
+	defer C.free(unsafe.Pointer(cAllowedHosts))
+	cCacheKeyTemplate := C.CString(cfg.CacheKeyTemplate)
+	defer C.free(unsafe.Pointer(cCacheKeyTemplate))
+	cRequestCtx := C.CString(string(cfg.RequestCtx))
+	defer C.free(unsafe.Pointer(cRequestCtx))
+	return parseWithConfigInternal(input, C.int(depth), cDefaultUrl, cAllowedHosts,
+		boolCInt(cfg.ResolvedBlockPrivateIPs()),
+		boolCInt(cfg.AllowPrivateIPsForAllowedHosts),
+		cCacheKeyTemplate, cRequestCtx, timeout)
+}
+
+// boolCInt maps a Go bool to the C ABI int convention used by the
+// Parse* exports (1 = true, 0 = false).
+func boolCInt(v bool) C.int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 // FreeString frees memory allocated by Parse and ParseDefault.

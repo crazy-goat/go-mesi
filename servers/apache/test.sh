@@ -509,6 +509,74 @@ else
     exit 1
 fi
 
+# --- MesiTimeout tests (#167) ---
+# The backend (tests/server.py) serves /sleep/<seconds>/<label>, which
+# blocks for <seconds> and then returns "<label> Waited <seconds>".
+# Wall-clock assertions use curl's %{time_total} (seconds, decimal) so
+# they are portable (no GNU date +%N dependency).
+
+echo "=== Test 29: MesiTimeout 2 — 5s include aborted at ~2s (#167) ==="
+# Backend sleeps 5s; the 2s budget must cut the fetch first. The floor
+# (1.5s) proves the fetch was really in flight — an instantly failing
+# setup (wrong host, dead backend) must NOT pass; the ceiling (4.0s)
+# proves the budget fired before the 5s sleep completed. The fragment
+# must be absent (empty IncludeErrorMarker) and no raw tag may remain.
+TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 20 http://localhost:8087/timeout-2s.html)
+RESPONSE=$(cat /tmp/mesi-timeout-body.txt)
+rm -f /tmp/mesi-timeout-body.txt
+if awk -v t="$TIME_TOTAL" 'BEGIN {exit !(t >= 1.5 && t <= 4.0)}' \
+    && echo "$RESPONSE" | grep -q "After timeout include" \
+    && ! echo "$RESPONSE" | grep -q "timeout2 Waited" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: include failed within ~2s (elapsed ${TIME_TOTAL}s, fragment absent, tag stripped)"
+else
+    echo "FAIL: MesiTimeout 2 did not abort the 5s include (elapsed ${TIME_TOTAL}s)"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 30: MesiTimeout 30 — 10s include succeeds (#167) ==="
+# Backend sleeps 10s; the 30s budget must let it through with the full
+# fragment. Floor 9.5s proves the complete backend sleep happened
+# (cold URL — never fetched before, failures are never cached).
+TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 40 http://localhost:8088/timeout-30s.html)
+RESPONSE=$(cat /tmp/mesi-timeout-body.txt)
+rm -f /tmp/mesi-timeout-body.txt
+if awk -v t="$TIME_TOTAL" 'BEGIN {exit !(t >= 9.5 && t <= 25.0)}' \
+    && echo "$RESPONSE" | grep -q "timeout30 Waited 10" \
+    && echo "$RESPONSE" | grep -q "After slow include"; then
+    echo "PASS: 10s include succeeded under MesiTimeout 30 (elapsed ${TIME_TOTAL}s)"
+else
+    echo "FAIL: MesiTimeout 30 did not let the 10s include through (elapsed ${TIME_TOTAL}s)"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 31: MesiTimeout unset — default 30s aborts a 31s include (#167) ==="
+# Default vhost (*:80) leaves MesiTimeout unset → the documented 30s
+# default. Backend sleeps 31s: the budget fires at ~30s (no fragment,
+# chrome intact, no raw tag). Elapsed must be >= 28s (a smaller default
+# would drop below the floor) and the fragment must be absent — the
+# issue's proposed "0 = no timeout" would render it at ~31s, and an
+# unlimited default would too, so the content check pins the default to
+# a finite 30s budget.
+TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 55 http://localhost:18080/timeout-default.html)
+RESPONSE=$(cat /tmp/mesi-timeout-body.txt)
+rm -f /tmp/mesi-timeout-body.txt
+if awk -v t="$TIME_TOTAL" 'BEGIN {exit !(t >= 28.0 && t <= 40.0)}' \
+    && echo "$RESPONSE" | grep -q "After default include" \
+    && ! echo "$RESPONSE" | grep -q "timeoutdefault Waited" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: unset MesiTimeout aborted the 31s include at ~30s (elapsed ${TIME_TOTAL}s)"
+else
+    echo "FAIL: unset MesiTimeout did not behave like the 30s default (elapsed ${TIME_TOTAL}s)"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
 docker compose down
 
 echo ""

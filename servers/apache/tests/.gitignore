@@ -24,3 +24,7 @@
 !shared-fragment.txt
 !cache-key-template.html
 !cache-key-fragment.txt
+!server.py
+!timeout-2s.html
+!timeout-30s.html
+!timeout-default.html
