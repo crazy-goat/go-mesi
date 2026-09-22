@@ -778,7 +778,8 @@ echo "=== Test 39: MesiMaxWorkers 2 — deep-nesting stress completes correctly 
 # The issue's AC: a four-level nested chain (max-workers-deep.html ->
 # mw-lvl-1 -> mw-lvl-2 -> mw-lvl-3 -> mw-lvl-4) parsed under a
 # 2-goroutine cap must be fully expanded. The ordered marker assertion
-# (all five markers in nesting order after flattening newlines) proves
+# (all seven markers — 3 STARTs, the level-4 body and 3 ENDs — in
+# nesting order after flattening newlines) proves
 # every level was fetched AND re-parsed; a raw tag left behind would
 # fail the tag check.
 curl -s --max-time 60 -o /tmp/mesi-mw-deep.html http://localhost:8094/max-workers-deep.html

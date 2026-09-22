@@ -1002,7 +1002,7 @@ static const char *set_max_concurrent_requests(cmd_parms *cmd, void *cfg, const 
 // Helper errors already name MesiMaxWorkers. Distinction from
 // MesiMaxConcurrentRequests: this bounds the CPU-side drain pool (goroutines
 // processing tokens/includes, also bounding fetches at that level),
-// that one bounds concurrent HTTP fetch slots per level.
+// that one bounds concurrent HTTP fetch slots (an admission semaphore).
 static const char *set_max_workers(cmd_parms *cmd, void *cfg, const char *arg) {
     mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
     int v = 0;
