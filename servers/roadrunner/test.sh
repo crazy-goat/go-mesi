@@ -139,5 +139,53 @@ else
     echo "PASS: listed private host blocked with bypass default off"
 fi
 
+echo "--- Max Depth Tests ---"
+
+echo "=== Test 10: max_depth 1 — inner nest not processed (#183) ==="
+# /nested-depth: depth 1 fetches the OUTER include (its visible marker
+# proves the fetch happened), then re-parses the fragment with
+# MaxDepth=0 (ParseOnly) — the inner tag goes through the include-error
+# path and is replaced with the empty default marker (never fetched,
+# never left raw). Same contract as nginx Test 38 / Apache Test 27.
+start_rr -block-private-ips=false -max-depth 1
+RESPONSE=$(curl -s http://localhost:9090/nested-depth)
+if echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q "INNER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: max_depth 1 fetched the outer include and stripped the inner tag"
+else
+    echo "FAIL: max_depth 1 did not match the depth-1 contract (outer body, no inner body, no leftover tag)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 11: max_depth 5 (explicit) — both nest levels processed (#183) ==="
+start_rr -block-private-ips=false -max-depth 5
+RESPONSE=$(curl -s http://localhost:9090/nested-depth)
+if echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
+    && echo "$RESPONSE" | grep -q "INNER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: explicit max_depth 5 processed both nest levels"
+else
+    echo "FAIL: explicit max_depth 5 did not process both nest levels"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 12: max_depth unset → 5 (backward compat, #183) ==="
+# No -max-depth flag: the plugin default (5) must keep behaving exactly
+# like the historical hardcoded 5 — both nest levels processed (the
+# marker assertions from Test 11, now covering the omitted-flag path).
+start_rr -block-private-ips=false
+RESPONSE=$(curl -s http://localhost:9090/nested-depth)
+if echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
+    && echo "$RESPONSE" | grep -q "INNER-DEPTH-BODY"; then
+    echo "PASS: unset max_depth defaults to 5 (both nest levels processed)"
+else
+    echo "FAIL: unset max_depth no longer behaves like depth 5"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
 echo ""
 echo "=== All RoadRunner tests passed ==="

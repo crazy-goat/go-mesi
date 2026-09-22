@@ -17,6 +17,7 @@ func main() {
 	allowedHosts := flag.String("allowed-hosts", "", "Comma-separated allowed hosts for <esi:include> (empty/unset = all hosts allowed)")
 	blockPrivateIPs := flag.Bool("block-private-ips", true, "Block ESI includes to private/reserved IPs at dial time")
 	allowPrivateIPsForAllowedHosts := flag.Bool("allow-private-ips-for-allowed-hosts", false, "Bypass the dial-time private-IP block for hosts listed in -allowed-hosts")
+	maxDepth := flag.Int("max-depth", 5, "Maximum ESI nesting depth (0 = passthrough: no include fetched, tags stripped; unset = plugin default 5)")
 	flag.Parse()
 
 	config := roadrunner.CreateConfig()
@@ -25,6 +26,16 @@ func main() {
 	}
 	config.BlockPrivateIPs = blockPrivateIPs
 	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
+	// Only override CreateConfig()'s default (5) when -max-depth is
+	// explicitly passed, so an omitted flag exercises the plugin's
+	// unset → 5 path while `-max-depth 0` stays the documented
+	// passthrough (Init keeps an explicit 0 verbatim).
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "max-depth" {
+			depth := *maxDepth
+			config.MaxDepth = &depth
+		}
+	})
 
 	plugin := roadrunner.NewWithConfig(config)
 	if err := plugin.Init(); err != nil {
@@ -59,6 +70,31 @@ func main() {
 	mux.HandleFunc("/allowed", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/fragment" /></body></html>`))
+	})
+	// /nested-depth is a two-level nested include page for the max_depth
+	// functional cases. Each level carries a per-level marker (same scheme
+	// as servers/nginx/tests/nested_depth_{outer,inner}.txt) so a shallow
+	// depth provably stops after the first level — a marker-less fixture
+	// cannot distinguish "not fetched" from "fetched but empty" (#428).
+	// Fragments are served as text/plain on purpose: the loopback fetch
+	// re-enters THIS server's middleware, and a text/html fragment would be
+	// processed again as a fresh top-level response at full depth,
+	// defeating the caller's depth budget (nginx avoids the same trap by
+	// serving its .txt fixtures from the backend, outside the filter).
+	// The hostname is "127.0.0.1" so the cases need no DNS and run with
+	// -block-private-ips=false like the allowed_hosts cases; the core still
+	// recurses into plain-text fragments (ParseOnHeader is off).
+	mux.HandleFunc("/nested-depth/inner", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("INNER-DEPTH-BODY"))
+	})
+	mux.HandleFunc("/nested-depth/outer", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte(`OUTER-DEPTH-BODY<esi:include src="http://127.0.0.1:9090/nested-depth/inner" />`))
+	})
+	mux.HandleFunc("/nested-depth", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/nested-depth/outer" /></body></html>`))
 	})
 
 	handler := plugin.Middleware(mux)
