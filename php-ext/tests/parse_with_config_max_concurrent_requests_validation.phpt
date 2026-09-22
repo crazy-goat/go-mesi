@@ -1,0 +1,96 @@
+--TEST--
+parse_with_config() max_concurrent_requests: option parsing and range validation
+--SKIPIF--
+<?php if (!extension_loaded('mesi')) die('skip'); ?>
+--FILE--
+<?php
+// Strict validation contract (#206): an absent key keeps the documented
+// default 0 = unlimited (byte-identical to previous behaviour — every
+// positional Parse* path leaves EsiParserConfig.MaxConcurrentRequests at
+// its zero value), but every malformed EXPLICIT value must produce
+// E_WARNING naming the option and make parse_with_config() return false —
+// never a silent coercion. Accepted values route the call through
+// libgomesi's ParseJson entry point; a warning here would also mean the
+// symbol lookup failed, so warnings=0 doubles as proof the ParseJson path
+// is live.
+$warnings = [];
+set_error_handler(function ($errno, $errstr) use (&$warnings) {
+    if ($errno === E_WARNING) { $warnings[] = $errstr; return true; }
+    return false;
+});
+function run(array $cfg) {
+    global $warnings;
+    $before = count($warnings);
+    $r = @\mesi\parse_with_config('plain-ok', 5, 'http://127.0.0.1/', $cfg);
+    return [$r, array_slice($warnings, $before)];
+}
+
+// --- accepted boundary classes: 0 (unlimited), 1 (min cap), 3 (the
+//     issue's typical value), 999999999 (the documented cap, #170) ---
+list($r,$w)=run(['max_concurrent_requests'=>0]);
+echo "zero_result=".($r===false?'false':'string')." zero_warnings=".count($w)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>1]);
+echo "min1_result=".($r===false?'false':'string')." min1_warnings=".count($w)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>3]);
+echo "typ3_result=".($r===false?'false':'string')." typ3_warnings=".count($w)." typ3_body=".($r===false?'':$r)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>999999999]);
+echo "cap_result=".($r===false?'false':'string')." cap_warnings=".count($w)."\n";
+
+// --- absent key: documented default 0 = unlimited, positional path, no warnings ---
+list($r,$w)=run([]);
+echo "absent_result=".($r===false?'false':'string')." absent_warnings=".count($w)." absent_body=".($r===false?'':$r)."\n";
+
+// --- rejected: negatives and the cap+1 boundary ---
+list($r,$w)=run(['max_concurrent_requests'=>-1]);
+echo "neg1_result=".($r===false?'false':'string')." neg1_warnings=".count($w)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>-100]);
+echo "neg100_result=".($r===false?'false':'string')." neg100_warnings=".count($w)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>1000000000]); // cap+1 (cap is 999999999)
+echo "capplus1_result=".($r===false?'false':'string')." capplus1_warnings=".count($w)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>PHP_INT_MAX]);
+echo "phpintmax_result=".($r===false?'false':'string')." phpintmax_warnings=".count($w)."\n";
+
+// --- rejected: non-integer types (same strict contract as timeout/max_response_size/cache_ttl) ---
+list($r,$w)=run(['max_concurrent_requests'=>'10']);   // numeric string must NOT coerce
+echo "str_result=".($r===false?'false':'string')." str_warnings=".count($w)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>'abc']);
+echo "abc_result=".($r===false?'false':'string')." abc_warnings=".count($w)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>'']);     // empty string
+echo "emptystr_result=".($r===false?'false':'string')." emptystr_warnings=".count($w)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>1.5]);    // float, fractional
+echo "float_result=".($r===false?'false':'string')." float_warnings=".count($w)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>10.0]);   // float that happens to be integral
+echo "float10_result=".($r===false?'false':'string')." float10_warnings=".count($w)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>99999999999999999999]); // overflow literal -> float
+echo "overflow_result=".($r===false?'false':'string')." overflow_warnings=".count($w)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>true]);
+echo "bool_result=".($r===false?'false':'string')." bool_warnings=".count($w)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>null]);
+echo "null_result=".($r===false?'false':'string')." null_warnings=".count($w)."\n";
+list($r,$w)=run(['max_concurrent_requests'=>[3]]);
+echo "array_result=".($r===false?'false':'string')." array_warnings=".count($w)."\n";
+
+// the warning text must name the option (fail-loud rule)
+list($r,$w)=run(['max_concurrent_requests'=>-1]);
+echo "warn_names_option=".(count($w)===1 && strpos($w[0], 'max_concurrent_requests') !== false ? 'yes':'no')."\n";
+?>
+--EXPECT--
+zero_result=string zero_warnings=0
+min1_result=string min1_warnings=0
+typ3_result=string typ3_warnings=0 typ3_body=plain-ok
+cap_result=string cap_warnings=0
+absent_result=string absent_warnings=0 absent_body=plain-ok
+neg1_result=false neg1_warnings=1
+neg100_result=false neg100_warnings=1
+capplus1_result=false capplus1_warnings=1
+phpintmax_result=false phpintmax_warnings=1
+str_result=false str_warnings=1
+abc_result=false abc_warnings=1
+emptystr_result=false emptystr_warnings=1
+float_result=false float_warnings=1
+float10_result=false float10_warnings=1
+overflow_result=false overflow_warnings=1
+bool_result=false bool_warnings=1
+null_result=false null_warnings=1
+array_result=false array_warnings=1
+warn_names_option=yes
