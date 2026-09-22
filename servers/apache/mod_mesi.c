@@ -850,8 +850,8 @@ static const char *set_timeout(cmd_parms *cmd, void *cfg, const char *arg) {
 // in bytes (#169). Parsed with parse_nonneg_off (64-bit strict digit
 // parser) with range [0, MESI_MAX_MAX_RESPONSE_SIZE]. NOT the issue's
 // apr_strtoff sketch: with end=NULL apr_strtoff silently accepts
-// trailing garbage ("100abc"), a leading '+' and leading whitespace
-// — a malformed explicit value would pass config load — and NOT
+// trailing garbage ("100abc") and a leading '+'
+// — malformed explicit values would pass config load — and NOT
 // parse_nonneg_int, whose 9-digit int32 guard cannot express byte
 // counts. 0 is a LEGITIMATE configured value: the core only limits
 // the body when MaxResponseSize > 0 (mesi/fetch.go), so 0 means

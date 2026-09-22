@@ -589,6 +589,20 @@ if echo "$RESPONSE" | grep -q "After reject include" \
     && ! echo "$RESPONSE" | grep -q "MesiBytesPayload" \
     && ! echo "$RESPONSE" | grep -q '<esi:include'; then
     echo "PASS: 200-byte include rejected by MesiMaxResponseSize 100 (marker absent, tag stripped)"
+    # Control: the SAME page on the unset default vhost (no directive)
+    # must deliver the payload — proves the rejection above comes from
+    # the directive, not a broken endpoint or vhost template.
+    CONTROL=$(curl -s http://localhost:18080/max-response-reject.html)
+    if echo "$CONTROL" | grep -q "MesiBytesPayload 200" \
+        && echo "$CONTROL" | grep -q "After reject include" \
+        && ! echo "$CONTROL" | grep -q '<esi:include'; then
+        echo "PASS: control — same page on the unset vhost delivers the 200-byte payload"
+    else
+        echo "FAIL: control — same page on the unset vhost did not deliver the payload"
+        echo "Response: $CONTROL"
+        docker compose down
+        exit 1
+    fi
 else
     echo "FAIL: MesiMaxResponseSize 100 did not reject the 200-byte include"
     echo "Response: $RESPONSE"
