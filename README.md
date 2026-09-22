@@ -105,8 +105,9 @@ config := mesi.EsiParserConfig{
 
 Sets the maximum allowed size for HTTP response bodies (in bytes) when fetching ESI includes. Helps prevent OOM attacks from malicious or compromised upstream servers returning arbitrarily large responses.
 
-- Default: `10 * 1024 * 1024` (10 MB)
-- Set to `0` for unlimited (backward compatible)
+- Zero value: unlimited (backward compatible)
+- `CreateDefaultConfig()` sets `10 * 1024 * 1024` (10 MB)
+- Set to `0` explicitly for unlimited
 
 When a response exceeds the limit, an error is returned with the message: `response body exceeds maximum allowed size of X bytes`
 
@@ -192,4 +193,3 @@ we can download this code fragment using FetchAPI or htmlx
 To run E2E test just type `make test-e2e`
 
 🚀 **Looking for contributors!** If you are interested in helping with development, feel free to submit PRs or open issues.  
-
