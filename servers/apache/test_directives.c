@@ -2061,7 +2061,8 @@ TEST(merge_timeout_child_inherits) {
 }
 
 TEST(merge_timeout_both_unset) {
-    /* Both unset → -1 sentinel → filter applies the 30s default. */
+    /* Both unset → -1 sentinel → legacy path; LIBGOMESI applies the
+     * 30s default Go-side. */
     mesi_config base, add, merged;
     init_config(&base);
     init_config(&add);

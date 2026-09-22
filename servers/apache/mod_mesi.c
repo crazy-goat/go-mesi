@@ -167,7 +167,7 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     conf->cache_memcached_servers = apr_array_make(p, 2, sizeof(const char *));
     conf->cache_key_template = NULL;
     conf->max_depth = -1;  // -1 = unset, default 5 applied in filter
-    conf->timeout_seconds = -1;  // -1 = unset, default 30s applied in filter
+    conf->timeout_seconds = -1;  // -1 = unset: legacy parse path, libgomesi applies its 30s Go-side (macro documents it only)
     return conf;
 }
 
