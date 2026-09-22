@@ -668,6 +668,253 @@ else
     exit 1
 fi
 
+echo "=== Test 38: mesi_max_depth 1 — inner nest not processed (#180) ==="
+# /max-depth-1/nested_depth.html: depth 1 fetches the OUTER include
+# (its visible body proves the fetch happened), then re-parses the
+# fragment with MaxDepth=0 — the inner tag goes through the
+# include-error path and is replaced with the empty default marker
+# (never fetched, never left raw). Same contract as Apache Test 27 /
+# Caddy, with a fixture that makes each level observable.
+RESPONSE=$(curl -s http://localhost:18080/max-depth-1/nested_depth.html)
+if echo "$RESPONSE" | grep -q "Nested Depth Test" \
+    && echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q "INNER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: mesi_max_depth 1 fetched the outer include and stripped the inner tag"
+else
+    echo "FAIL: mesi_max_depth 1 did not match the depth-1 contract (outer body, no inner body, no leftover tag)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 39: mesi_max_depth 5 (explicit) — both nest levels processed (#180) ==="
+RESPONSE=$(curl -s http://localhost:18080/max-depth-5/nested_depth.html)
+if echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
+    && echo "$RESPONSE" | grep -q "INNER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: explicit mesi_max_depth 5 processed both nest levels"
+else
+    echo "FAIL: explicit mesi_max_depth 5 did not process both nest levels"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 40: mesi_max_depth 0 — passthrough: nothing fetched, tags stripped (#180) ==="
+# Depth 0 = the cross-platform "passthrough" contract (Caddy README:
+# "Tags are stripped but includes are not fetched") — NOT raw tags in
+# the output as the issue proposed: libgomesi's ParseOnly() takes the
+# include-error path, and the default IncludeErrorMarker is empty.
+# OUTER body absent proves no fetch happened; a raw tag would mean the
+# filter never ran.
+RESPONSE=$(curl -s http://localhost:18080/max-depth-0/nested_depth.html)
+if echo "$RESPONSE" | grep -q "Nested Depth Test" \
+    && ! echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q "INNER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: explicit mesi_max_depth 0 fetches nothing and strips the include tags"
+else
+    echo "FAIL: mesi_max_depth 0 did not match the passthrough contract (no fetch, stripped tags)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 41: mesi_max_depth unset → 5 (backward compat, #180) ==="
+# The default location has no mesi_max_depth directive; it must keep
+# behaving exactly like the historical hardcoded 5 (same as Test 7, now
+# asserted explicitly as the #180 backward-compat case).
+RESPONSE=$(curl -s http://localhost:18080/nested_depth.html)
+if echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
+    && echo "$RESPONSE" | grep -q "INNER-DEPTH-BODY"; then
+    echo "PASS: unset mesi_max_depth defaults to 5 (both nest levels processed)"
+else
+    echo "FAIL: unset mesi_max_depth no longer behaves like depth 5"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 42: mesi_max_depth merge — child inherits the parent's value (#180) ==="
+# Parent sets 1, the nested child location has no directive: the child
+# must inherit 1 through ngx_conf_merge_value (depth-1 contract on both
+# the parent URL and the nested child URL). A child that silently got 0
+# would miss the OUTER body; a child without enable_mesi would show the
+# raw tag — both fail the assertion.
+RESPONSE=$(curl -s http://localhost:18080/max-depth-merge-inherit/nested_depth.html)
+if echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q "INNER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: parent location with mesi_max_depth 1 behaves at depth 1"
+else
+    echo "FAIL: parent location (mesi_max_depth 1) did not match the depth-1 contract"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+RESPONSE=$(curl -s http://localhost:18080/max-depth-merge-inherit/child/nested_depth.html)
+if echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q "INNER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: child location inherits the parent's mesi_max_depth 1"
+else
+    echo "FAIL: child location did not inherit the parent's mesi_max_depth"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 43: mesi_max_depth merge — child's own value overrides the parent (#180) ==="
+# Parent sets 0 (passthrough), the nested child sets 5: the child must
+# win and process both levels; the parent itself must stay at 0.
+RESPONSE=$(curl -s http://localhost:18080/max-depth-merge-override/nested_depth.html)
+if echo "$RESPONSE" | grep -q "Nested Depth Test" \
+    && ! echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: parent location keeps its own mesi_max_depth 0 (nothing fetched, tags stripped)"
+else
+    echo "FAIL: parent location (mesi_max_depth 0) did not match the passthrough contract"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+RESPONSE=$(curl -s http://localhost:18080/max-depth-merge-override/child/nested_depth.html)
+if echo "$RESPONSE" | grep -q "OUTER-DEPTH-BODY" \
+    && echo "$RESPONSE" | grep -q "INNER-DEPTH-BODY"; then
+    echo "PASS: child location's mesi_max_depth 5 overrides the parent's 0"
+else
+    echo "FAIL: child location did not override the parent's mesi_max_depth"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 44: Config validation — mesi_max_depth boundary values (#180) ==="
+# (a) Boundary classes ACCEPTED: explicit 0 (passthrough) and the cap
+#     MESI_MAX_MAX_DEPTH (10000).
+for GOOD in 0 10000; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_max_depth ${GOOD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-max-depth.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-max-depth.conf' < /tmp/nginx-max-depth.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-max-depth.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "syntax is ok"; then
+        echo "PASS: valid mesi_max_depth ${GOOD} accepted by nginx -t"
+    else
+        echo "FAIL: nginx rejected valid mesi_max_depth ${GOOD}"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (b) Format classes REJECTED: negative, non-integer, decimal, trailing
+#     garbage, explicit plus sign — atoi would silently coerce all of
+#     these ("-1" wraps when cast to uint, "1.5" truncates, "abc" → 0).
+for BAD in '-1' 'abc' '1.5' '3foo' '+1'; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_max_depth ${BAD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-max-depth.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-max-depth.conf' < /tmp/nginx-max-depth.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-max-depth.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "must be a non-negative integer"; then
+        echo "PASS: invalid mesi_max_depth ${BAD} rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject invalid mesi_max_depth ${BAD} with the expected error"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (c) Range classes REJECTED: cap+1 and a 20-digit overflow input (the
+#     setter's early exit bounds its own accumulator, so the value can
+#     never overflow ngx_int_t regardless of argument length).
+for BAD in 10001 99999999999999999999; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_max_depth ${BAD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-max-depth.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-max-depth.conf' < /tmp/nginx-max-depth.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-max-depth.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "out of range"; then
+        echo "PASS: out-of-range mesi_max_depth ${BAD} rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject out-of-range mesi_max_depth ${BAD} with the expected error"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (d) Empty value REJECTED: "" must not silently become a passthrough 0.
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_max_depth "";' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-max-depth.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-max-depth.conf' < /tmp/nginx-max-depth.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-max-depth.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q "requires an argument"; then
+    echo "PASS: empty mesi_max_depth rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject an empty mesi_max_depth"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+# (e) Missing argument REJECTED: a bare `mesi_max_depth;` (zero args) is
+#     caught by NGX_CONF_TAKE1 before the setter runs.
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_max_depth;' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-max-depth.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-max-depth.conf' < /tmp/nginx-max-depth.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-max-depth.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q 'invalid number of arguments in "mesi_max_depth"'; then
+    echo "PASS: argument-less mesi_max_depth rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject a mesi_max_depth without an argument"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
 docker compose down
 
 echo ""

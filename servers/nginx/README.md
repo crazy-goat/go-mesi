@@ -65,6 +65,54 @@ location / {
 }
 ```
 
+## MaxDepth
+
+The `mesi_max_depth` directive controls how many levels of nested `<esi:include>` tags are recursively processed. Until #180 this depth was hardcoded to `5` inside the module.
+
+### Directive
+
+#### `mesi_max_depth`
+
+- **Syntax:** `mesi_max_depth <number>`
+- **Default:** `5` (backward compatible with the previous hardcoded value)
+- **Context:** `location`
+- **Range:** `[0, 10000]` (`mesi.MaxMaxDepth`, the same cap as Apache `MesiMaxDepth`, Caddy `max_depth` and the CLI `-max-depth`)
+
+Semantics:
+
+- **Unset** → `5`. Omitting the directive behaves exactly like previous releases.
+- **`0`** is a valid **passthrough**: no `<esi:include>` is fetched at all. The tags are stripped through the include-error path — rendered as the tag body when one is present, otherwise as the include-error marker (empty by default). They do **not** remain raw in the output. This is the established cross-platform contract (Caddy `max_depth 0`: "Tags are stripped but includes are not fetched"; same for Traefik and RoadRunner).
+- **`1`** processes one include level: the outer include is fetched, then the fragment is re-parsed with depth 0, so an inner `<esi:include>` is replaced with the empty include-error marker (it is *not* fetched and *not* left as a raw tag).
+- **`2`–`10000`** allow that many levels of nesting.
+
+Validation is strict and happens at config load (`nginx -t` fails — no silent default): the argument must be a non-empty, digits-only integer within `[0, 10000]`. Negatives (`-1`), signs (`+1`), decimals (`1.5`), non-integers (`abc`, `3foo`), empty values (`""`) and anything above the cap (`10001`, oversized digit strings) are all rejected with an error naming the directive and the offending value. The check is done by a custom setter rather than `ngx_conf_set_num_slot`, whose `ngx_atoi`-based parse has no upper bound (`mesi_max_depth 10001` would otherwise load fine).
+
+The merged value is passed to every libgomesi entry point the module may call (`ParseWithConfigCtx` / `ParseWithConfigEx` / `ParseWithConfig` / legacy `Parse`). Nested `location` blocks inherit the directive from their enclosing location via `ngx_conf_merge_value` (an unset child takes the parent's value; a child that sets the directive overrides the parent).
+
+### Example
+
+```nginx
+location /shallow/ {
+    enable_mesi on;
+    mesi_max_depth 1;    # process only one include level
+    proxy_pass http://backend;
+}
+
+location /no-esi/ {
+    enable_mesi on;
+    mesi_max_depth 0;    # passthrough: nothing fetched, tags stripped
+    proxy_pass http://backend;
+}
+
+location / {
+    enable_mesi on;
+    # mesi_max_depth unset → default 5
+    proxy_pass http://backend;
+}
+```
+
+See [examples/nginx-max-depth.conf](../../examples/nginx-max-depth.conf) for a full example file.
+
 ## Shared HTTP Client
 
 Not available in the nginx module: there is no shared-client directive (unlike Apache's `MesiSharedHTTPClient` and the CLI's `-shared-http-client`) and no `InitHTTPClient` wiring. Each `<esi:include>` fetch creates its own `http.Client` for the request, so TCP/TLS connection pooling across includes is not available — every include performs its own connection setup. Each per-include client still uses the SSRF-safe transport, so `mesi_block_private_ips` protection applies to every fetch.
