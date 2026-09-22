@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Max Response Size Reject Test</title>
+</head>
+<body>
+    <h1>Max Response Size Reject Test</h1>
+    <!-- Vhost *:8089 sets MesiMaxResponseSize 100; the backend returns
+         a 200-byte body (/bytes/200), so the size check must fail the
+         fetch and render nothing (empty IncludeErrorMarker — no
+         payload marker, no raw tag left behind). The SAME page on the
+         default vhost (no directive) must deliver the payload — that
+         is the control that proves the rejection is caused by the
+         directive, not a broken endpoint. NOTE: keep the literal
+         marker string OUT of this comment — test.sh greps the
+         rendered response for its absence. Used by test.sh (#169). -->
+    <esi:include src="http://backend:8000/bytes/200" />
+    <p>After reject include</p>
+</body>
+</html>

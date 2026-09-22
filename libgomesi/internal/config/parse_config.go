@@ -19,8 +19,12 @@ const DefaultMaxDepth = 5
 // Every field is optional. Absent keys resolve to documented
 // defaults — maxDepth 5, no allowed-hosts restriction, SSRF
 // blockPrivateIPs ON (secure default, matching the core/Caddy/PHP/
-// RoadRunner defaults), no bypass, URL-only cache keys, and
-// timeoutSeconds 30 (libgomesi's historical hardcoded value).
+// RoadRunner defaults), no bypass, URL-only cache keys,
+// timeoutSeconds 30 (libgomesi's historical hardcoded value), and
+// maxResponseSize 0 (unlimited — the value every positional Parse*
+// entry point leaves in EsiParserConfig.MaxResponseSize, NOT the
+// 10 MB of mesi.CreateDefaultConfig, which only applies to Go
+// callers using that constructor).
 //
 // Unknown keys are ignored (forward compatibility — a newer caller
 // must be able to talk to an older libgomesi). Type mismatches and
@@ -54,6 +58,14 @@ type ParseConfig struct {
 	// distinguishable from an absent key (default 30). Validated
 	// against [1, MaxTimeoutSeconds].
 	TimeoutSeconds *int `json:"timeoutSeconds"`
+	// MaxResponseSize caps a single <esi:include> response body in
+	// BYTES. Pointer so an explicit 0 — a legitimate documented
+	// value meaning "unlimited", see mesi/fetch.go — is
+	// distinguishable from an absent key (which also resolves to 0,
+	// keeping the key's absence byte-identical to the positional
+	// Parse* paths). Validated against [0, MaxMaxResponseSize];
+	// negatives are rejected rather than silently behaving like 0.
+	MaxResponseSize *int64 `json:"maxResponseSize"`
 }
 
 // ParseConfigFromJSON decodes the ParseJson config blob. Malformed
@@ -88,6 +100,23 @@ func (c ParseConfig) ResolvedMaxDepth() (uint, error) {
 // silently replaced by the default.
 func (c ParseConfig) ResolvedTimeout() (time.Duration, error) {
 	return ResolveTimeout(c.TimeoutSeconds)
+}
+
+// ResolvedMaxResponseSize returns the validated per-include response
+// body cap in bytes: the explicit value when set (0 = unlimited — the
+// documented core contract), otherwise 0. Absent → 0 is byte-identical
+// to every positional Parse* entry point, which leaves
+// EsiParserConfig.MaxResponseSize at its zero value (unlimited).
+// An out-of-range explicit value errors — it is never silently
+// replaced by the default.
+func (c ParseConfig) ResolvedMaxResponseSize() (int64, error) {
+	if c.MaxResponseSize == nil {
+		return 0, nil
+	}
+	if err := ValidateMaxResponseSize(*c.MaxResponseSize); err != nil {
+		return 0, err
+	}
+	return *c.MaxResponseSize, nil
 }
 
 // ResolvedBlockPrivateIPs returns the effective SSRF dial-time block:

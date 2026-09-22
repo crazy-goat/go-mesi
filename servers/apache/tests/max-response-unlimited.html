@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Max Response Size Unlimited Test</title>
+</head>
+<body>
+    <h1>Max Response Size Unlimited Test</h1>
+    <!-- Vhost *:8091 sets MesiMaxResponseSize 0 (explicit "unlimited");
+         the backend returns a 50 MB body (/bytes/52428800), far above
+         any implicit default — it must arrive in full. Pins the AC's
+         "0 = unlimited" functionally; the -1-sentinel distinction (0
+         stored as configured, not as unset) is pinned by the
+         merge_mrs_child_zero_overrides unit test in test_directives.c
+         — no global limit is configured that would make the two cases
+         differ here. Used by test.sh (#169). -->
+    <esi:include src="http://backend:8000/bytes/52428800" />
+    <p>After unlimited include</p>
+</body>
+</html>

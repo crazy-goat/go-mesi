@@ -55,6 +55,10 @@ typedef struct {
     /* Global per-include fetch timeout in seconds (#167).
      * -1 = unset (filter uses 30). 0 can never be stored — rejected. */
     int timeout_seconds;
+    /* Per-include response body cap in bytes (#169).
+     * -1 = unset (libgomesi leaves 0 = unlimited). 0 IS a storable
+     * configured value — "unlimited" — so the sentinel must stay -1. */
+    apr_off_t max_response_size;
 } mesi_config;
 
 /* Sentinel/constant values copied from mod_mesi.c */
@@ -71,6 +75,11 @@ typedef struct {
  * with libgomesi config.MaxTimeoutSeconds / DefaultTimeoutSeconds. */
 #define MESI_MAX_TIMEOUT_SECONDS (24 * 60 * 60)
 #define MESI_DEFAULT_TIMEOUT_SECONDS 30
+/* MesiMaxResponseSize cap (#169) — mirrors mod_mesi.c; keep in sync
+ * with libgomesi config.MaxMaxResponseSize (math.MaxInt64 - 1): the
+ * core computes MaxResponseSize+1 for its io.LimitReader bound
+ * (mesi/fetch.go), which would wrap negative at math.MaxInt64. */
+#define MESI_MAX_MAX_RESPONSE_SIZE ((apr_off_t)9223372036854775806LL)
 
 /* Directive parsing functions (copied from mod_mesi.c for testing) */
 static const char *parse_allowed_hosts(mesi_config *conf, const char *arg) {
@@ -218,6 +227,70 @@ static const char *set_timeout(mesi_config *conf, const char *arg) {
         return err;
     }
     conf->timeout_seconds = v;
+    return NULL;
+}
+
+/* 64-bit strict non-negative integer parser — copied verbatim from
+ * mod_mesi.c. Same rejection contract as parse_nonneg_int (empty,
+ * '-', '+', '.', trailing garbage, out of range — error names the
+ * directive) but stores into apr_off_t: parse_nonneg_int's 9-digit
+ * guard pins it to int32 range, which cannot express byte counts for
+ * MesiMaxResponseSize (#169). Overflow is guarded per digit against
+ * `max` before the multiply so no intermediate wraps. */
+static const char *parse_nonneg_off(apr_pool_t *pool_arg, const char *arg,
+                                    const char *directive,
+                                    apr_off_t min, apr_off_t max,
+                                    apr_off_t *out) {
+    const char *p = arg ? arg : "";
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '\0') {
+        return apr_psprintf(pool_arg,
+            "%s requires a non-negative integer argument", directive);
+    }
+    const char *digits = p;
+    while (*p >= '0' && *p <= '9') p++;
+    if (*p != '\0') {
+        return apr_psprintf(pool_arg,
+            "%s must be a non-negative integer (got: %s)", directive, arg);
+    }
+    if (digits == p) {
+        return apr_psprintf(pool_arg,
+            "%s must contain at least one digit (got: %s)", directive, arg);
+    }
+    apr_off_t val = 0;
+    for (const char *q = digits; q < p; q++) {
+        apr_off_t d = (apr_off_t)(*q - '0');
+        if (val > (max - d) / 10) {
+            return apr_psprintf(pool_arg,
+                "%s value %s exceeds maximum allowed (%" APR_INT64_T_FMT ")",
+                directive, arg, (apr_int64_t)max);
+        }
+        val = val * 10 + d;
+    }
+    if (val < min || val > max) {
+        return apr_psprintf(pool_arg,
+            "%s value %s out of range [%" APR_INT64_T_FMT ", %" APR_INT64_T_FMT "]",
+            directive, arg, (apr_int64_t)min, (apr_int64_t)max);
+    }
+    *out = val;
+    return NULL;
+}
+
+/* MesiMaxResponseSize — mirrors set_max_response_size in mod_mesi.c
+ * (#169). Uses parse_nonneg_off (64-bit, never apr_strtoff — its
+ * end=NULL form silently accepts trailing garbage and '+') with range
+ * [0, MESI_MAX_MAX_RESPONSE_SIZE]. 0 is a LEGITIMATE configured
+ * value ("unlimited", mesi/fetch.go only limits when > 0); negatives
+ * are rejected (the core would silently treat them like 0).
+ * Helper errors already name MesiMaxResponseSize. */
+static const char *set_max_response_size(mesi_config *conf, const char *arg) {
+    apr_off_t v = 0;
+    const char *err = parse_nonneg_off(pool, arg, "MesiMaxResponseSize",
+                                       0, MESI_MAX_MAX_RESPONSE_SIZE, &v);
+    if (err) {
+        return err;
+    }
+    conf->max_response_size = v;
     return NULL;
 }
 
@@ -454,6 +527,7 @@ static void init_config(mesi_config *conf) {
     conf->cache_key_template = NULL;
     conf->max_depth = -1;
     conf->timeout_seconds = -1;
+    conf->max_response_size = -1;
 }
 
 static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merged) {
@@ -478,6 +552,7 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
     merged->cache_key_template = add->cache_key_template ? add->cache_key_template : base->cache_key_template;
     merged->max_depth = (add->max_depth != -1) ? add->max_depth : base->max_depth;
     merged->timeout_seconds = (add->timeout_seconds != -1) ? add->timeout_seconds : base->timeout_seconds;
+    merged->max_response_size = (add->max_response_size != -1) ? add->max_response_size : base->max_response_size;
 }
 
 /* Test cases */
@@ -2072,6 +2147,216 @@ TEST(merge_timeout_both_unset) {
     ASSERT_EQ(merged.timeout_seconds, -1);
 }
 
+/* --- MesiMaxResponseSize directive tests (#169) --- */
+
+TEST(mrs_default_unset) {
+    /* Fresh config: sentinel -1 (unset). The filter then stays on the
+     * legacy parse path and LIBGOMESI leaves MaxResponseSize at 0 —
+     * "unlimited", the exact pre-#169 Apache behaviour (there is NO
+     * implicit 10 MB default on the libgomesi path: the 10 MB of
+     * mesi.CreateDefaultConfig only reaches Go callers of that
+     * constructor, never the positional Parse* entry points). */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_EQ(conf.max_response_size, (apr_off_t)-1);
+}
+
+TEST(mrs_zero_accepted) {
+    /* AC: MesiMaxResponseSize 0 = unlimited. Unlike MesiTimeout, 0 is
+     * a legitimate configured value (mesi/fetch.go only limits when
+     * MaxResponseSize > 0), so it must parse AND be storable — the
+     * -1 sentinel is what keeps it distinct from "unset". */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_response_size(&conf, "0"));
+    ASSERT_EQ(conf.max_response_size, (apr_off_t)0);
+}
+
+TEST(mrs_small_accepted) {
+    /* AC: MesiMaxResponseSize 100 — a 200-byte include must be
+     * rejected at fetch time (functional test on vhost 8089). */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_response_size(&conf, "100"));
+    ASSERT_EQ(conf.max_response_size, (apr_off_t)100);
+}
+
+TEST(mrs_one_mb_accepted) {
+    /* AC: MesiMaxResponseSize 1048576 — a 500 KB include must
+     * succeed (functional test on vhost 8090). Issue example. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_response_size(&conf, "1048576"));
+    ASSERT_EQ(conf.max_response_size, (apr_off_t)1048576);
+}
+
+TEST(mrs_max_accepted) {
+    /* Boundary: 9223372036854775806 (math.MaxInt64 - 1) is the
+     * configured max — the largest value for which the core's
+     * MaxResponseSize+1 LimitReader bound (mesi/fetch.go) stays
+     * positive. Needs the full 19-digit range parse_nonneg_int's
+     * 9-digit guard cannot express. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_response_size(&conf, "9223372036854775806"));
+    ASSERT_EQ(conf.max_response_size, MESI_MAX_MAX_RESPONSE_SIZE);
+    ASSERT_EQ(MESI_MAX_MAX_RESPONSE_SIZE, (apr_off_t)9223372036854775806LL);
+}
+
+TEST(mrs_max_plus_one_rejected) {
+    /* Boundary: 9223372036854775807 (math.MaxInt64) — at this value
+     * the core's MaxResponseSize+1 wraps negative and the include
+     * would silently render an EMPTY body. Rejected at config load. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_response_size(&conf, "9223372036854775807");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxResponseSize");
+    ASSERT_STR_CONTAINS(err, "exceeds maximum");
+    ASSERT_EQ(conf.max_response_size, (apr_off_t)-1);
+}
+
+TEST(mrs_negative_rejected) {
+    /* AC: negative is an error. The core's > 0 check would silently
+     * treat a negative exactly like 0 (unlimited) — a malformed
+     * explicit value must never pass as a documented one. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_response_size(&conf, "-1");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxResponseSize");
+    ASSERT_EQ(conf.max_response_size, (apr_off_t)-1);
+}
+
+TEST(mrs_plus_sign_rejected) {
+    /* Deviation from the issue's apr_strtoff sketch: apr_strtoff
+     * accepts a leading '+'. parse_nonneg_off skips leading spaces/tabs
+     * too (like parse_nonneg_int), but rejects the sign — the strict
+     * digits-only parser requires a plain decimal form. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_response_size(&conf, "+100");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxResponseSize");
+    ASSERT_EQ(conf.max_response_size, (apr_off_t)-1);
+}
+
+TEST(mrs_alpha_rejected) {
+    /* atoi("abc") → 0 would silently mean "unlimited". Reject. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_response_size(&conf, "abc");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxResponseSize");
+    ASSERT_EQ(conf.max_response_size, (apr_off_t)-1);
+}
+
+TEST(mrs_trailing_garbage_rejected) {
+    /* Deviation from the issue's apr_strtoff sketch: with end=NULL,
+     * apr_strtoff silently accepts "100abc" (it stops at the first
+     * invalid char and nobody checks it). The strict parser rejects
+     * any trailing garbage. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_response_size(&conf, "100abc");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxResponseSize");
+    ASSERT_EQ(conf.max_response_size, (apr_off_t)-1);
+}
+
+TEST(mrs_decimal_rejected) {
+    /* Decimals must fail-fast — a truncating parse would silently
+     * accept "1024.5" as 1024. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_response_size(&conf, "2.5");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxResponseSize");
+    ASSERT_EQ(conf.max_response_size, (apr_off_t)-1);
+}
+
+TEST(mrs_empty_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_response_size(&conf, "");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxResponseSize");
+    ASSERT_EQ(conf.max_response_size, (apr_off_t)-1);
+}
+
+TEST(mrs_oversize_rejected) {
+    /* 19 nines (9999999999999999999) fits the digit count but not
+     * the cap; 18446744073709551616 (20 digits, uint64_MAX+1) trips
+     * the per-digit overflow guard before any intermediate wraps.
+     * Both must fail with an error naming the directive. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_response_size(&conf, "9999999999999999999");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxResponseSize");
+    ASSERT_STR_CONTAINS(err, "exceeds maximum");
+    ASSERT_EQ(conf.max_response_size, (apr_off_t)-1);
+
+    err = set_max_response_size(&conf, "18446744073709551616");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "exceeds maximum");
+    ASSERT_EQ(conf.max_response_size, (apr_off_t)-1);
+}
+
+TEST(merge_mrs_child_overrides) {
+    /* Child 1 MB / parent 100 → 1 MB (add overrides base). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.max_response_size = 100;
+    add.max_response_size = 1048576;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_response_size, (apr_off_t)1048576);
+}
+
+TEST(merge_mrs_child_inherits) {
+    /* Base 1 MB + unset add → 1 MB (unset child inherits the parent). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.max_response_size = 1048576;
+    add.max_response_size = -1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_response_size, (apr_off_t)1048576);
+}
+
+TEST(merge_mrs_child_zero_overrides) {
+    /* Explicit 0 ("unlimited") must win over a parent limit — 0 is
+     * configured, not unset. This is the whole reason the sentinel
+     * is -1 and not 0 (as a `>= 0` merge would silently inherit the
+     * parent's limit and the operator's "unlimited" would be lost). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.max_response_size = 1048576;
+    add.max_response_size = 0;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_response_size, (apr_off_t)0);
+}
+
+TEST(merge_mrs_both_unset) {
+    /* Both unset → -1 sentinel → legacy path; LIBGOMESI leaves 0
+     * (unlimited) — byte-identical to pre-#169 behaviour. */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_response_size, (apr_off_t)-1);
+}
+
 int main(int argc, char *argv[]) {
     printf("=== Apache Module Directive Unit Tests ===\n\n");
 
@@ -2279,6 +2564,27 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_timeout_child_overrides);
     RUN_TEST(merge_timeout_child_inherits);
     RUN_TEST(merge_timeout_both_unset);
+
+    printf("\nTesting set_max_response_size() (#169):\n");
+    RUN_TEST(mrs_default_unset);
+    RUN_TEST(mrs_zero_accepted);
+    RUN_TEST(mrs_small_accepted);
+    RUN_TEST(mrs_one_mb_accepted);
+    RUN_TEST(mrs_max_accepted);
+    RUN_TEST(mrs_max_plus_one_rejected);
+    RUN_TEST(mrs_negative_rejected);
+    RUN_TEST(mrs_plus_sign_rejected);
+    RUN_TEST(mrs_alpha_rejected);
+    RUN_TEST(mrs_trailing_garbage_rejected);
+    RUN_TEST(mrs_decimal_rejected);
+    RUN_TEST(mrs_empty_rejected);
+    RUN_TEST(mrs_oversize_rejected);
+
+    printf("\nTesting merge_server_config() max_response_size fields (#169):\n");
+    RUN_TEST(merge_mrs_child_overrides);
+    RUN_TEST(merge_mrs_child_inherits);
+    RUN_TEST(merge_mrs_child_zero_overrides);
+    RUN_TEST(merge_mrs_both_unset);
 
 
     apr_pool_destroy(pool);
