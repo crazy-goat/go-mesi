@@ -40,7 +40,6 @@ cli/cli
 tests/tests
 
 .idea
-/servers/test-server/example-server
 /servers/test-server/test-server
 /libgomesi/test-libgomesi
 /servers/nginx/libgomesi.h
