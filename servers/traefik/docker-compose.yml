@@ -14,6 +14,8 @@ services:
       - test-server
 
   test-server:
-    image: crazygoat/esi-test-server
+    build:
+      context: ../test-server
+      dockerfile: Dockerfile
     labels:
       - traefik.http.routers.test-server.rule=Host(`domain.com`)

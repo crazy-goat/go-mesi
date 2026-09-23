@@ -72,6 +72,44 @@ http:
           sharedHTTPClient: true
 ```
 
+## Timeout
+
+`timeout` bounds every `<esi:include>` fetch of a single page render —
+end-to-end (redirect chain + body read), not the client-facing response.
+
+- **Format:** Go duration string — `"5s"`, `"1.5s"`, `"1m"`, `"1h30m"`.
+  Plain integers (`15`) are rejected (missing unit), exactly like Caddy's
+  `timeout`.
+- **Default:** `"10s"` when the option is absent — this plugin's budget
+  since the initial middleware commit (10 s from day one: hardcoded in
+  the core fetch path until #48 moved the literal into `ServeHTTP`; the
+  same 10 s as Caddy's default and
+  `mesi.CreateDefaultConfig()`; libgomesi's C entry points default to
+  30 s, which does not apply to this Go-direct plugin).
+- **Range:** `[1s, 24h]` (`86400s`), mirroring libgomesi's
+  `config.MaxTimeoutSeconds` / Apache `MesiTimeout` / nginx
+  `mesi_timeout`.
+- **Reject behavior:** a malformed or out-of-range EXPLICIT value fails
+  middleware creation with an error naming `timeout` — never a silent
+  fallback to the default. In particular `""` (explicit empty), `"abc"`,
+  `"0s"`, sub-second values below the floor (`"500ms"`, `"999ms"`) and
+  negatives are rejected: `Timeout <= 0` makes every include
+  fail immediately with `ErrTimeBudgetExceeded` in the core — `0` does
+  not mean "unlimited". A bare `timeout:` (YAML null) is treated as
+  absent and gets the documented `"10s"` default; only a non-null
+  explicit value (including `""`) is validated.
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          # Tight SLA: abort slow fragment fetches at 2s — the fragment
+          # renders as fallback/empty instead of holding the request.
+          timeout: "2s"
+```
+
 ## Allowed Hosts (SSRF whitelist)
 
 When `allowedHosts` is set, only ESI include destinations whose host is listed
@@ -193,6 +231,7 @@ http:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `maxDepth` | int | `5` | Maximum ESI recursion depth. Omit for the default. Explicit `0` is passthrough (no ESI fetch). Values outside `[0, 10000]` are rejected. |
+| `timeout` | string | `"10s"` | Per-include fetch budget as a Go duration (e.g. `"5s"`, `"1m"`); range `[1s, 24h]`. Malformed or out-of-range explicit values fail middleware creation (no silent default). |
 | `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
 | `includeErrorMarker` | string | `""` | String rendered for failed includes (empty = silent) |
 | `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis`, `memcached` |

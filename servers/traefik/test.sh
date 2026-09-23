@@ -93,6 +93,81 @@ else
     echo "INFO: /esi Content-Type: $CT"
 fi
 
+echo "=== Test 7: timeout 2s aborts 5s include ==="
+TIME_TOTAL=$(curl -s --max-time 20 -H "Host: timeout2.domain.com" http://localhost:18080/slow/5000 -o /tmp/mesi-traefik-timeout-body.txt -w "%{time_total}")
+if awk -v t="$TIME_TOTAL" 'BEGIN{exit !(t >= 1.5 && t <= 4.0)}'; then
+    echo "PASS: include aborted at ${TIME_TOTAL}s (window [1.5, 4.0])"
+else
+    echo "FAIL: expected abort at ~2s, got ${TIME_TOTAL}s"
+    docker compose down
+    exit 1
+fi
+if grep -q "SLOW-FRAG" /tmp/mesi-traefik-timeout-body.txt; then
+    echo "FAIL: 5s fragment delivered despite 2s timeout"
+    echo "Response: $(cat /tmp/mesi-traefik-timeout-body.txt)"
+    docker compose down
+    exit 1
+elif ! grep -q "SLOW-PAGE" /tmp/mesi-traefik-timeout-body.txt; then
+    echo "FAIL: page marker missing (page itself did not render)"
+    echo "Response: $(cat /tmp/mesi-traefik-timeout-body.txt)"
+    docker compose down
+    exit 1
+elif grep -q "<esi:include" /tmp/mesi-traefik-timeout-body.txt; then
+    echo "FAIL: raw <esi:include> tag left in response"
+    echo "Response: $(cat /tmp/mesi-traefik-timeout-body.txt)"
+    docker compose down
+    exit 1
+else
+    echo "PASS: 5s fragment aborted at the 2s budget, tag stripped"
+fi
+
+echo "=== Test 8: timeout 30s lets 10s include through ==="
+TIME_TOTAL=$(curl -s --max-time 40 -H "Host: timeout30.domain.com" http://localhost:18080/slow/10000 -o /tmp/mesi-traefik-timeout-body.txt -w "%{time_total}")
+if awk -v t="$TIME_TOTAL" 'BEGIN{exit !(t >= 9.5 && t <= 25.0)}'; then
+    echo "PASS: 10s backend ran to completion in ${TIME_TOTAL}s (window [9.5, 25.0])"
+else
+    echo "FAIL: expected the 10s include in window [9.5, 25.0], got ${TIME_TOTAL}s"
+    docker compose down
+    exit 1
+fi
+if grep -q "SLOW-FRAG Held 10000" /tmp/mesi-traefik-timeout-body.txt; then
+    echo "PASS: fragment delivered under the 30s budget"
+else
+    echo "FAIL: fragment missing under the 30s budget"
+    echo "Response: $(cat /tmp/mesi-traefik-timeout-body.txt)"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 9: absent timeout keeps the 10s default (11s include aborted) ==="
+TIME_TOTAL=$(curl -s --max-time 55 -H "Host: domain.com" http://localhost:18080/slow/11000 -o /tmp/mesi-traefik-timeout-body.txt -w "%{time_total}")
+if awk -v t="$TIME_TOTAL" 'BEGIN{exit !(t >= 9.5 && t <= 14.0)}'; then
+    echo "PASS: default budget aborted the 11s include at ${TIME_TOTAL}s (window [9.5, 14.0])"
+else
+    echo "FAIL: expected ~10s default budget, got ${TIME_TOTAL}s"
+    docker compose down
+    exit 1
+fi
+if grep -q "SLOW-FRAG" /tmp/mesi-traefik-timeout-body.txt; then
+    echo "FAIL: 11s fragment delivered — default timeout is not 10s"
+    echo "Response: $(cat /tmp/mesi-traefik-timeout-body.txt)"
+    docker compose down
+    exit 1
+fi
+if ! grep -q "SLOW-PAGE" /tmp/mesi-traefik-timeout-body.txt; then
+    echo "FAIL: parent page marker missing — the render itself broke"
+    echo "Response: $(cat /tmp/mesi-traefik-timeout-body.txt)"
+    docker compose down
+    exit 1
+fi
+if grep -q "<esi:include" /tmp/mesi-traefik-timeout-body.txt; then
+    echo "FAIL: raw <esi:include> tag left in response"
+    docker compose down
+    exit 1
+fi
+echo "PASS: absent timeout stays byte-compatible with the historical 10s (page rendered, tag stripped)"
+rm -f /tmp/mesi-traefik-timeout-body.txt
+
 docker compose down
 
 echo ""

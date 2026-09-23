@@ -16,11 +16,21 @@ const PluginName = "mesi"
 
 func intPtr(v int) *int { return &v }
 
+func strPtr(v string) *string { return &v }
+
 type Config struct {
 	// MaxDepth limits ESI nesting. A nil pointer is "unset" (default 5).
 	// Explicit 0 is passthrough (disable ESI), matching Caddy / Apache #166
 	// and the README. Valid range is [0, mesi.MaxMaxDepth].
-	MaxDepth                       *int     `json:"maxDepth" yaml:"maxDepth"`
+	MaxDepth *int `json:"maxDepth" yaml:"maxDepth"`
+	// Timeout is the per-include fetch budget as a Go duration string
+	// (e.g. "10s", "5m") — the same grammar as Caddy's `timeout` and
+	// this plugin's cacheTTL. A nil pointer is "unset" (default 10s,
+	// the value this plugin has used since its inception — 10s from
+	// day one). A non-nil pointer
+	// must parse as a duration in [1s, 24h] or New() rejects it — an
+	// explicit value is never silently replaced by the default.
+	Timeout                        *string  `json:"timeout" yaml:"timeout"`
 	SharedHTTPClient               bool     `json:"sharedHTTPClient" yaml:"sharedHTTPClient"`
 	IncludeErrorMarker             string   `json:"includeErrorMarker" yaml:"includeErrorMarker"`
 	CacheBackend                   string   `json:"cacheBackend" yaml:"cacheBackend"`
@@ -39,6 +49,7 @@ type Config struct {
 func CreateConfig() *Config {
 	return &Config{
 		MaxDepth:        intPtr(5),
+		Timeout:         strPtr("10s"),
 		BlockPrivateIPs: true,
 	}
 }
@@ -49,6 +60,7 @@ type ResponsePlugin struct {
 	config          *Config
 	cache           mesi.Cache
 	cacheTTL        time.Duration
+	timeout         time.Duration
 	sharedTransport *http.Transport
 	closeFn         func() error
 }
@@ -64,10 +76,16 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		return nil, fmt.Errorf("maxDepth must be in [0, %d], got %d", mesi.MaxMaxDepth, *config.MaxDepth)
 	}
 
+	timeout, err := resolveTimeout(config.Timeout)
+	if err != nil {
+		return nil, err
+	}
+
 	p := &ResponsePlugin{
-		next:   next,
-		name:   name,
-		config: config,
+		next:    next,
+		name:    name,
+		config:  config,
+		timeout: timeout,
 	}
 
 	if config.SharedHTTPClient {
@@ -91,6 +109,38 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	return p, nil
 }
 
+// resolveTimeout maps the `timeout` plugin option (see Config) onto the
+// per-include fetch budget. Unset (nil) → 10s: the budget this plugin has
+// always used (= mesi.CreateDefaultConfig()'s 10s and Caddy's default
+// — the Go-direct platforms' default; libgomesi's C-entry-point 30s
+// (config.DefaultTimeoutSeconds) never applies here because traefik calls
+// the Go mesi package directly). An explicit value must parse as a Go
+// duration and fall in [1s, 24h], mirroring libgomesi's
+// config.ValidateTimeout range of [1, 86400] seconds
+// (config.MaxTimeoutSeconds): 0 or negative is rejected because the core
+// fails EVERY include with ErrTimeBudgetExceeded when Timeout <= 0
+// (mesi/fetch.go) — it is not "unlimited" — and values above 24h are a
+// unit-error misconfiguration. Malformed or out-of-range explicit values
+// return an error that fails middleware creation — never a silent
+// fallback to the default (project rule: no silent defaults in parsers;
+// same fail-loud contract as the maxDepth range check above).
+func resolveTimeout(v *string) (time.Duration, error) {
+	if v == nil {
+		return 10 * time.Second, nil
+	}
+	d, err := time.ParseDuration(*v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid timeout %q: %w", *v, err)
+	}
+	if d < time.Second {
+		return 0, fmt.Errorf("invalid timeout %q: value must be at least 1s", *v)
+	}
+	if d > 24*time.Hour {
+		return 0, fmt.Errorf("invalid timeout %q: value must be at most 24h (86400s)", *v)
+	}
+	return d, nil
+}
+
 func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	customWriter := middleware.NewResponseWriter(rw)
 
@@ -108,7 +158,7 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			Context:                        req.Context(),
 			MaxDepth:                       uint(p.maxDepth()),
 			DefaultUrl:                     middleware.GetDefaultUrl(req),
-			Timeout:                        10 * time.Second,
+			Timeout:                        p.timeout,
 			BlockPrivateIPs:                p.config.BlockPrivateIPs,
 			IncludeErrorMarker:             p.config.IncludeErrorMarker,
 			AllowedHosts:                   p.config.AllowedHosts,

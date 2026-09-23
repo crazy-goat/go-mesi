@@ -1,0 +1,66 @@
+# Traefik Timeout Configuration Example
+#
+# Bounds every <esi:include> fetch of a single page render to a Go
+# duration budget — end-to-end (redirect chain + body read), not the
+# client-facing response.
+#
+#   - Format: Go duration string ("2s", "1.5s", "1m", "1h30m"). Plain
+#     integers (15) are rejected for the missing unit, exactly like
+#     Caddy's `timeout` — no silent "integer = seconds" reinterpretation.
+#   - Default: "10s" when the option is absent — byte-identical to the
+#     value this plugin has always used (10s from day one: hardcoded in
+#     the core fetch path until #48 moved the literal into ServeHTTP;
+#     same 10s as Caddy's default and
+#     mesi.CreateDefaultConfig(); libgomesi's C entry points default to
+#     30s, which does NOT apply to this Go-direct plugin).
+#   - Range: [1s, 24h] (86400s), mirroring libgomesi's
+#     config.MaxTimeoutSeconds / ValidateTimeout, Apache MesiTimeout,
+#     nginx mesi_timeout and the PHP extension timeout.
+#   - Malformed or out-of-range EXPLICIT values fail middleware
+#     creation with an error naming `timeout` — never a silent fallback
+#     to the default: "", "abc", "15" (missing unit), "3foo", "0s",
+#     sub-second below the 1s floor ("500ms", "999ms"), negatives and
+#     "86401s"/"25h" are all rejected. 0 is NOT
+#     "unlimited": Timeout <= 0 makes every include fail immediately
+#     with ErrTimeBudgetExceeded (mesi/fetch.go).
+#
+# Usage:
+#   Include this in your Traefik dynamic configuration (esi-configuration.yml)
+#   or in your Docker/Kubernetes Traefik config.
+
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          maxDepth: 5
+          # Tight SLA: every include fetch is aborted at 2s — a slow
+          # fragment renders as the fallback body / empty marker instead
+          # of holding the whole request hostage. Worst-case ESI
+          # latency ≈ timeout + render.
+          timeout: "2s"
+
+    # Generous budget for legitimately slow backends.
+    mesi-slow-backend:
+      plugin:
+        mesi:
+          timeout: "120s"
+
+  routers:
+    my-app:
+      middlewares:
+        - mesi
+      service: my-app
+      rule: Host(`example.com`)
+
+    my-slow-app:
+      middlewares:
+        - mesi-slow-backend
+      service: my-app
+      rule: Host(`slow.example.com`)
+
+  services:
+    my-app:
+      loadBalancer:
+        servers:
+          - url: http://backend:8080
