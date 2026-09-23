@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>concurrent_stress</title>
+</head>
+<body>
+    <h1>concurrent_stress</h1>
+    <!-- Served by location /mcr-stress/ (explicit 0 = unlimited, max fan-out); test.sh renders this page from 10 parallel curl requests (the issue AC asked for an ab stress run; ab is not in the test image) to prove no fd exhaustion under ~200 concurrent-ish fetches. Labels 701-720 are unique to this fixture (#214).
+         Used by test.sh (#214). Do not mention the fragment
+         marker text or a literal ESI tag in this comment —
+         test.sh greps the rendered response. -->
+    <esi:include src="http://backend:8000/hold/1500/701" />
+    <esi:include src="http://backend:8000/hold/1500/702" />
+    <esi:include src="http://backend:8000/hold/1500/703" />
+    <esi:include src="http://backend:8000/hold/1500/704" />
+    <esi:include src="http://backend:8000/hold/1500/705" />
+    <esi:include src="http://backend:8000/hold/1500/706" />
+    <esi:include src="http://backend:8000/hold/1500/707" />
+    <esi:include src="http://backend:8000/hold/1500/708" />
+    <esi:include src="http://backend:8000/hold/1500/709" />
+    <esi:include src="http://backend:8000/hold/1500/710" />
+    <esi:include src="http://backend:8000/hold/1500/711" />
+    <esi:include src="http://backend:8000/hold/1500/712" />
+    <esi:include src="http://backend:8000/hold/1500/713" />
+    <esi:include src="http://backend:8000/hold/1500/714" />
+    <esi:include src="http://backend:8000/hold/1500/715" />
+    <esi:include src="http://backend:8000/hold/1500/716" />
+    <esi:include src="http://backend:8000/hold/1500/717" />
+    <esi:include src="http://backend:8000/hold/1500/718" />
+    <esi:include src="http://backend:8000/hold/1500/719" />
+    <esi:include src="http://backend:8000/hold/1500/720" />
+    <p>After mcr-stress include</p>
+</body>
+</html>

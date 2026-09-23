@@ -214,6 +214,56 @@ location / {
 
 See [examples/nginx-max-response-size.conf](../../examples/nginx-max-response-size.conf) for a full example file.
 
+## Max Concurrent Requests
+
+The `mesi_max_concurrent_requests` directive caps how many `<esi:include>` HTTP fetches may run at the same time during a single ESI parse. Until #214 the nginx module had no way to configure this limit.
+
+### Directive
+
+#### `mesi_max_concurrent_requests`
+
+- **Syntax:** `mesi_max_concurrent_requests <number>`
+- **Default:** unset → **unlimited** (the byte-identical legacy path, see below)
+- **Context:** `location`
+- **Range:** `[0, 999999999]` (the same cap as Apache `MesiMaxConcurrentRequests` (#170), the PHP extension's `max_concurrent_requests` (#206) and the CLI `-max-concurrent-requests` (#192) — libgomesi's `config.MaxMaxConcurrentRequests`)
+
+Semantics:
+
+- **Scope: per-page-render, NOT nginx-worker-global.** The limit applies within ONE `MESIParse` call — one page render in one worker. Each concurrent nginx request's own parse builds its own admission semaphore, so with 4 workers each rendering a page under `mesi_max_concurrent_requests 5`, total outbound ESI connections can reach 20 (4 × 5). Includes queued beyond the cap **wait** for a free slot (bounded by the `mesi_timeout` fetch budget — the admission wait shares the same deadline); they are never dropped.
+- **Unset** → **unlimited**. Omitting the directive keeps the request on the legacy `ParseWithConfigCtx`/`ParseWithConfigEx`/`ParseWithConfig`/`Parse` path byte-for-byte: libgomesi leaves `EsiParserConfig.MaxConcurrentRequests` at `0`, and the core only installs the admission-control semaphore when the value is `> 0` (`mesi/parser.go`) — there is no hidden default anywhere on this path (`mesi.CreateDefaultConfig()` never sets the field either).
+- **`0` is accepted and means "unlimited"** — the documented core contract shared with Apache `MesiMaxConcurrentRequests 0` (#170), Caddy `max_concurrent_requests 0`, the PHP extension (#206) and the CLI (#192). Because `0` *is* storable, the unset sentinel is `NGX_CONF_UNSET` (`-1`, re-installed in `create_loc_conf` because `ngx_pcalloc` zeroes): a child location's explicit `mesi_max_concurrent_requests 0` overrides an inherited cap while an unset child inherits it.
+- **`1`–`999999999`** cap concurrent `<esi:include>` fetches within one parse. The bound is transport-derived (a C `int` + the shared 9-digit strict parsers) — neither the core nor Caddy caps the value. **Negatives are rejected at config load**: the core would only warn (`max_concurrent_requests_invalid`) and normalize a negative to `0` = unlimited (#329), so a malformed explicit value must never silently pass as the documented "unlimited".
+
+Validation is strict and happens at config load (`nginx -t` fails — no silent default): the argument must be a non-empty, digits-only plain integer within `[0, 999999999]`. Negatives (`-1`), signs (`+1`), decimals (`1.5`), non-integers (`abc`, `3foo`), empty values (`""`), anything above the cap (`1000000000`, oversized digit strings), a bare argument-less `mesi_max_concurrent_requests;` and a repeated directive in the same scope (`"is duplicate"`) are all rejected with an error naming the directive and the offending value. **Deviation from the issue's `ngx_conf_set_num_slot` sketch:** the stock slot setter only runs `ngx_atoi`, which has no upper bound (`1000000000` would pass and diverge from every other platform) — the custom setter (the `mesi_max_depth` #180 / `mesi_timeout` #184 / `mesi_max_response_size` #208 pattern) guards per digit against the cap *before* the multiply, so no intermediate can ever overflow `ngx_int_t`.
+
+When the directive is set, the whole parse is routed through libgomesi's **`ParseJson`** entry point as `{"maxConcurrentRequests":N}`; the blob also carries the other resolved settings (`maxDepth`, `defaultUrl`, `allowedHosts`, SSRF flags, optional `timeoutSeconds`, `maxResponseSize`, `cacheKeyTemplate` + `requestCtx`), so behaviour matches the positional path exactly except for the cap. With an older `libgomesi.so` that lacks the `ParseJson` symbol, the directive is ignored with a per-request warning (`mesi: mesi_max_concurrent_requests is set but libgomesi lacks ParseJson — mesi_max_concurrent_requests ignored (unlimited concurrent requests apply, the pre-#214 behaviour)`) and unlimited applies — never a crash, never a silently wrong cap. A `ParseJson` NULL fails the request closed. Nested `location` blocks inherit the directive from their enclosing location: the unset sentinel survives `ngx_conf_merge_value` — deliberately **not** a merged `0` — so an unset child takes the parent's value and a child that sets the directive (including explicit `0`) overrides the parent.
+
+> **Known core limitation (#453):** nested `MESIParse` calls (a fetched fragment containing further includes) replace the inherited semaphore with a fresh one, so with NESTED includes the effective cap can reach cap × nesting depth for one page render. Flat pages (the common case) are capped exactly; #453 is tracked separately and is not fixed by this directive.
+
+### Example
+
+```nginx
+location /fanout-cap/ {
+    enable_mesi on;
+    mesi_max_concurrent_requests 3;   # at most 3 concurrent include fetches per render
+    proxy_pass http://backend;
+}
+
+location /unlimited/ {
+    enable_mesi on;
+    mesi_max_concurrent_requests 0;   # explicit "unlimited" (overrides an inherited cap)
+    proxy_pass http://backend;
+}
+
+location / {
+    enable_mesi on;
+    # mesi_max_concurrent_requests unset → unlimited (legacy path, byte-identical)
+    proxy_pass http://backend;
+}
+```
+
+See [examples/nginx-max-concurrent-requests.conf](../../examples/nginx-max-concurrent-requests.conf) for a full example file.
+
 ## Shared HTTP Client
 
 Not available in the nginx module: there is no shared-client directive (unlike Apache's `MesiSharedHTTPClient` and the CLI's `-shared-http-client`) and no `InitHTTPClient` wiring. Each `<esi:include>` fetch creates its own `http.Client` for the request, so TCP/TLS connection pooling across includes is not available — every include performs its own connection setup. Each per-include client still uses the SSRF-safe transport, so `mesi_block_private_ips` protection applies to every fetch.
