@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -81,6 +82,11 @@ func holdHandler(w http.ResponseWriter, r *http.Request) {
 // keeps a stray URL from allocating an unbounded body in this shared
 // test backend.
 const maxGeneratedBytes = 268435456 // 256 MB
+
+// maxGeneratedIncludes caps /holdpage/{n} (#215): the include count
+// is interpolated into the page markup, so a stray URL cannot make
+// this shared test backend generate an unbounded page.
+const maxGeneratedIncludes = 1000
 
 // bytesHandler serves /bytes/{size} (#210): a body of exactly <size>
 // bytes prefixed with a "MesiBytesPayload <size>" marker line when the
@@ -162,6 +168,47 @@ func slowPageHandler(w http.ResponseWriter, r *http.Request) {
 </html>`))
 }
 
+// holdPageHandler serves /holdpage/{n}/{millis} (#215): an HTML page
+// whose n <esi:include> tags target /hold/{millis}/HOLDFRAG-{i} — the
+// page fixture for the maxConcurrentRequests funnel tests (the root
+// HtmlTemplate's include points at the fast /esi). Each include gets a
+// DISTINCT label/URL so every one of them reaches the peak-concurrency
+// counter (the same reason nginx's #214 fixtures own disjoint label
+// ranges). Both params are validated exactly like bytesPageHandler's /
+// slowPageHandler's, because both are interpolated into the include
+// URLs; strconv.Atoi + Itoa normalises them, so only validated digits
+// reach the markup.
+func holdPageHandler(w http.ResponseWriter, r *http.Request) {
+	count, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || count < 0 || count > maxGeneratedIncludes {
+		http.Error(w, "invalid include count", http.StatusBadRequest)
+		return
+	}
+	millis, err := strconv.Atoi(r.PathValue("millis"))
+	if err != nil || millis < 0 || millis > 60000 {
+		http.Error(w, "invalid hold duration", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html")
+	var b strings.Builder
+	b.WriteString(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Hold ESI</title>
+</head>
+<body>
+<h1>HOLD-PAGE</h1>`)
+	for i := 0; i < count; i++ {
+		b.WriteString(`<esi:include src="http://test-server/hold/` + strconv.Itoa(millis) + `/HOLDFRAG-` + strconv.Itoa(i) + `" />`)
+	}
+	b.WriteString(`
+<esi:remove>Failed to include ESI</esi:remove>
+<p>After hold include</p>
+</body>
+</html>`)
+	w.Write([]byte(b.String()))
+}
+
 // trackHandler serves /track/reset (zero both counters) and /track/max
 // (the recorded peak) as text/plain control endpoints.
 func trackHandler(w http.ResponseWriter, r *http.Request) {
@@ -207,6 +254,7 @@ func main() {
 	http.HandleFunc("/bytes/{size}", bytesHandler)
 	http.HandleFunc("/bytespage/{size}", echoHeaders(bytesPageHandler))
 	http.HandleFunc("/slow/{millis}", echoHeaders(slowPageHandler))
+	http.HandleFunc("/holdpage/{n}/{millis}", echoHeaders(holdPageHandler))
 	http.HandleFunc("/track/{action}", trackHandler)
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))

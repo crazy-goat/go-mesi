@@ -1,0 +1,97 @@
+# Traefik Max Concurrent Requests Configuration Example
+#
+# Caps the number of concurrent <esi:include> HTTP fetches during a
+# single ESI parse — one page render, the admission-control semaphore
+# the core installs only when the value is > 0 (mesi/parser.go).
+# Includes queued beyond the cap WAIT for a free slot (bounded by the
+# `timeout` fetch budget — the admission wait shares the same
+# deadline); they are never dropped.
+#
+#   - Format: plain integer — concurrent fetches (no suffixes, exactly
+#     like Apache MesiMaxConcurrentRequests, nginx
+#     mesi_max_concurrent_requests, the PHP extension
+#     max_concurrent_requests and the CLI
+#     -max-concurrent-requests).
+#   - Default / absent: 0 = UNLIMITED — byte-identical to the
+#     behaviour before #215 (ServeHTTP's EsiParserConfig literal
+#     never set the field; the core only installs the semaphore when
+#     the value is > 0, mesi/parser.go). Unlike `timeout`, an
+#     explicit 0 is NOT a failure mode here — it is the documented
+#     contract.
+#   - Scope: PER PAGE RENDER, not Traefik-global — each concurrent
+#     request's own parse builds its own semaphore, so 4 Traefik
+#     workers each rendering a page under maxConcurrentRequests: 5
+#     can open up to 20 outbound ESI connections (4 x 5).
+#   - Range: [0, 999999999] — the #170 transport-derived cap shared
+#     by Apache MESI_MAX_MAX_CONCURRENT_REQUESTS, nginx
+#     mesi_max_concurrent_requests (#214), the PHP extension and the
+#     CLI (libgomesi config.MaxMaxConcurrentRequests). Neither the
+#     core nor Caddy caps the value; Caddy's uncapped strconv.Atoi
+#     belongs to the #452 gap family and is deliberately not
+#     inherited.
+#   - Malformed or out-of-range EXPLICIT values fail middleware
+#     creation with an error naming `maxConcurrentRequests` — never a
+#     silent fallback: -1 / -5 (the core would only warn
+#     "max_concurrent_requests_invalid" and normalize them to
+#     0 = unlimited, #329) and 1000000000 are rejected by New();
+#     decimals (1.5), non-integers ("abc") and oversized digit
+#     strings fail the config decode into the typed int field first.
+#     0 IS accepted and means "unlimited".
+#   - Known core limitation (#453): NESTED includes (a fetched
+#     fragment containing further includes) replace the inherited
+#     semaphore with a fresh one, so the effective cap can reach
+#     cap x nesting depth per page render. Flat pages are capped
+#     exactly; #453 is tracked separately and is not fixed here.
+#
+# Usage:
+#   Include this in your Traefik dynamic configuration (esi-configuration.yml)
+#   or in your Docker/Kubernetes Traefik config.
+
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          maxDepth: 5
+          # At most 3 concurrent include fetches per page render —
+          # queued includes wait for a slot (never dropped). The AC
+          # case of #215: 20 includes funnel through 3 slots.
+          maxConcurrentRequests: 3
+
+    # Generous cap for fan-out-heavy pages.
+    mesi-fanout-5:
+      plugin:
+        mesi:
+          maxConcurrentRequests: 5
+
+    # Explicit "unlimited" — same as omitting the option, stated on
+    # purpose.
+    mesi-unlimited:
+      plugin:
+        mesi:
+          maxConcurrentRequests: 0
+
+  routers:
+    my-app:
+      middlewares:
+        - mesi
+      service: my-app
+      rule: Host(`example.com`)
+
+    fanout-app:
+      middlewares:
+        - mesi-fanout-5
+      service: my-app
+      rule: Host(`fanout.example.com`)
+
+    trusted-backend-app:
+      middlewares:
+        - mesi-unlimited
+      service: my-app
+      rule: Host(`trusted.example.com`)
+
+  services:
+    my-app:
+      loadBalancer:
+        servers:
+          - url: http://backend:8080
