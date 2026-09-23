@@ -665,10 +665,10 @@ static void mesi_json_append_str(u_char **w, const u_char *s, size_t len) {
 }
 
 // Decimal rendering for the non-negative ngx_int_t values carried in
-// the ParseJson config blob (#184). Both values are range-validated
-// before they get here (depth by the directive setter + the parse()
-// guard, timeout by the directive setter + the parse() guard), so no
-// sign handling is needed and v == 0 renders as a single "0".
+// the ParseJson config blob (#184). All three values (depth, timeout,
+// max_concurrent_requests) are range-validated before they get here
+// (each by its directive setter + the parse() guard), so no sign
+// handling is needed and v == 0 renders as a single "0".
 static size_t mesi_json_uint_len(ngx_int_t v) {
   size_t n = 1;
   while (v >= 10) {

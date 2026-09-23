@@ -1477,9 +1477,11 @@ rm -f /tmp/nginx-mesi-max-response-size.conf
 # never exceed 3 (hard semaphore invariant, mesi/fetch.go).
 
 echo "=== Test 57: mesi_max_concurrent_requests 3 — 20 includes funneled through 3 slots (#214) ==="
-# /mcr-3/ sets ONLY mesi_max_concurrent_requests 3 (proving the
-# routing condition sends an mcr-only config through ParseJson with
-# the timeout/max-response-size keys absent). Assertions: peak <= 3 is
+# /mcr-3/ sets ONLY mesi_max_concurrent_requests 3 — an mcr-only
+# config routed through ParseJson (the routing condition's mcr arm),
+# consistent with the timeout/max-response-size keys being absent
+# (that absence is code-verified via has_timeout/has_maxrs, not
+# observable through the gauge). Assertions: peak <= 3 is
 # the cap itself (an uncapped parse would reach >= 4 per the fan-out
 # bound above, so this discriminates a broken route / a key that never
 # arrived); peak >= 2 proves the cap is a multi-slot queue, not a
