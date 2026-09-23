@@ -2,12 +2,14 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,6 +24,7 @@ func main() {
 	maxDepth := flag.Int("max-depth", 5, "Maximum ESI nesting depth (0 = passthrough: no include fetched, tags stripped; unset = plugin default 5)")
 	timeout := flag.String("timeout", "", "Per-include ESI fetch budget as a Go duration (unset = plugin default 10s)")
 	maxResponseSize := flag.Int64("max-response-size", 0, "Maximum bytes per ESI include response (0 = unlimited)")
+	maxConcurrentRequests := flag.Int("max-concurrent-requests", 0, "Maximum concurrent ESI include fetches (0 = unlimited)")
 	flag.Parse()
 
 	config := roadrunner.CreateConfig()
@@ -32,6 +35,7 @@ func main() {
 		config.Timeout = *timeout
 	}
 	config.MaxResponseSize = *maxResponseSize
+	config.MaxConcurrentRequests = *maxConcurrentRequests
 	config.BlockPrivateIPs = blockPrivateIPs
 	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
 	// Only override CreateConfig()'s default (5) when -max-depth is
@@ -88,6 +92,68 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html><body>BYTES-PAGE<esi:include src="http://127.0.0.1:9090/bytes/` + strconv.Itoa(size) + `" /></body></html>`))
+	})
+	// /hold and /track provide a deterministic peak-concurrency gauge for the
+	// RoadRunner functional suite, analogous to servers/test-server's tracker.
+	var tracker struct {
+		sync.Mutex
+		current int
+		peak    int
+	}
+	mux.HandleFunc("/hold/{millis}/{label}", func(w http.ResponseWriter, r *http.Request) {
+		millis, err := strconv.Atoi(r.PathValue("millis"))
+		if err != nil || millis < 0 || millis > 10000 {
+			http.Error(w, "invalid hold duration", http.StatusBadRequest)
+			return
+		}
+		tracker.Lock()
+		tracker.current++
+		if tracker.current > tracker.peak {
+			tracker.peak = tracker.current
+		}
+		tracker.Unlock()
+		defer func() {
+			tracker.Lock()
+			tracker.current--
+			tracker.Unlock()
+		}()
+		time.Sleep(time.Duration(millis) * time.Millisecond)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("HELD-FRAGMENT-" + r.PathValue("label")))
+	})
+	mux.HandleFunc("/track/{action}", func(w http.ResponseWriter, r *http.Request) {
+		tracker.Lock()
+		defer tracker.Unlock()
+		switch r.PathValue("action") {
+		case "reset":
+			tracker.current = 0
+			tracker.peak = 0
+			_, _ = w.Write([]byte("OK"))
+		case "max":
+			_, _ = w.Write([]byte(strconv.Itoa(tracker.peak)))
+		default:
+			http.Error(w, "unknown tracking action", http.StatusNotFound)
+		}
+	})
+	mux.HandleFunc("/holdpage/{n}/{millis}", func(w http.ResponseWriter, r *http.Request) {
+		n, err := strconv.Atoi(r.PathValue("n"))
+		if err != nil || n < 0 || n > 100 {
+			http.Error(w, "invalid include count", http.StatusBadRequest)
+			return
+		}
+		millis, err := strconv.Atoi(r.PathValue("millis"))
+		if err != nil || millis < 0 || millis > 10000 {
+			http.Error(w, "invalid hold duration", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		var b strings.Builder
+		b.WriteString("<html><body>HOLD-PAGE")
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(&b, `<esi:include src="http://127.0.0.1:9090/hold/%d/%d" />`, millis, i)
+		}
+		b.WriteString("HOLD-PAGE-END</body></html>")
+		_, _ = w.Write([]byte(b.String()))
 	})
 	mux.HandleFunc("/plain", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")

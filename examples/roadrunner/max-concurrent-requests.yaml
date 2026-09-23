@@ -1,0 +1,7 @@
+# Limit concurrent ESI include HTTP fetches within each page render.
+# This is not a RoadRunner-global or MaxWorkers limit; nested parses each
+# have their own admission cap. Includes queued at the cap wait for a slot.
+http:
+  middleware:
+    mesi:
+      max_concurrent_requests: 3

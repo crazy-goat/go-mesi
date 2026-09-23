@@ -44,6 +44,7 @@ http:
 | `allow_private_ips_for_allowed_hosts` | bool | `false` | When `true`, hosts listed in `allowed_hosts` may resolve to private/reserved IPs (the dial-time block is bypassed for them). Only effective when `block_private_ips` is `true` AND `allowed_hosts` is non-empty; no effect under `shared_http_client` (the shared transport bakes `block_private_ips` at startup). **Trusts DNS** — a compromised entry in `allowed_hosts` can reach internal/private addresses. |
 | `timeout` | string | `"10s"` | Per-include ESI fetch time budget (Go duration format), from 1s through 24h. Omit to use the historical 10s default; explicit invalid, zero, or negative values fail plugin initialization. |
 | `max_response_size` | int64 | `0` (unlimited) | Maximum response-body bytes for each individual ESI include. Over-limit includes fail closed and render fallback/error-marker content; negative values and values above `9223372036854775806` are rejected. |
+| `max_concurrent_requests` | int | `0` (unlimited) | Maximum concurrent ESI include HTTP fetches within one page render. Includes beyond the cap wait for a slot and are not dropped; negative values and values above `999999999` are rejected. |
 | `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
 | `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`, `"memcached"`. |
 | `cache_size` | int | `10000` | Max entries for memory cache backend. |
@@ -92,6 +93,27 @@ http:
   middleware:
     mesi:
       max_response_size: 1048576 # 1 MiB per include
+```
+
+#### Maximum concurrent include requests
+
+`max_concurrent_requests` limits concurrent `<esi:include>` HTTP fetches in one
+page render (one `MESIParse` call); it is not a RoadRunner-global limit and does
+not change the `MaxWorkers` token-processing pool. Each nested parse has its own
+fetch-admission cap, so nested pages can collectively exceed this value. Fetches
+that reach the cap wait for a slot; they are not dropped, and this wait is part
+of the configured per-include `timeout` budget.
+
+Absent and explicit `0` both mean unlimited, preserving the existing behavior.
+The accepted range is `[0, 999999999]`; negative values are rejected because
+the core would otherwise warn and normalize them to unlimited. A positive value
+can bound bursts to slow include backends:
+
+```yaml
+http:
+  middleware:
+    mesi:
+      max_concurrent_requests: 3
 ```
 
 #### Shared HTTP Client

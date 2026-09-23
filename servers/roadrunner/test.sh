@@ -250,5 +250,47 @@ else
     exit 1
 fi
 
+echo "--- Max Concurrent Requests Tests (#218) ---"
+
+# The fixture host and fragment listener are both loopback because rrtest serves
+# both page and include endpoints on :9090; disable dial-time SSRF blocking for
+# these local functional cases. Every include has a distinct URL and marker.
+start_rr -block-private-ips=false -max-concurrent-requests 3
+curl -fsS http://localhost:9090/track/reset >/dev/null
+RESPONSE=$(curl -fsS http://localhost:9090/holdpage/20/200)
+PEAK=$(curl -fsS http://localhost:9090/track/max)
+FRAGMENTS=$(echo "$RESPONSE" | grep -o "HELD-FRAGMENT-" | wc -l | tr -d ' ')
+if [ "$PEAK" -le 3 ] && [ "$PEAK" -ge 2 ] && [ "$FRAGMENTS" -eq 20 ] \
+    && echo "$RESPONSE" | grep -q "HOLD-PAGE" \
+    && echo "$RESPONSE" | grep -q "HOLD-PAGE-END" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: cap 3 bounded peak to $PEAK and delivered all $FRAGMENTS includes"
+else
+    echo "FAIL: cap 3 peak=$PEAK fragments=$FRAGMENTS"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+for CASE in explicit-zero absent; do
+    if [ "$CASE" = "explicit-zero" ]; then
+        start_rr -block-private-ips=false -max-concurrent-requests 0
+    else
+        start_rr -block-private-ips=false
+    fi
+    curl -fsS http://localhost:9090/track/reset >/dev/null
+    RESPONSE=$(curl -fsS http://localhost:9090/holdpage/20/200)
+    PEAK=$(curl -fsS http://localhost:9090/track/max)
+    FRAGMENTS=$(echo "$RESPONSE" | grep -o "HELD-FRAGMENT-" | wc -l | tr -d ' ')
+    if [ "$PEAK" -ge 4 ] && [ "$FRAGMENTS" -eq 20 ] \
+        && echo "$RESPONSE" | grep -q "HOLD-PAGE-END" \
+        && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+        echo "PASS: $CASE remained unlimited (peak $PEAK), delivered all $FRAGMENTS includes"
+    else
+        echo "FAIL: $CASE expected unlimited fan-out, peak=$PEAK fragments=$FRAGMENTS"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+done
+
 echo ""
 echo "=== All RoadRunner tests passed ==="
