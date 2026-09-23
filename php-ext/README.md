@@ -109,6 +109,7 @@ $html = \mesi\parse_with_config(
 | `timeout` | optional | int | Global per-include fetch budget in **seconds**; range `[1, 86_400]`; absent = `30` (libgomesi's historical default — omitting the key is backward compatible). **`0` is rejected**: the core makes every include fail immediately with `ErrTimeBudgetExceeded` when `Timeout <= 0` — it does **not** mean "no timeout". Non-integer values (string `"10"`, float `1.5`, `"abc"`, `""`, bool, null, array) and out-of-range values are rejected with `E_WARNING` and the function returns `false`. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"timeoutSeconds":N}`; on an older `libgomesi.so` without `ParseJson` a warning is emitted and the timeout is ignored (30s applies) |
 | `max_response_size` | optional | int | Caps a single `<esi:include>` response body in **bytes**; range `[0, 9223372036854775806]` (`MaxInt64 - 1`); absent = `0` = **unlimited** (backward compatible — omitting the key is byte-identical to previous behaviour; there is **no implicit 10 MB default** on this path). **`0` is the documented "unlimited" value** (the core only limits when `MaxResponseSize > 0`). Non-integer values (string `"10"`, float `1.5`, `"abc"`, `""`, bool, null, array), negatives and values above the cap are rejected with `E_WARNING` and the function returns `false`. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"maxResponseSize":N}` (#169 schema key); on an older `libgomesi.so` without `ParseJson` a warning is emitted and the cap is ignored (unlimited applies) |
 | `max_concurrent_requests` | optional | int | Caps the number of **concurrent** `<esi:include>` HTTP fetches within ONE `parse_with_config()` call (the admission semaphore — per call, **not** global across PHP calls or requests); range `[0, 999999999]` (`MaxMaxConcurrentRequests`, #170); absent = `0` = **unlimited** (backward compatible — omitting the key is byte-identical to previous behaviour). **`0` is the documented "unlimited" value** (the core only installs the semaphore when the value is `> 0`); includes queued beyond the cap are still delivered, never dropped. Non-integer values (string `"10"`, float `1.5`, `"abc"`, `""`, bool, null, array), negatives and values above the cap are rejected with `E_WARNING` and the function returns `false`. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"maxConcurrentRequests":N}` (#170 schema key); on an older `libgomesi.so` without `ParseJson` a warning is emitted and the cap is ignored (unlimited applies) |
+| `max_workers` | optional | int | Caps the size of the include **drain-pool goroutines** that process ESI tokens/`<esi:include>` jobs within ONE `parse_with_config()` call (`min(MaxWorkers, len(esiJobs))` per `MESIParse`, so per call, **not** global across PHP calls or requests; each nested parse spawns its own pool and inherits the cap); range `[0, 999999999]` (`MaxMaxWorkers`, #171); absent = `0` = the **library default `runtime.NumCPU()*4`** (backward compatible — omitting the key is byte-identical to previous behaviour). **`0` is the documented "library default" value** — with a current `libgomesi.so` there is **no observable difference** between an explicit `0` and an absent key. Negatives (rejected because the core substitutes `NumCPU*4` for any value `<= 0` **silently, with no warning**), non-integer values (string `"8"`, float `1.5`, `"abc"`, `""`, bool, null, array) and values above the cap are rejected with `E_WARNING` and the function returns `false`. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"maxWorkers":N}` (#171 schema key); on an older `libgomesi.so` without `ParseJson` a warning is emitted and the cap is ignored (library default applies) |
 
 Validation is strict: an unknown `cache_backend`, mismatched Redis-vs-Memcached key, out-of-range numeric value, non-integer value, malformed `host:port`, or a non-string memcached server entry emits an `E_WARNING` and returns `false`. The function never silently degrades to "no cache" on a typo — a wrong host:port or empty memcached list surfaces as `E_WARNING`, matching the validation pattern in `parse_with_config()` for the in-memory backend and the equivalent `MesiCache*` directives in `servers/apache`. The same applies to `allowed_hosts`: a non-string or whitespace-only value is rejected (a whitespace-only list would silently tokenize to an empty allowlist = allow all hosts — the same fail-open typo nginx hardens against, #354). The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
 
@@ -504,6 +505,73 @@ Semantics (identical to Apache's `MesiMaxConcurrentRequests` #170, CLI
   An older `libgomesi.so` without the `ParseJson` symbol emits a warning
   (`max_concurrent_requests ignored … Upgrade libgomesi.so.`) and falls back
   to that path unlimited — never a crash.
+
+#### Max workers (`max_workers`)
+
+Since #211. `max_workers` caps the size of the include **drain pool** — the
+goroutines that process ESI tokens and fetch `<esi:include>` jobs within a
+**single** `parse_with_config()` call:
+
+```php
+// Drain this parse's ESI jobs with at most 2 goroutines:
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    ['max_workers' => 2]
+);
+```
+
+Semantics (identical to Apache's `MesiMaxWorkers` #171, CLI
+`-max-workers` #197 and libgomesi's `ParseJson` `maxWorkers`):
+
+- Unit: drain-pool **goroutines** — `workerCount = min(MaxWorkers,
+  len(esiJobs))` per `MESIParse` (`mesi/parser.go`), i.e. **per call**, not
+  global across PHP calls or requests (each call builds its own pool; each
+  nested parse spawns its own pool and inherits the cap). Since each
+  goroutine fetches one include at a time, on a flat page the pool also
+  caps fetch concurrency at that level — but it additionally bounds
+  token-processing work (`max_workers => 1` serializes token processing —
+  useful for debugging), which `max_concurrent_requests`' admission
+  semaphore does not.
+- Integer range `[0, 999999999]` — the #171 transport-derived cap (the
+  value crosses as a JSON number and out to Apache as a C `int` guarded at
+  9 digits), mirrored as the C `MESI_MAX_MAX_WORKERS`, keep in sync with
+  Go's `config.MaxMaxWorkers`.
+- **Absent key → `0` → the library default `runtime.NumCPU()*4`** — the
+  value every positional `ParseWithConfig*` path leaves in
+  `EsiParserConfig.MaxWorkers` (byte-identical to previous behaviour;
+  there is no hidden default anywhere on this path).
+- **Explicit `0` = the documented "library default" value**
+  (`mesi/config.go`: "Zero means `runtime.NumCPU()*4`") — with a current
+  `libgomesi.so` there is **no observable difference** between an explicit
+  `0` and an absent key (both resolve to `0` Go-side and the core
+  substitutes `NumCPU*4` for both; the only difference is the routing — an
+  explicit key routes through `ParseJson`, so against an old
+  `libgomesi.so` without that symbol only the explicit key warns, same as
+  `timeout` / `max_response_size` / `max_concurrent_requests`).
+- A malformed explicit value is never silently coerced: non-integers
+  (numeric string `"8"` does not coerce, floats `1.5`/`10.0`, `"abc"`,
+  `""`, bool, null, array), negatives and values above the cap
+  (`1000000000`, `PHP_INT_MAX`) emit an `E_WARNING` naming `max_workers`
+  and `parse_with_config()` returns `false` — the same strict contract as
+  `timeout` / `max_response_size` / `max_concurrent_requests` /
+  `cache_ttl`. **Negatives matter more here**: the core substitutes
+  `NumCPU*4` for any value `<= 0` **silently, with no warning at all**
+  (there is no #329-style warn+normalize for `MaxWorkers` —
+  `mesi/parser.go` checks it without logging, the open #456 gap), so this
+  PHP-side rejection is the **only** protection a PHP caller gets: without
+  it, `max_workers => -1` would silently behave like the documented
+  "library default".
+- The key is passed through libgomesi's `ParseJson` entry point (#167) as
+  `{"maxWorkers":N}` (#171 schema key) together with every other resolved
+  option; **each key is only rendered when set**, so a `max_workers`-only
+  call keeps the positional 30s timeout, unlimited size and unlimited
+  fetch slots (and a `timeout`-only call gains no `maxWorkers` key). An
+  absent key keeps the exact positional `ParseWithConfigCtx` path. An
+  older `libgomesi.so` without the `ParseJson` symbol emits a warning
+  (`max_workers ignored … Upgrade libgomesi.so.`) and falls back to that
+  path with the library-default pool — never a crash.
 
 ### Cache scope
 

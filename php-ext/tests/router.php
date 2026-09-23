@@ -21,6 +21,19 @@ function mcr_input($backend, $label) {
     return $input;
 }
 
+// Same shape for the max_workers fixtures (#211) with its own page
+// marker, so responses and labels never collide with the #206 readings
+// (only /hold touches the tracker, but distinct labels keep every
+// include its own URL per parse).
+function mw_input($backend, $label) {
+    $base = rtrim($backend, '/') . '/hold/1500/' . $label;
+    $input = '<p>MW-TEST</p>';
+    for ($i = 1; $i <= 20; $i++) {
+        $input .= '<esi:include src="' . $base . '-' . $i . '" />';
+    }
+    return $input;
+}
+
 if ($path === '/') {
     header('Content-Type: text/html');
     echo \mesi\parse(
@@ -323,6 +336,67 @@ if ($path === '/max-concurrent-requests-absent') {
 // (file_get_contents here runs in the outer request, no deadlock: the
 // backend is the Go server, never this single-threaded process).
 if ($path === '/max-concurrent-requests-peak') {
+    header('Content-Type: text/plain');
+    $peak = @file_get_contents(rtrim($backend, '/') . '/track/max');
+    echo $peak === false ? 'unavailable' : $peak;
+    return true;
+}
+
+// max_workers (#211): same 20 x 1500 ms /hold fixture as #206, but the
+// observable is the DRAIN POOL, not a semaphore. Each parse route zeroes
+// the backend's peak tracker first (reset BEFORE the synchronous parse),
+// the timeout key stays ABSENT (documented 30s default — see the budget
+// math in test.sh Test 25), and block_private_ips=false allows the
+// loopback dial. The max_workers-only blob then also proves the per-key
+// conditional rendering end to end (no timeoutSeconds /
+// maxResponseSize / maxConcurrentRequests keys rendered).
+if ($path === '/max-workers-pool') {
+    header('Content-Type: text/html');
+    mcr_reset($backend);
+    echo \mesi\parse_with_config(
+        mw_input($backend, 'mw-pool'),
+        5,
+        $backend,
+        ['max_workers' => 2, 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// explicit 0: the documented "library default" value (the core
+// substitutes runtime.NumCPU()*4 for any value <= 0) — the fan-out must
+// be unthrottled (peak >= 4, pool min(NumCPU*4, 20) >= 4 goroutines),
+// identical to the absent key below.
+if ($path === '/max-workers-zero') {
+    header('Content-Type: text/html');
+    mcr_reset($backend);
+    echo \mesi\parse_with_config(
+        mw_input($backend, 'mw-zero'),
+        5,
+        $backend,
+        ['max_workers' => 0, 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// key absent: documented default 0 = library default NumCPU*4 — the
+// value every positional path leaves; the call must stay on the exact
+// backward-compatible behaviour (fan-out peak >= 4).
+if ($path === '/max-workers-absent') {
+    header('Content-Type: text/html');
+    mcr_reset($backend);
+    echo \mesi\parse_with_config(
+        mw_input($backend, 'mw-absent'),
+        5,
+        $backend,
+        ['block_private_ips' => false]
+    );
+    return true;
+}
+
+// Control endpoint: proxy the test-server's recorded peak (same reason
+// as /max-concurrent-requests-peak above — docker mode does not publish
+// the test-server's port to the host).
+if ($path === '/max-workers-peak') {
     header('Content-Type: text/plain');
     $peak = @file_get_contents(rtrim($backend, '/') . '/track/max');
     echo $peak === false ? 'unavailable' : $peak;

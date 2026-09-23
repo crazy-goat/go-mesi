@@ -69,6 +69,19 @@ ZEND_END_ARG_INFO()
  * Parse* path leaves (never set anywhere on the positional path), so
  * omitting the key is byte-identical to previous behaviour. */
 #define MESI_MAX_MAX_CONCURRENT_REQUESTS 999999999
+/* Per-parse drain-pool size cap (#211). Matches libgomesi's
+ * config.MaxMaxWorkers (999999999 — the #171 transport-derived bound:
+ * the value crosses as a JSON number and out to Apache as a C `int`,
+ * guarded at 9 digits by parse_nonneg_int; the Go const lives in
+ * libgomesi/internal (unimportable from C — keep in sync manually)).
+ * 0 is the documented "library default" value — the core substitutes
+ * runtime.NumCPU()*4 for any value <= 0 (mesi/parser.go, SILENTLY, with
+ * no warning — unlike the #329 warn+normalize for
+ * MaxConcurrentRequests); the ABSENT key likewise means that library
+ * default — the value every positional Parse* path leaves (never set
+ * anywhere on the positional path), so omitting the key is
+ * byte-identical to previous behaviour. */
+#define MESI_MAX_MAX_WORKERS 999999999
 
 typedef struct {
     char    backend[MESI_BACKEND_MAX]; /* "", "memory", "redis", "memcached" */
@@ -296,21 +309,23 @@ static void mesi_resolve_parse_json(void) {
 /*
  * build_parse_json_blob renders the fully-resolved per-parse configuration
  * into the JSON blob libgomesi's ParseJson accepts (#167). Only called when
- * the `timeout`, `max_response_size` or `max_concurrent_requests` key is
- * present (those are what route a call through ParseJson; Apache
- * #167/#169/#170 used_parse_json pattern). Every other key mirrors exactly
- * what the positional ParseWithConfigCtx path would pass, so behaviour is
- * identical except for the keys the blob carries. timeoutSeconds travels in
- * SECONDS ("timeoutSeconds":N) — the nanosecond conversion happens Go-side
- * in config.ResolveTimeout (deviation from issue #181's nanosecond sketch)
- * — maxResponseSize in BYTES ("maxResponseSize":N),
- * maxConcurrentRequests as a count ("maxConcurrentRequests":N); ALL THREE
- * keys are rendered ONLY when their PHP key was explicitly set (per-key
- * conditional rendering, like Apache's build_parse_json_config), so a
- * timeout-only call gains no maxResponseSize / maxConcurrentRequests key,
- * a max_concurrent_requests-only call keeps the positional 30s timeout and
- * unlimited size — an absent key resolves to the same documented default
- * the positional path uses Go-side (30s / 0 = unlimited / 0 = unlimited).
+ * the `timeout`, `max_response_size`, `max_concurrent_requests` or
+ * `max_workers` key is present (those are what route a call through
+ * ParseJson; Apache #167/#169/#170/#171 used_parse_json pattern). Every
+ * other key mirrors exactly what the positional ParseWithConfigCtx path
+ * would pass, so behaviour is identical except for the keys the blob
+ * carries. timeoutSeconds travels in SECONDS ("timeoutSeconds":N) — the
+ * nanosecond conversion happens Go-side in config.ResolveTimeout (deviation
+ * from issue #181's nanosecond sketch) — maxResponseSize in BYTES
+ * ("maxResponseSize":N), maxConcurrentRequests as a count
+ * ("maxConcurrentRequests":N), maxWorkers as a count ("maxWorkers":N); ALL
+ * FOUR keys are rendered ONLY when their PHP key was explicitly set
+ * (per-key conditional rendering, like Apache's build_parse_json_config),
+ * so a timeout-only call gains no maxResponseSize / maxConcurrentRequests
+ * / maxWorkers key, a max_workers-only call keeps the positional 30s
+ * timeout, unlimited size and unlimited fetch slots — an absent key
+ * resolves to the same documented default the positional path uses Go-side
+ * (30s / 0 = unlimited / 0 = unlimited / 0 = the library-default pool).
  * cacheKeyTemplate and requestCtx are included only when a template is
  * active (backend configured), mirroring tmpl_for_ctx/ctx_json on the
  * positional path.
@@ -327,6 +342,7 @@ static char *build_parse_json_blob(zend_long depth, const char *default_url,
                                    int timeout_set, long timeout_seconds,
                                    int max_response_size_set, long max_response_size,
                                    int max_concurrent_requests_set, long max_concurrent_requests,
+                                   int max_workers_set, long max_workers,
                                    const char *tmpl, const char *ctx_json) {
     int has_tmpl = (tmpl != NULL && tmpl[0] != '\0');
     int has_ctx = (has_tmpl && ctx_json != NULL && ctx_json[0] != '\0');
@@ -356,6 +372,9 @@ static char *build_parse_json_blob(zend_long depth, const char *default_url,
         goto fail;
     if (max_concurrent_requests_set
         && !mesi_appendf(out, cap, &pos, ",\"maxConcurrentRequests\":%ld", max_concurrent_requests))
+        goto fail;
+    if (max_workers_set
+        && !mesi_appendf(out, cap, &pos, ",\"maxWorkers\":%ld", max_workers))
         goto fail;
     if (has_tmpl) {
         if (!mesi_appendf(out, cap, &pos, ",\"cacheKeyTemplate\":")) goto fail;
@@ -793,6 +812,70 @@ PHP_FUNCTION(parse) {
  *                            E_WARNING reports max_concurrent_requests
  *                            as ignored (unlimited applies) and the
  *                            positional path runs — never a crash.
+ *   max_workers:             optional integer. Caps the size of the
+ *                            include worker pool that drains ESI jobs
+ *                            within ONE parse_with_config() call — one
+ *                            MESIParse call, i.e. per call, NOT global
+ *                            across PHP calls or requests (each call
+ *                            builds its own pool; each nested parse
+ *                            spawns its own pool and inherits the cap).
+ *                            Unit: drain-pool GOROUTINES
+ *                            (workerCount = min(MaxWorkers, len(esiJobs)),
+ *                            mesi/parser.go) — since each goroutine
+ *                            fetches one include at a time, on a flat
+ *                            page the pool also caps fetch concurrency
+ *                            at that level, but it additionally bounds
+ *                            token-processing work (max_workers 1
+ *                            serializes token processing — useful for
+ *                            debugging), which the
+ *                            max_concurrent_requests admission semaphore
+ *                            does not. Range [0, 999999999] (mirrors
+ *                            libgomesi's config.MaxMaxWorkers — the #171
+ *                            transport-derived cap, reflected in
+ *                            MESI_MAX_MAX_WORKERS above). Absent => 0 =>
+ *                            the LIBRARY DEFAULT runtime.NumCPU()*4 —
+ *                            the value every positional Parse* path
+ *                            leaves (byte-identical to previous
+ *                            behaviour; there is no hidden default
+ *                            anywhere on this path). Explicit 0 is the
+ *                            documented "library default" value
+ *                            (mesi/config.go: "Zero means
+ *                            runtime.NumCPU()*4") and with a current
+ *                            libgomesi.so there is NO observable
+ *                            difference from an absent key (both
+ *                            resolve to 0 Go-side and the core
+ *                            substitutes NumCPU*4 for both; the only
+ *                            difference is the routing — an explicit
+ *                            key routes through ParseJson, so against
+ *                            an old libgomesi.so without that symbol
+ *                            only the explicit key warns, same as
+ *                            timeout/max_response_size/
+ *                            max_concurrent_requests). Negatives are
+ *                            rejected instead of silently behaving
+ *                            like the default: the core substitutes
+ *                            NumCPU*4 for any value <= 0 SILENTLY with
+ *                            NO warning (there is no #329-style
+ *                            warn+normalize for MaxWorkers —
+ *                            mesi/parser.go checks it without
+ *                            logging), so this PHP-side rejection is
+ *                            the ONLY protection a PHP caller gets.
+ *                            Malformed explicit values (string "8",
+ *                            float 1.5, bool, null, array) are
+ *                            rejected with E_WARNING and the function
+ *                            returns false — same strict contract as
+ *                            timeout/max_response_size/
+ *                            max_concurrent_requests/cache_ttl. When
+ *                            the key is present the call is routed
+ *                            through libgomesi's ParseJson entry point
+ *                            (#167) as {"maxWorkers":N} (the #171
+ *                            schema key) together with every other
+ *                            resolved option; an absent key keeps the
+ *                            exact ParseWithConfigCtx path. If the
+ *                            loaded libgomesi predates ParseJson, an
+ *                            E_WARNING reports max_workers as ignored
+ *                            (the library-default NumCPU*4 pool
+ *                            applies, the pre-#211 behaviour) and the
+ *                            positional path runs — never a crash.
  *
  * Validation strictly mirrors libgomesi's InitCacheWithConfig contract —
  * we detect the same bad inputs libgomesi would silently ignore or silently
@@ -868,6 +951,18 @@ PHP_FUNCTION(parse_with_config) {
      * #170 pattern). */
     long max_concurrent_requests = 0;
     int max_concurrent_requests_set = 0;
+
+    /* max_workers: per-parse drain-pool size (goroutines), range
+     * [0, MESI_MAX_MAX_WORKERS]. Absent => 0 => the LIBRARY DEFAULT
+     * runtime.NumCPU()*4 the core substitutes for any value <= 0 — the
+     * value the positional path always left (byte-identical to previous
+     * behaviour). max_workers_set distinguishes "explicit key" from
+     * "absent" so the blob only renders the key when set — and like
+     * timeout/max_response_size/max_concurrent_requests, only an
+     * explicit value routes the call through ParseJson (#211; Apache
+     * #171 pattern). */
+    long max_workers = 0;
+    int max_workers_set = 0;
 
     if (config != NULL && Z_TYPE_P(config) == IS_ARRAY) {
         zval *val;
@@ -1377,6 +1472,50 @@ PHP_FUNCTION(parse_with_config) {
             max_concurrent_requests_set = 1;
         }
 
+        /* max_workers: per-parse drain-pool size (goroutines), range
+         * [0, MESI_MAX_MAX_WORKERS]. Strict validation: an absent key
+         * keeps the documented default (0 = the library default
+         * runtime.NumCPU()*4, byte-identical to previous behaviour),
+         * but an explicit malformed or out-of-range value is NEVER
+         * silently coerced — non-integers (string "8", float 1.5, bool,
+         * null, array) and values outside the range (-1, -100,
+         * 1000000000, PHP_INT_MAX) emit E_WARNING naming the option and
+         * the call returns false, same contract as
+         * timeout/max_response_size/max_concurrent_requests/cache_ttl.
+         * 0 is deliberately ACCEPTED as the documented "library
+         * default" value (the core substitutes runtime.NumCPU()*4 for
+         * any value <= 0 — mesi/config.go, mesi/parser.go); negatives
+         * are rejected because that substitution happens SILENTLY with
+         * NO warning at all (there is no #329-style
+         * warn+normalize for MaxWorkers), i.e. a malformed explicit
+         * value would silently pass as the documented "library
+         * default" — this PHP-side check is the only protection a PHP
+         * caller gets. */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "max_workers",
+                                 sizeof("max_workers") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) != IS_LONG) {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): max_workers must be an integer "
+                    "(drain-pool goroutines, range [0, %d])",
+                    MESI_MAX_MAX_WORKERS);
+                RETURN_FALSE;
+            }
+            long v = Z_LVAL_P(val);
+            if (v < 0 || v > MESI_MAX_MAX_WORKERS) {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): max_workers %ld is out of range "
+                    "[0, %d] (0 is the documented \"library default\" value; "
+                    "negatives are rejected instead of silently behaving like "
+                    "it — the core substitutes NumCPU*4 for any value <= 0 "
+                    "with NO warning)",
+                    v, MESI_MAX_MAX_WORKERS);
+                RETURN_FALSE;
+            }
+            max_workers = v;
+            max_workers_set = 1;
+        }
+
         /* Backend-specific requirements: redis requires addr; memcached
          * requires servers. Detected after per-key parsing so a stray
          * key doesn't by itself trigger the error. */
@@ -1566,30 +1705,32 @@ ctx_done: ;
     }
 
     /* #181 `timeout` / #201 `max_response_size` / #206
-     * `max_concurrent_requests` keys: when any of the three is explicitly
-     * set, route the whole parse through libgomesi's ParseJson entry point
-     * so timeoutSeconds / maxResponseSize / maxConcurrentRequests reach
-     * the core (each option independently forces the routing — Apache
+     * `max_concurrent_requests` / #211 `max_workers` keys: when any of
+     * the four is explicitly set, route the whole parse through
+     * libgomesi's ParseJson entry point so timeoutSeconds /
+     * maxResponseSize / maxConcurrentRequests / maxWorkers reach the
+     * core (each option independently forces the routing — Apache
      * #167/#169/#170/#171 pattern). The blob carries every other resolved
      * option (depth, default URL, allowed hosts, SSRF flags, optional
      * cache key template + request context), so behaviour matches the
      * positional path exactly except for the keys it carries — and each
      * key is only rendered when its PHP key was set (a timeout-only call
-     * gains no maxResponseSize/maxConcurrentRequests key, a
-     * max_concurrent_requests-only call keeps the positional 30s timeout
-     * and unlimited size). When the loaded libgomesi predates ParseJson
-     * (resolved at module init, see mesi_resolve_parse_json), fall
-     * through to the positional path with a per-key E_WARNING — each set
-     * option is ignored (positional default applies: 30s / unlimited
-     * size / unlimited fetches), never a crash and never a silently wrong
-     * config. Absent keys keep the exact pre-#181/pre-#201/pre-#206
-     * positional path (byte-identical behaviour: default 30s, unlimited
-     * size, unlimited fetches). */
+     * gains no maxResponseSize/maxConcurrentRequests/maxWorkers key, a
+     * max_workers-only call keeps the positional 30s timeout, unlimited
+     * size and unlimited fetch slots). When the loaded libgomesi predates
+     * ParseJson (resolved at module init, see mesi_resolve_parse_json),
+     * fall through to the positional path with a per-key E_WARNING — each
+     * set option is ignored (positional default applies: 30s / unlimited
+     * size / unlimited fetches / the library-default NumCPU*4 pool),
+     * never a crash and never a silently wrong config. Absent keys keep
+     * the exact pre-#181/pre-#201/pre-#206/pre-#211 positional path
+     * (byte-identical behaviour: default 30s, unlimited size, unlimited
+     * fetches, library-default pool). */
     char *result = NULL;
     int used_parse_json = 0;
     char *parse_json_blob = NULL;
 
-    if (timeout_set || max_response_size_set || max_concurrent_requests_set) {
+    if (timeout_set || max_response_size_set || max_concurrent_requests_set || max_workers_set) {
         mesi_resolve_parse_json();
         if (g_parse_json != NULL) {
             parse_json_blob = build_parse_json_blob(
@@ -1599,14 +1740,17 @@ ctx_done: ;
                 timeout_set, timeout_seconds,
                 max_response_size_set, max_response_size,
                 max_concurrent_requests_set, max_concurrent_requests,
+                max_workers_set, max_workers,
                 tmpl_for_ctx,
                 ctx_json && *ctx_json ? ctx_json : (char*)"");
             if (parse_json_blob == NULL) {
                 if (ctx_json_buf) free(ctx_json_buf);
                 php_error_docref(NULL, E_WARNING,
                     "mesi\\parse_with_config(): failed to render parse config JSON "
-                    "(timeout=%ld, max_response_size=%ld, max_concurrent_requests=%ld)",
-                    timeout_seconds, max_response_size, max_concurrent_requests);
+                    "(timeout=%ld, max_response_size=%ld, max_concurrent_requests=%ld, "
+                    "max_workers=%ld)",
+                    timeout_seconds, max_response_size, max_concurrent_requests,
+                    max_workers);
                 RETURN_FALSE;
             }
             used_parse_json = 1;
@@ -1633,6 +1777,13 @@ ctx_done: ;
                     "(unlimited concurrent fetches apply, the pre-#206 behaviour). "
                     "Upgrade libgomesi.so.");
             }
+            if (max_workers_set) {
+                php_error_docref(NULL, E_WARNING,
+                    "mesi\\parse_with_config(): max_workers is set but "
+                    "libgomesi lacks ParseJson; max_workers ignored "
+                    "(library default NumCPU*4 worker pool applies, the "
+                    "pre-#211 behaviour). Upgrade libgomesi.so.");
+            }
         }
     }
 
@@ -1648,12 +1799,14 @@ ctx_done: ;
         if (used_parse_json) {
             /* PHP-side validation already passed; libgomesi logs the
              * offending config (bad timeoutSeconds / maxResponseSize /
-             * maxConcurrentRequests, malformed JSON, ...) Go-side —
-             * surface it loudly instead of blaming max_depth. */
+             * maxConcurrentRequests / maxWorkers, malformed JSON, ...)
+             * Go-side — surface it loudly instead of blaming max_depth. */
             php_error_docref(NULL, E_WARNING,
                 "mesi\\parse_with_config(): libgomesi rejected the parse config "
-                "(timeout=%ld, max_response_size=%ld, max_concurrent_requests=%ld)",
-                timeout_seconds, max_response_size, max_concurrent_requests);
+                "(timeout=%ld, max_response_size=%ld, max_concurrent_requests=%ld, "
+                "max_workers=%ld)",
+                timeout_seconds, max_response_size, max_concurrent_requests,
+                max_workers);
         } else {
             php_error_docref(NULL, E_WARNING, "mesi\\parse_with_config(): invalid max_depth");
         }
