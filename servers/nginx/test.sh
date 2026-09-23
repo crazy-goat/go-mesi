@@ -1176,7 +1176,7 @@ rm -f /tmp/nginx-mesi-timeout.conf
 # wc -c (the whole body was delivered, not just the marker).
 
 echo "=== Test 51: mesi_max_response_size 100 — 200-byte include rejected (#208) ==="
-RESPONSE=$(curl -s http://localhost:18080/max-response-100/)
+RESPONSE=$(curl -s --max-time 10 http://localhost:18080/max-response-100/)
 if echo "$RESPONSE" | grep -q "After reject include" \
     && ! echo "$RESPONSE" | grep -q "MesiBytesPayload" \
     && ! echo "$RESPONSE" | grep -q '<esi:include'; then
@@ -1184,7 +1184,7 @@ if echo "$RESPONSE" | grep -q "After reject include" \
     # Control: the SAME page served from the unset root location must
     # deliver the payload — proves the rejection above comes from the
     # directive, not a broken endpoint or fixture.
-    CONTROL=$(curl -s http://localhost:18080/max_response_reject.html)
+    CONTROL=$(curl -s --max-time 10 http://localhost:18080/max_response_reject.html)
     if echo "$CONTROL" | grep -q "MesiBytesPayload 200" \
         && echo "$CONTROL" | grep -q "After reject include" \
         && ! echo "$CONTROL" | grep -q '<esi:include'; then
@@ -1259,7 +1259,7 @@ echo "=== Test 55: mesi_max_response_size merge — inherit 100 / child 0 overri
 # size: the suite's /cache/ locations initialize libgomesi's
 # process-wide shared cache, which every parse attaches to
 # (libgomesi.go applySharedConfig) and which serves cache hits BEFORE
-# the core's MaxResponseSize check (mesi/fetch.go:201 returns ahead of
+# the core's MaxResponseSize check (mesi/fetch.go:204 returns ahead of
 # the fetch.go:288 size branch) — reusing a size whose fetch already
 # SUCCEEDED under a different cap (e.g. the /bytes/200 control of
 # Test 51) would be served from cache here and bypass the directive.
@@ -1271,7 +1271,7 @@ echo "=== Test 55: mesi_max_response_size merge — inherit 100 / child 0 overri
 # child that wrongly kept the sentinel would deliver the payload.
 for MRS_URL in http://localhost:18080/max-response-merge-inherit/ \
                http://localhost:18080/max-response-merge-inherit/child/; do
-    RESPONSE=$(curl -s "$MRS_URL")
+    RESPONSE=$(curl -s --max-time 10 "$MRS_URL")
     if echo "$RESPONSE" | grep -q "After merge include" \
         && ! echo "$RESPONSE" | grep -q "MesiBytesPayload" \
         && ! echo "$RESPONSE" | grep -q '<esi:include'; then
@@ -1286,7 +1286,7 @@ done
 # — this is what proves 0 is STORED as a configured value (the
 # unset sentinel is -1, not 0), not collapsed to unset or
 # to the parent's 100 at merge time.
-RESPONSE=$(curl -s http://localhost:18080/max-response-merge-override/)
+RESPONSE=$(curl -s --max-time 10 http://localhost:18080/max-response-merge-override/)
 if echo "$RESPONSE" | grep -q "After merge include" \
     && ! echo "$RESPONSE" | grep -q "MesiBytesPayload" \
     && ! echo "$RESPONSE" | grep -q '<esi:include'; then
@@ -1296,7 +1296,7 @@ else
     echo "Response: $RESPONSE"
     exit 1
 fi
-RESPONSE=$(curl -s http://localhost:18080/max-response-merge-override/child/)
+RESPONSE=$(curl -s --max-time 10 http://localhost:18080/max-response-merge-override/child/)
 if echo "$RESPONSE" | grep -q "MesiBytesPayload 301" \
     && echo "$RESPONSE" | grep -q "After merge include" \
     && ! echo "$RESPONSE" | grep -q '<esi:include'; then

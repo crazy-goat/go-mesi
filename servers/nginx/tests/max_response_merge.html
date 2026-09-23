@@ -16,7 +16,7 @@
          libgomesi's process-wide shared cache, which every parse
          attaches to (libgomesi.go applySharedConfig) and which serves
          cache hits BEFORE the core's MaxResponseSize check
-         (mesi/fetch.go:201 returns ahead of the fetch.go:288
+         (mesi/fetch.go:204 returns ahead of the fetch.go:288
          size branch) — a size reused across differently-capped tests
          would be poisoned by an earlier successful fetch. Rejected
          fetches are never cached (fetch.go caches only on success),
