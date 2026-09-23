@@ -76,6 +76,65 @@ func holdHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(label + " Held " + strconv.Itoa(millis)))
 }
 
+// maxGeneratedBytes caps /bytes/{size} (#210), mirroring
+// MAX_GENERATED_BYTES in servers/nginx/tests/server.py (#208): the cap
+// keeps a stray URL from allocating an unbounded body in this shared
+// test backend.
+const maxGeneratedBytes = 268435456 // 256 MB
+
+// bytesHandler serves /bytes/{size} (#210): a body of exactly <size>
+// bytes prefixed with a "MesiBytesPayload <size>" marker line when the
+// size leaves room for it (mirrors the /bytes endpoint of
+// servers/nginx/tests/server.py #208 and servers/apache's
+// tests/server.py #169), so test.sh can prove the whole fragment
+// arrived (grep marker + wc -c) or was rejected (marker absent). The
+// size is validated like holdHandler's bounds because it is echoed in
+// the marker — only validated digits reach the payload.
+func bytesHandler(w http.ResponseWriter, r *http.Request) {
+	size, err := strconv.Atoi(r.PathValue("size"))
+	if err != nil || size < 0 || size > maxGeneratedBytes {
+		http.Error(w, "invalid byte count", http.StatusBadRequest)
+		return
+	}
+	body := make([]byte, size)
+	for i := range body {
+		body[i] = 'x'
+	}
+	if marker := []byte("MesiBytesPayload " + strconv.Itoa(size) + "\n"); size >= len(marker) {
+		copy(body, marker)
+	}
+	w.Header().Set("Content-Type", "text/html")
+	w.Write(body)
+}
+
+// bytesPageHandler serves /bytespage/{size} (#210): an HTML page whose
+// single <esi:include> targets the /bytes/{size} endpoint above — the
+// page fixture for the traefik maxResponseSize tests (the root
+// HtmlTemplate's include points at the fast /esi). The size is
+// validated exactly like bytesHandler's, because it is interpolated
+// into the include URL; strconv.Atoi + Itoa normalises it, so only
+// validated digits reach the markup.
+func bytesPageHandler(w http.ResponseWriter, r *http.Request) {
+	size, err := strconv.Atoi(r.PathValue("size"))
+	if err != nil || size < 0 || size > maxGeneratedBytes {
+		http.Error(w, "invalid byte count", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Bytes ESI</title>
+</head>
+<body>
+<h1>BYTES-PAGE</h1>
+<esi:include src="http://test-server/bytes/` + strconv.Itoa(size) + `" />
+<esi:remove>Failed to include ESI</esi:remove>
+<p>After bytes include</p>
+</body>
+</html>`))
+}
+
 // slowPageHandler serves /slow/{millis}: an HTML page whose single
 // <esi:include> targets the /hold/{millis} sleep endpoint above. It gives
 // the timeout tests a page with a slow fragment (the root HtmlTemplate's
@@ -145,6 +204,8 @@ func main() {
 	}))
 
 	http.HandleFunc("/hold/{millis}/{label}", holdHandler)
+	http.HandleFunc("/bytes/{size}", bytesHandler)
+	http.HandleFunc("/bytespage/{size}", echoHeaders(bytesPageHandler))
 	http.HandleFunc("/slow/{millis}", echoHeaders(slowPageHandler))
 	http.HandleFunc("/track/{action}", trackHandler)
 
