@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -805,15 +806,25 @@ func TestFetchSameKeyDedupSingleUpstreamHit(t *testing.T) {
 	}()
 	<-slowStart
 
-	// Give the first goroutine time to hold the inflight slot and block on
-	// the upstream before the second goroutine queues behind it.
-	time.Sleep(50 * time.Millisecond)
+	// Start the second goroutine only after it has registered against the same
+	// inflight entry. Polling the protected reference count makes the overlap
+	// deterministic without a timing sleep.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		out, _, err := singleFetchUrlWithContext(url, config, context.Background())
 		results <- result{out, err}
 	}()
+	for {
+		inflightMu.Lock()
+		lock := inflightLocks["dedup:"+url+securityPolicyFingerprint(config)]
+		registered := lock != nil && lock.refCount == 2
+		inflightMu.Unlock()
+		if registered {
+			break
+		}
+		runtime.Gosched()
+	}
 
 	// Free the upstream: the owner caches the body, then the queued goroutine
 	// acquires the slot, double-checks the cache and serves from it.
@@ -831,6 +842,174 @@ func TestFetchSameKeyDedupSingleUpstreamHit(t *testing.T) {
 	}
 	if got := hitCount.Load(); got != 1 {
 		t.Fatalf("expected exactly one upstream hit, got %d", got)
+	}
+}
+
+func TestInflightLockMapPrunesIdleEntries(t *testing.T) {
+	cache := NewMemoryCache(10, time.Hour)
+	config := EsiParserConfig{
+		Timeout:         time.Second,
+		BlockPrivateIPs: false,
+		Cache:           cache,
+		CacheKeyFunc:    func(url string) string { return "prune:" + url },
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	const uniqueKeys = 128
+	for i := 0; i < uniqueKeys; i++ {
+		if _, _, err := singleFetchUrlWithContext(fmt.Sprintf("%s/%d", server.URL, i), config, context.Background()); err != nil {
+			t.Fatalf("fetch %d: %v", i, err)
+		}
+	}
+
+	inflightMu.Lock()
+	defer inflightMu.Unlock()
+	for key, lock := range inflightLocks {
+		if strings.HasPrefix(key, "prune:") && lock.refCount != 0 {
+			t.Errorf("idle lock %q still has %d references", key, lock.refCount)
+		}
+	}
+	for i := 0; i < uniqueKeys; i++ {
+		key := "prune:" + server.URL + "/" + strconv.Itoa(i) + securityPolicyFingerprint(config)
+		if _, exists := inflightLocks[key]; exists {
+			t.Errorf("idle lock %q was not pruned", key)
+		}
+	}
+}
+
+func TestInflightLockMapRetainsEntryUntilAllWaitersLeave(t *testing.T) {
+	const key = "inflight:waiter-lifecycle"
+	lock := acquireInflightLock(key)
+	waiter := acquireInflightLock(key)
+	if lock != waiter {
+		t.Fatal("same-key callers received different lock entries")
+	}
+
+	lock.ch <- struct{}{}
+	releaseInflightLock(key, lock)
+	inflightMu.Lock()
+	if inflightLocks[key] != waiter || waiter.refCount != 1 {
+		inflightMu.Unlock()
+		t.Fatal("entry was pruned while a waiter still held a reference")
+	}
+	inflightMu.Unlock()
+
+	// New callers must continue to join the entry the waiter already knows.
+	third := acquireInflightLock(key)
+	if third != waiter {
+		t.Fatal("new same-key caller did not join the existing entry")
+	}
+	<-waiter.ch
+	releaseInflightLock(key, waiter)
+	releaseInflightLock(key, third)
+
+	inflightMu.Lock()
+	defer inflightMu.Unlock()
+	if _, exists := inflightLocks[key]; exists {
+		t.Fatal("entry remained after its final participant left")
+	}
+}
+
+func TestInflightLockMapConcurrentSameKeySerialization(t *testing.T) {
+	var hits atomic.Int32
+	var startedOnce sync.Once
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		startedOnce.Do(func() { close(started) })
+		<-release
+		_, _ = w.Write([]byte("same"))
+	}))
+	defer server.Close()
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+
+	config := EsiParserConfig{
+		Timeout:         5 * time.Second,
+		BlockPrivateIPs: false,
+		Cache:           NewMemoryCache(10, time.Hour),
+		CacheKeyFunc:    func(url string) string { return "serialize:" + url },
+	}
+	const callers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out, _, err := singleFetchUrlWithContext(server.URL+"/same", config, context.Background())
+			if err == nil && out != "same" {
+				err = fmt.Errorf("unexpected response %q", out)
+			}
+			errs <- err
+		}()
+		if i == 0 {
+			<-started
+		}
+	}
+	key := "serialize:" + server.URL + "/same" + securityPolicyFingerprint(config)
+	for {
+		inflightMu.Lock()
+		lock := inflightLocks[key]
+		registered := lock != nil && lock.refCount == callers
+		inflightMu.Unlock()
+		if registered {
+			break
+		}
+		runtime.Gosched()
+	}
+	close(release)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("fetch failed: %v", err)
+		}
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("expected one serialized upstream hit, got %d", got)
+	}
+}
+
+func TestInflightLockWaiterCancellationReleasesReference(t *testing.T) {
+	const key = "inflight:cancelled-waiter"
+	lock := acquireInflightLock(key)
+	lock.ch <- struct{}{}
+
+	config := EsiParserConfig{
+		Timeout:         time.Second,
+		BlockPrivateIPs: false,
+		Cache:           NewMemoryCache(1, time.Hour),
+		CacheKeyFunc:    func(string) string { return key },
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := singleFetchUrlWithContext("http://example.com", config, ctx); !errors.Is(err, ErrTimeBudgetExceeded) {
+		t.Fatalf("expected cancelled same-key waiter to time out, got %v", err)
+	}
+	inflightMu.Lock()
+	if inflightLocks[key] != lock || lock.refCount != 1 {
+		inflightMu.Unlock()
+		t.Fatal("cancelled waiter did not release its reference while holder remained")
+	}
+	inflightMu.Unlock()
+
+	<-lock.ch
+	releaseInflightLock(key, lock)
+	inflightMu.Lock()
+	defer inflightMu.Unlock()
+	if _, exists := inflightLocks[key]; exists {
+		t.Fatal("cancelled waiter or holder left a stale map entry")
 	}
 }
 

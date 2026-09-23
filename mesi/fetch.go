@@ -17,24 +17,43 @@ var (
 	ErrTimeBudgetExceeded = errors.New("exceeded time budget")
 
 	inflightMu    sync.Mutex
-	inflightLocks = map[string]chan struct{}{}
+	inflightLocks = map[string]*inflightLock{}
 )
 
-// getInflightLock returns a per-key buffered channel (capacity 1) used to
-// serialise concurrent fetches targeting the same cache key. When two ESI
-// include workers both miss the cache for an identical URL, only one worker
-// is allowed to perform the upstream fetch; the other blocks until the first
-// worker has populated the cache and then serves from it. Acquiring the lock
-// is a send, releasing it a receive.
-func getInflightLock(cacheKey string) chan struct{} {
+type inflightLock struct {
+	ch       chan struct{}
+	refCount int
+}
+
+// acquireInflightLock returns the canonical per-key lock and records this
+// caller as a participant before releasing inflightMu. The reference covers
+// both waiters and the current lock holder, so the entry cannot be replaced
+// while any caller still has a reference to its channel.
+func acquireInflightLock(cacheKey string) *inflightLock {
 	inflightMu.Lock()
 	defer inflightMu.Unlock()
-	if ch, ok := inflightLocks[cacheKey]; ok {
-		return ch
+
+	lock := inflightLocks[cacheKey]
+	if lock == nil {
+		lock = &inflightLock{ch: make(chan struct{}, 1)}
+		inflightLocks[cacheKey] = lock
 	}
-	ch := make(chan struct{}, 1)
-	inflightLocks[cacheKey] = ch
-	return ch
+	lock.refCount++
+	return lock
+}
+
+// releaseInflightLock drops a participant reference and prunes the map entry
+// only when nobody can still acquire or hold its channel. Deletion and the
+// refcount check share inflightMu with acquisition, preventing a second lock
+// for the same key from being created while an older lock is in use.
+func releaseInflightLock(cacheKey string, lock *inflightLock) {
+	inflightMu.Lock()
+	defer inflightMu.Unlock()
+
+	lock.refCount--
+	if lock.refCount == 0 && inflightLocks[cacheKey] == lock {
+		delete(inflightLocks, cacheKey)
+	}
 }
 
 func IsEsiResponse(response *http.Response) bool {
@@ -211,24 +230,25 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	// different responses — breaking the same-page dedup guarantee that
 	// memory-backed and external caches are expected to provide.
 	if cacheKey != "" {
-		lock := getInflightLock(cacheKey)
+		lock := acquireInflightLock(cacheKey)
+		defer releaseInflightLock(cacheKey, lock)
 		select {
-		case lock <- struct{}{}:
+		case lock.ch <- struct{}{}:
 			// Slot acquired: this goroutine performs the fetch.
 		case <-fetchCtx.Done():
 			return "", false, errors.Join(ErrTimeBudgetExceeded, fetchCtx.Err())
 		}
 		if fetchCtx.Err() != nil {
-			<-lock
+			<-lock.ch
 			return "", false, errors.Join(ErrTimeBudgetExceeded, fetchCtx.Err())
 		}
 		// Double-check: another goroutine may have populated the
 		// cache while we were waiting for the slot.
 		if val, ok, _ := config.Cache.Get(fetchCtx, cacheKey); ok {
-			<-lock
+			<-lock.ch
 			return val, false, nil
 		}
-		defer func() { <-lock }()
+		defer func() { <-lock.ch }()
 	}
 
 	// Redirects are followed manually: every client below is built with
