@@ -43,6 +43,7 @@ http:
 | `allowed_hosts` | array | `[]` | Host whitelist restricting which ESI include destinations are fetched. Exact or subdomain-suffix match with a `.` boundary (rejects suffix injection); case-insensitive; ports ignored. Empty list = all hosts allowed (subject to `block_private_ips`). The whitelist check runs by hostname before the dial-time private-IP check and does NOT bypass it. |
 | `allow_private_ips_for_allowed_hosts` | bool | `false` | When `true`, hosts listed in `allowed_hosts` may resolve to private/reserved IPs (the dial-time block is bypassed for them). Only effective when `block_private_ips` is `true` AND `allowed_hosts` is non-empty; no effect under `shared_http_client` (the shared transport bakes `block_private_ips` at startup). **Trusts DNS** — a compromised entry in `allowed_hosts` can reach internal/private addresses. |
 | `timeout` | string | `"10s"` | Per-include ESI fetch time budget (Go duration format), from 1s through 24h. Omit to use the historical 10s default; explicit invalid, zero, or negative values fail plugin initialization. |
+| `max_response_size` | int64 | `0` (unlimited) | Maximum response-body bytes for each individual ESI include. Over-limit includes fail closed and render fallback/error-marker content; negative values and values above `9223372036854775806` are rejected. |
 | `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
 | `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`, `"memcached"`. |
 | `cache_size` | int | `10000` | Max entries for memory cache backend. |
@@ -70,6 +71,28 @@ http:
 
 The budget applies to the full include fetch (including redirects and waiting
 for a concurrent-fetch slot), not the time to process an entire page.
+
+#### Maximum include response size
+
+`max_response_size` limits the response body of each individual `<esi:include>`
+in bytes; it is not a limit on the assembled page. An over-limit response fails
+the include (it is not truncated), so the normal fallback body or configured
+`include_error_marker` is used. `onerror="continue"` retains its usual behavior
+for failed includes. The default is `0` (unlimited), matching
+RoadRunner's historical behavior: this integration builds `EsiParserConfig`
+directly rather than using `mesi.CreateDefaultConfig()` (whose 10 MB default
+does not apply here). Unlimited responses can use unbounded memory, so set a
+positive cap when fetching from untrusted or unbounded backends. The accepted
+range is `[0, 9223372036854775806]`; larger values would overflow the core's
+`MaxResponseSize + 1` read bound. Explicit negative or out-of-range values fail
+plugin initialization.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      max_response_size: 1048576 # 1 MiB per include
+```
 
 #### Shared HTTP Client
 Enables TCP connection reuse across ESI includes. The shared client uses an SSRF-safe transport that blocks private IPs.

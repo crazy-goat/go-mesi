@@ -33,6 +33,15 @@ const DefaultTimeout = 10 * time.Second
 // MaxTimeout is the maximum accepted per-include ESI fetch budget.
 const MaxTimeout = 24 * time.Hour
 
+// MaxMaxResponseSize is the largest response-size cap for which the core's
+// MaxResponseSize+1 io.LimitReader bound remains positive. Keep in sync with
+// libgomesi, Apache, nginx, PHP extension, CLI, and Traefik.
+const MaxMaxResponseSize int64 = 1<<63 - 2
+
+// DefaultMaxResponseSize is RoadRunner's historical zero-value limit
+// (unlimited).
+const DefaultMaxResponseSize int64 = 0
+
 type Config struct {
 	// MaxDepth limits ESI nesting. A nil pointer is "unset" (default 5).
 	// Explicit 0 is passthrough (disable ESI), matching Caddy / Apache #166
@@ -52,6 +61,9 @@ type Config struct {
 	BlockPrivateIPs                *bool    `mapstructure:"block_private_ips"`
 	AllowedHosts                   []string `mapstructure:"allowed_hosts"`
 	AllowPrivateIPsForAllowedHosts bool     `mapstructure:"allow_private_ips_for_allowed_hosts"`
+	// MaxResponseSize limits each individual include response body in bytes.
+	// Zero (unset) is unlimited on this direct core-config path.
+	MaxResponseSize int64 `mapstructure:"max_response_size"`
 }
 
 func intPtr(v int) *int { return &v }
@@ -86,6 +98,10 @@ type Plugin struct {
 func (p *Plugin) Init() error {
 	if p.config == nil {
 		p.config = CreateConfig()
+	}
+
+	if err := validateMaxResponseSize(p.config.MaxResponseSize); err != nil {
+		return err
 	}
 
 	if p.config.MaxDepth == nil {
@@ -133,10 +149,18 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
-// parseTimeout converts the timeout string to the per-include fetch budget.
-// An omitted value preserves RoadRunner's historical 10s budget; any
-// explicitly supplied value must be a positive Go duration no greater than
-// 24h, matching the shared timeout contract.
+// validateMaxResponseSize rejects negative values (which the core would treat
+// as unlimited) and values that overflow its MaxResponseSize+1 read boundary.
+func validateMaxResponseSize(size int64) error {
+	if size < 0 {
+		return fmt.Errorf("invalid max_response_size %d: must be non-negative (0 = unlimited, range [0, %d])", size, MaxMaxResponseSize)
+	}
+	if size > MaxMaxResponseSize {
+		return fmt.Errorf("invalid max_response_size %d: must be at most %d (the core's MaxResponseSize+1 LimitReader bound wraps at MaxInt64)", size, MaxMaxResponseSize)
+	}
+	return nil
+}
+
 func parseTimeout(raw string) (time.Duration, error) {
 	d, err := time.ParseDuration(raw)
 	if err != nil {
@@ -198,6 +222,7 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 				AllowedHosts:                   p.config.AllowedHosts,
 				AllowPrivateIPsForAllowedHosts: p.config.AllowPrivateIPsForAllowedHosts,
 				IncludeErrorMarker:             p.config.IncludeErrorMarker,
+				MaxResponseSize:                p.config.MaxResponseSize,
 			}
 
 			if p.cache != nil {

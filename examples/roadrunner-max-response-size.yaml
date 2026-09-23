@@ -1,0 +1,17 @@
+# RoadRunner max_response_size example
+#
+# Caps the body returned by each individual <esi:include>, in bytes. The
+# default is 0 (unlimited), which preserves RoadRunner's historical direct
+# core-config behavior; CreateDefaultConfig's 10 MB default is not used.
+# Over-limit fragments fail closed (fallback/error marker, never truncation).
+# Accepted range: [0, 9223372036854775806]; malformed, negative and values
+# above MaxInt64-1 fail plugin initialization to avoid the core's +1 overflow.
+# Set a positive limit when includes can reach untrusted/unbounded backends.
+#
+# Merge these keys into .rr.yaml under http.middleware.mesi.
+
+http:
+  address: "0.0.0.0:8080"
+  middleware:
+    mesi:
+      max_response_size: 1048576 # 1 MiB per include

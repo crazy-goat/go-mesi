@@ -222,5 +222,33 @@ else
     exit 1
 fi
 
+echo "--- Max Response Size Tests (#213) ---"
+
+echo "=== Test 15: max_response_size 100 rejects 200-byte include ==="
+start_rr -block-private-ips=false -max-response-size 100
+RESPONSE=$(curl -s http://localhost:9090/bytespage/200)
+if echo "$RESPONSE" | grep -q "BYTES-PAGE" \
+    && ! echo "$RESPONSE" | grep -q "xxxxxxxx" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: over-limit include was rejected and processed away"
+else
+    echo "FAIL: max_response_size did not reject 200-byte include"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+# No option is the historical unlimited behavior, not CreateDefaultConfig's 10 MiB.
+start_rr -block-private-ips=false
+RESPONSE=$(curl -s http://localhost:9090/bytespage/200)
+if echo "$RESPONSE" | grep -q "BYTES-PAGE" \
+    && echo "$RESPONSE" | grep -q "xxxxxxxx" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: absent max_response_size remains unlimited"
+else
+    echo "FAIL: absent max_response_size did not preserve unlimited behavior"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
 echo ""
 echo "=== All RoadRunner tests passed ==="
