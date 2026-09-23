@@ -201,9 +201,9 @@ func deepPageHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // deepHandler serves /deep/{level}/{cap}. Each fragment is itself HTML and
-// at levels above one includes the next level, with uniquely-labelled markers
-// before and after the nested fragment. This yields stable ordering that
-// demonstrates each recursion drained fully.
+// at levels above one includes the next level plus two sibling marker
+// fragments. The three jobs per level exercise the worker cap during every
+// recursive drain while uniquely-labelled markers prove all jobs completed.
 func deepHandler(w http.ResponseWriter, r *http.Request) {
 	level, err := strconv.Atoi(r.PathValue("level"))
 	if err != nil || level < 1 || level > 8 {
@@ -218,11 +218,31 @@ func deepHandler(w http.ResponseWriter, r *http.Request) {
 	levelText := strconv.Itoa(level)
 	body := `<section>LEVEL-` + levelText + `-START</section>`
 	if level > 1 {
-		body += `<esi:include src="http://test-server/deep/` + strconv.Itoa(level-1) + `/` + strconv.Itoa(capValue) + `" />`
+		childLevel := strconv.Itoa(level - 1)
+		body += `<esi:include src="http://test-server/deep/` + childLevel + `/` + strconv.Itoa(capValue) + `" />`
+		body += `<esi:include src="http://test-server/marker/` + levelText + `/A" />`
+		body += `<esi:include src="http://test-server/marker/` + levelText + `/B" />`
 	}
-	body += `<section>LEVEL-` + levelText + `-MARKER</section><section>LEVEL-` + levelText + `-END</section>`
+	body += `<section>LEVEL-` + levelText + `-END</section>`
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(body))
+}
+
+// deepMarkerHandler serves stable HTML markers as distinct sibling jobs so
+// each recursive level has three ESI jobs and can exercise MaxWorkers=2.
+func deepMarkerHandler(w http.ResponseWriter, r *http.Request) {
+	level, err := strconv.Atoi(r.PathValue("level"))
+	if err != nil || level < 2 || level > 8 {
+		http.Error(w, "invalid marker level", http.StatusBadRequest)
+		return
+	}
+	marker := r.PathValue("marker")
+	if marker != "A" && marker != "B" {
+		http.Error(w, "invalid marker", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<section>LEVEL-` + strconv.Itoa(level) + `-MARKER-` + marker + `</section>`))
 }
 
 func holdPageHandler(w http.ResponseWriter, r *http.Request) {
@@ -304,6 +324,7 @@ func main() {
 	http.HandleFunc("/holdpage/{n}/{millis}", echoHeaders(holdPageHandler))
 	http.HandleFunc("/deeppage/{depth}/{cap}", echoHeaders(deepPageHandler))
 	http.HandleFunc("/deep/{level}/{cap}", deepHandler)
+	http.HandleFunc("/marker/{level}/{marker}", deepMarkerHandler)
 	http.HandleFunc("/track/{action}", trackHandler)
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))

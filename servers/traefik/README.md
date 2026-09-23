@@ -276,10 +276,11 @@ Each nested parse creates its own pool and inherits the configured cap.
   admission to concurrent HTTP fetches with a semaphore; it does not cap the
   token-processing pool. Both are per parse, not Traefik-global.
 - **Nested pages:** each recursion level drains its own pool; under the same
-  cap, a four-level include chain must render completely. The functional
-  tests compare the fully rendered bodies under caps `2` and `100` and pin
-  the absent/library-default path without timing assertions. Each level
-  contributes inline START/MARKER/END labels around its nested include.
+  cap, a four-level include chain must render completely. Each non-leaf
+  level contains three distinct ESI jobs (one deeper-chain include and two
+  marker includes), so cap `2` constrains its pool. The functional tests
+  compare fully rendered bodies under caps `2` and `100` and pin the
+  absent/library-default path without timing assertions.
 - **Known core behavior:** each nested `MESIParse` creates a separate pool
   with the same configured cap; the limit is per parse level, not a
   page-global sum across all nested parses.

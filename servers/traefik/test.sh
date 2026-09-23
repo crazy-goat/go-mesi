@@ -352,7 +352,6 @@ if grep -q "AFTER-DEEP" /tmp/mesi-traefik-maxworkers-2.txt \
     && cmp -s /tmp/mesi-traefik-maxworkers-2.txt /tmp/mesi-traefik-maxworkers-100.txt; then
     for LEVEL in 4 3 2 1; do
         grep -q "LEVEL-$LEVEL-START" /tmp/mesi-traefik-maxworkers-2.txt \
-            && grep -q "LEVEL-$LEVEL-MARKER" /tmp/mesi-traefik-maxworkers-2.txt \
             && grep -q "LEVEL-$LEVEL-END" /tmp/mesi-traefik-maxworkers-2.txt || {
                 echo "FAIL: deep nesting omitted a marker at level $LEVEL"
                 head -c 1000 /tmp/mesi-traefik-maxworkers-2.txt
@@ -360,8 +359,18 @@ if grep -q "AFTER-DEEP" /tmp/mesi-traefik-maxworkers-2.txt \
                 docker compose down
                 exit 1
             }
+        if [ "$LEVEL" -gt 1 ]; then
+            grep -q "LEVEL-$LEVEL-MARKER-A" /tmp/mesi-traefik-maxworkers-2.txt \
+                && grep -q "LEVEL-$LEVEL-MARKER-B" /tmp/mesi-traefik-maxworkers-2.txt || {
+                    echo "FAIL: deep nesting omitted a sibling marker at level $LEVEL"
+                    head -c 1000 /tmp/mesi-traefik-maxworkers-2.txt
+                    rm -f /tmp/mesi-traefik-maxworkers-2.txt /tmp/mesi-traefik-maxworkers-100.txt
+                    docker compose down
+                    exit 1
+                }
+        fi
     done
-    echo "PASS: cap 2 and cap 100 fully drained the four-level nested chain with byte-identical output"
+    echo "PASS: cap 2 and cap 100 fully drained the four-level nested chain and sibling jobs with byte-identical output"
 else
     echo "FAIL: maxWorkers deep-nesting output incomplete or caps disagree"
     head -c 1000 /tmp/mesi-traefik-maxworkers-2.txt
@@ -377,7 +386,6 @@ if grep -q "AFTER-DEEP" /tmp/mesi-traefik-maxworkers-absent.txt \
     && ! grep -q '<esi:include' /tmp/mesi-traefik-maxworkers-absent.txt; then
     for LEVEL in 4 3 2 1; do
         grep -q "LEVEL-$LEVEL-START" /tmp/mesi-traefik-maxworkers-absent.txt \
-            && grep -q "LEVEL-$LEVEL-MARKER" /tmp/mesi-traefik-maxworkers-absent.txt \
             && grep -q "LEVEL-$LEVEL-END" /tmp/mesi-traefik-maxworkers-absent.txt || {
                 echo "FAIL: absent maxWorkers omitted nested marker at level $LEVEL"
                 head -c 1000 /tmp/mesi-traefik-maxworkers-absent.txt
@@ -385,6 +393,16 @@ if grep -q "AFTER-DEEP" /tmp/mesi-traefik-maxworkers-absent.txt \
                 docker compose down
                 exit 1
             }
+        if [ "$LEVEL" -gt 1 ]; then
+            grep -q "LEVEL-$LEVEL-MARKER-A" /tmp/mesi-traefik-maxworkers-absent.txt \
+                && grep -q "LEVEL-$LEVEL-MARKER-B" /tmp/mesi-traefik-maxworkers-absent.txt || {
+                    echo "FAIL: absent maxWorkers omitted a sibling marker at level $LEVEL"
+                    head -c 1000 /tmp/mesi-traefik-maxworkers-absent.txt
+                    rm -f /tmp/mesi-traefik-maxworkers-absent.txt
+                    docker compose down
+                    exit 1
+                }
+        fi
     done
     echo "PASS: absent maxWorkers used the library default and fully rendered the nested chain"
 else
