@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,6 +66,39 @@ func TestInitMaxResponseSizeBoundaries(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("Init with max_response_size %d: %v", tc.size, err)
+			}
+		})
+	}
+}
+
+func TestInitMaxConcurrentRequestsBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		value   int
+		wantErr bool
+	}{
+		{name: "zero_is_unlimited", value: 0},
+		{name: "one_slot", value: 1},
+		{name: "typical_limit", value: 3},
+		{name: "accepted_max", value: MaxMaxConcurrentRequests},
+		{name: "negative_one", value: -1, wantErr: true},
+		{name: "negative_multiple", value: -5, wantErr: true},
+		{name: "max_plus_one", value: MaxMaxConcurrentRequests + 1, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Plugin{config: &Config{MaxConcurrentRequests: tc.value}}
+			err := p.Init()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected max_concurrent_requests %d to fail", tc.value)
+				}
+				if !strings.Contains(err.Error(), "max_concurrent_requests") {
+					t.Errorf("expected error to name max_concurrent_requests, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Init with max_concurrent_requests %d: %v", tc.value, err)
 			}
 		})
 	}
@@ -248,6 +283,24 @@ func TestMiddlewareUsesConfiguredTimeout(t *testing.T) {
 	}
 }
 
+func TestInitDefaultsMaxConcurrentRequestsUnlimited(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init with absent max_concurrent_requests: %v", err)
+	}
+	if p.config.MaxConcurrentRequests != 0 {
+		t.Fatalf("absent max_concurrent_requests = %d, want 0 (unlimited)", p.config.MaxConcurrentRequests)
+	}
+
+	defaults := CreateConfig()
+	if err := (&Plugin{config: defaults}).Init(); err != nil {
+		t.Fatalf("Init with actual CreateConfig defaults: %v", err)
+	}
+	if defaults.MaxConcurrentRequests != 0 {
+		t.Fatalf("CreateConfig MaxConcurrentRequests = %d, want zero-value unlimited", defaults.MaxConcurrentRequests)
+	}
+}
+
 func TestMiddlewareMaxResponseSize(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -286,6 +339,105 @@ func TestMiddlewareMaxResponseSize(t *testing.T) {
 			}
 			if strings.Contains(rec.Body.String(), "esi:include") {
 				t.Errorf("include tag was not processed: %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+// concurrencyGauge measures the peak number of delayed include handlers
+// active at once. Distinct include URLs make each fetch independent.
+type concurrencyGauge struct {
+	mu      sync.Mutex
+	current int
+	peak    int
+}
+
+func (g *concurrencyGauge) enter() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.current++
+	if g.current > g.peak {
+		g.peak = g.current
+	}
+}
+
+func (g *concurrencyGauge) leave() {
+	g.mu.Lock()
+	g.current--
+	g.mu.Unlock()
+}
+
+func (g *concurrencyGauge) peakValue() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.peak
+}
+
+func TestMiddlewareMaxConcurrentRequests(t *testing.T) {
+	const includeCount = 12
+	for _, tc := range []struct {
+		name       string
+		limit      int
+		wantCapped bool
+	}{
+		{name: "cap_3", limit: 3, wantCapped: true},
+		{name: "explicit_zero_unlimited", limit: 0},
+		{name: "absent_unlimited"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := &concurrencyGauge{}
+			fragment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				g.enter()
+				defer g.leave()
+				time.Sleep(150 * time.Millisecond)
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = fmt.Fprintf(w, "CONCURRENT-FRAGMENT-%s", strings.TrimPrefix(r.URL.Path, "/fragment/"))
+			}))
+			t.Cleanup(fragment.Close)
+
+			var page strings.Builder
+			page.WriteString("<html><body>CONCURRENT-PAGE")
+			for i := 0; i < includeCount; i++ {
+				fmt.Fprintf(&page, `<esi:include src="%s/fragment/%s" />`, fragment.URL, strconv.Itoa(i))
+			}
+			page.WriteString("CONCURRENT-END</body></html>")
+			upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = w.Write([]byte(page.String()))
+			})
+
+			block := false
+			cfg := &Config{BlockPrivateIPs: &block}
+			if tc.name != "absent_unlimited" {
+				cfg.MaxConcurrentRequests = tc.limit
+			}
+			p := &Plugin{config: cfg}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+
+			rec := httptest.NewRecorder()
+			p.Middleware(upstream).ServeHTTP(rec, httptest.NewRequest("GET", "http://example.com/", nil))
+			body := rec.Body.String()
+			peak := g.peakValue()
+			if tc.wantCapped {
+				if peak > tc.limit {
+					t.Errorf("peak concurrent fetches %d > cap %d", peak, tc.limit)
+				}
+				if peak < 2 {
+					t.Errorf("peak concurrent fetches %d < 2, expected parallel slots", peak)
+				}
+			} else if peak < 4 {
+				t.Errorf("peak concurrent fetches %d < 4; zero/absent must fan out", peak)
+			}
+			if got := strings.Count(body, "CONCURRENT-FRAGMENT-"); got != includeCount {
+				t.Errorf("delivered %d fragments, want %d (queued includes must not be dropped)", got, includeCount)
+			}
+			if strings.Contains(body, "<esi:include") {
+				t.Errorf("raw include tag left in response: %q", body)
+			}
+			if !strings.Contains(body, "CONCURRENT-PAGE") || !strings.Contains(body, "CONCURRENT-END") {
+				t.Errorf("page markers missing: %q", body)
 			}
 		})
 	}

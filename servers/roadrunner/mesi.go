@@ -42,6 +42,10 @@ const MaxMaxResponseSize int64 = 1<<63 - 2
 // (unlimited).
 const DefaultMaxResponseSize int64 = 0
 
+// MaxMaxConcurrentRequests is the shared transport-derived cap. Keep in sync
+// with Apache, nginx, PHP extension, CLI, and Traefik.
+const MaxMaxConcurrentRequests = 999999999
+
 type Config struct {
 	// MaxDepth limits ESI nesting. A nil pointer is "unset" (default 5).
 	// Explicit 0 is passthrough (disable ESI), matching Caddy / Apache #166
@@ -64,6 +68,9 @@ type Config struct {
 	// MaxResponseSize limits each individual include response body in bytes.
 	// Zero (unset) is unlimited on this direct core-config path.
 	MaxResponseSize int64 `mapstructure:"max_response_size"`
+	// MaxConcurrentRequests caps concurrent include HTTP fetches within one
+	// page-render MESIParse call. Zero (unset) is unlimited.
+	MaxConcurrentRequests int `mapstructure:"max_concurrent_requests"`
 }
 
 func intPtr(v int) *int { return &v }
@@ -101,6 +108,9 @@ func (p *Plugin) Init() error {
 	}
 
 	if err := validateMaxResponseSize(p.config.MaxResponseSize); err != nil {
+		return err
+	}
+	if err := validateMaxConcurrentRequests(p.config.MaxConcurrentRequests); err != nil {
 		return err
 	}
 
@@ -157,6 +167,16 @@ func validateMaxResponseSize(size int64) error {
 	}
 	if size > MaxMaxResponseSize {
 		return fmt.Errorf("invalid max_response_size %d: must be at most %d (the core's MaxResponseSize+1 LimitReader bound wraps at MaxInt64)", size, MaxMaxResponseSize)
+	}
+	return nil
+}
+
+// validateMaxConcurrentRequests rejects negative values (which the core would
+// warn about and normalize to unlimited) and values above the shared
+// transport-derived cap.
+func validateMaxConcurrentRequests(value int) error {
+	if value < 0 || value > MaxMaxConcurrentRequests {
+		return fmt.Errorf("invalid max_concurrent_requests %d: must be in [0, %d] (0 = unlimited)", value, MaxMaxConcurrentRequests)
 	}
 	return nil
 }
@@ -223,6 +243,7 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 				AllowPrivateIPsForAllowedHosts: p.config.AllowPrivateIPsForAllowedHosts,
 				IncludeErrorMarker:             p.config.IncludeErrorMarker,
 				MaxResponseSize:                p.config.MaxResponseSize,
+				MaxConcurrentRequests:          p.config.MaxConcurrentRequests,
 			}
 
 			if p.cache != nil {
