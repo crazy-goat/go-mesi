@@ -28,6 +28,25 @@
 // default (backward compatible).
 #define MESI_DEFAULT_MAX_DEPTH 5
 
+// Global per-include ESI fetch budget in seconds (#184). Matches
+// libgomesi's config.MaxTimeoutSeconds (86400) / Apache
+// MESI_MAX_TIMEOUT_SECONDS / php-ext `timeout`: values outside
+// [1, ...] are rejected at config load, so a typo can never silently
+// become a broken budget — 0 would make EVERY include fail immediately
+// with ErrTimeBudgetExceeded (mesi/fetch.go) instead of "no timeout",
+// and anything above 24h is a unit-confusion misconfiguration.
+#define MESI_MAX_TIMEOUT_SECONDS 86400
+// Effective budget when mesi_timeout is unset — 30s, libgomesi's
+// historical hardcoded value (config.DefaultTimeoutSeconds). The C
+// side stores the unset sentinel (NGX_CONF_UNSET) instead of this
+// literal: the sentinel keeps the legacy positional path byte-identical
+// (Go-side defaultParseTimeout() applies the 30s there) and lets
+// parse() distinguish "configured" (routes through ParseJson) from
+// "unset". Keep this macro in sync with
+// libgomesi/internal/config/timeout.go — it is used in the
+// stale-libgomesi warning so the message and the contract cannot drift.
+#define MESI_DEFAULT_TIMEOUT_SECONDS 30
+
 typedef struct {
   ngx_flag_t enable_mesi;
   ngx_int_t  max_depth;      // ESI nesting depth (#180): NGX_CONF_UNSET
@@ -35,6 +54,14 @@ typedef struct {
                              // passthrough (no ESI fetch), range
                              // [0, MESI_MAX_MAX_DEPTH] validated by the
                              // directive setter
+  ngx_int_t  timeout_seconds;// Global per-include fetch budget in
+                             // seconds (#184): NGX_CONF_UNSET =
+                             // unset (legacy positional path, effective
+                             // 30s applied Go-side), a stored value is
+                             // in [1, MESI_MAX_TIMEOUT_SECONDS]
+                             // validated by the directive setter —
+                             // a stored value routes the parse through
+                             // libgomesi ParseJson
   ngx_str_t  cache_backend;  // "" (off), "memory", "redis", "memcached"
   ngx_int_t  cache_size;     // max entries for memory cache
   ngx_int_t  cache_ttl;      // TTL in seconds
@@ -73,11 +100,14 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
                                           void *child);
 static char *ngx_http_mesi_set_max_depth(ngx_conf_t *cf, ngx_command_t *cmd,
                                          void *conf);
+static char *ngx_http_mesi_set_timeout(ngx_conf_t *cf, ngx_command_t *cmd,
+                                       void *conf);
 
 typedef char *(*ParseFunc)(char *, int, char *);
 typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
 typedef char *(*ParseWithConfigExFunc)(char *, int, char *, char *, int, int);
 typedef char *(*ParseWithConfigCtxFunc)(char *, int, char *, char *, int, int, char *, char *);
+typedef char *(*ParseJsonFunc)(char *, char *);
 typedef int (*InitCacheFunc)(char *, int, int);
 typedef int (*InitCacheWithConfigFunc)(char *, int, int, char *);
 typedef void (*FreeCacheFunc)(void);
@@ -87,6 +117,7 @@ static ParseFunc EsiParse = NULL;
 static ParseWithConfigFunc EsiParseWithConfig = NULL;
 static ParseWithConfigExFunc EsiParseWithConfigEx = NULL;
 static ParseWithConfigCtxFunc EsiParseWithConfigCtx = NULL;
+static ParseJsonFunc EsiParseJson = NULL;
 static InitCacheFunc EsiInitCache = NULL;
 static InitCacheWithConfigFunc EsiInitCacheWithConfig = NULL;
 static FreeCacheFunc EsiFreeCache = NULL;
@@ -106,6 +137,16 @@ static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("mesi_max_depth"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_http_mesi_set_max_depth, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, max_depth), NULL},
+
+    // Global per-include fetch budget in seconds (#184). Custom setter
+    // instead of ngx_conf_set_num_slot: the stock slot setter only runs
+    // ngx_atoi, which has no lower or upper bound — `mesi_timeout 0`
+    // would pass `nginx -t` and make every include fail immediately
+    // (ErrTimeBudgetExceeded), `mesi_timeout 86401` would reach
+    // libgomesi. See ngx_http_mesi_set_timeout below.
+    {ngx_string("mesi_timeout"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_http_mesi_set_timeout, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, timeout_seconds), NULL},
 
     {ngx_string("mesi_cache_backend"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
@@ -527,6 +568,32 @@ static void mesi_json_append_str(u_char **w, const u_char *s, size_t len) {
   *(*w)++ = '"';
 }
 
+// Decimal rendering for the non-negative ngx_int_t values carried in
+// the ParseJson config blob (#184). Both values are range-validated
+// before they get here (depth by the directive setter + the parse()
+// guard, timeout by the directive setter + the parse() guard), so no
+// sign handling is needed and v == 0 renders as a single "0".
+static size_t mesi_json_uint_len(ngx_int_t v) {
+  size_t n = 1;
+  while (v >= 10) {
+    v /= 10;
+    n++;
+  }
+  return n;
+}
+
+static void mesi_json_write_uint(u_char **w, ngx_int_t v) {
+  u_char digits[20];  // ngx_int_t is at most 64-bit: 19 digits + sign
+  size_t n = 0;
+  do {
+    digits[n++] = (u_char)('0' + v % 10);
+    v /= 10;
+  } while (v > 0);
+  while (n > 0) {
+    *(*w)++ = digits[--n];
+  }
+}
+
 // Bounded substring search for non-NUL-terminated ngx_str_t data.
 // ngx_strnstr() delegates to ngx_strncmp(), which may read past the len
 // boundary when a partial match starts near the end; this helper never
@@ -818,6 +885,133 @@ static char *build_request_ctx_json(ngx_http_request_t *r, ngx_str_t *template,
   return (char *)buf;
 }
 
+// build_parse_json_config renders the fully-resolved per-request parse
+// configuration into the JSON blob accepted by libgomesi's ParseJson
+// entry point (the #167 config.ParseConfig schema, keys: maxDepth,
+// defaultUrl, allowedHosts, blockPrivateIPs,
+// allowPrivateIPsForAllowedHosts, cacheKeyTemplate, requestCtx,
+// timeoutSeconds). Only called when mesi_timeout is set (that is what
+// routes a request through ParseJson, #184 — mirror of Apache's
+// build_parse_json_config + used_parse_json pattern from #167).
+// Every other key mirrors exactly what the legacy positional path
+// would pass, so behaviour is identical except for the timeout.
+// timeoutSeconds travels in SECONDS (the nanosecond conversion happens
+// Go-side in config.ResolveTimeout) and is rendered only when the
+// directive is configured — an absent key resolves Go-side to the same
+// 30s default the positional path applies, so the key's presence is
+// purely a function of the directive being set.
+// cacheKeyTemplate/requestCtx are included only when a template is
+// configured, mirroring ParseWithConfigCtx's contract (absent/empty
+// template → URL-only keys; requestCtx is passed through verbatim as
+// pre-rendered JSON and omitted when build_request_ctx_json returned
+// "", so a template without ${header:}/${cookie:} gets the exact same
+// dummy-request treatment as on the positional path).
+// The key prefixes are local arrays so sizeof()-1 measures them —
+// hand-counted JSON lengths are a classic off-by-one; two passes
+// (measure, then write) keep the allocation exact because nginx pools
+// have no realloc.
+static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
+                                     ngx_int_t depth, const char *base_url,
+                                     const char *allowed_hosts,
+                                     const char *ctx_json, ngx_pool_t *pool) {
+  static const char pfx_depth[] = "{\"maxDepth\":";
+  static const char pfx_url[] = ",\"defaultUrl\":";
+  static const char pfx_hosts[] = ",\"allowedHosts\":";
+  static const char pfx_block[] = ",\"blockPrivateIPs\":";
+  static const char pfx_bypass[] =
+      ",\"allowPrivateIPsForAllowedHosts\":";
+  static const char pfx_timeout[] = ",\"timeoutSeconds\":";
+  static const char pfx_tmpl[] = ",\"cacheKeyTemplate\":";
+  static const char pfx_ctx[] = ",\"requestCtx\":";
+
+  int has_timeout = lcf->timeout_seconds != NGX_CONF_UNSET;
+  int has_tmpl = lcf->cache_key_template.len > 0;
+  int has_ctx = has_tmpl && ctx_json != NULL && ctx_json[0] != '\0';
+  const char *block_str = lcf->block_private_ips ? "true" : "false";
+  size_t block_len = lcf->block_private_ips ? 4 : 5;   // "true"/"false"
+  const char *bypass_str =
+      lcf->allow_private_ips_for_allowed ? "true" : "false";
+  size_t bypass_len = lcf->allow_private_ips_for_allowed ? 4 : 5;
+  size_t url_len = strlen(base_url);
+  size_t hosts_len = strlen(allowed_hosts);
+
+  // Pass 1: measure (every JSON string literal costs its escaped body
+  // plus the two surrounding quotes).
+  size_t total = sizeof(pfx_depth) - 1 + mesi_json_uint_len(depth);
+  total += sizeof(pfx_url) - 1 + 2 +
+           mesi_json_escaped_len((const u_char *)base_url, url_len);
+  total += sizeof(pfx_hosts) - 1 + 2 +
+           mesi_json_escaped_len((const u_char *)allowed_hosts, hosts_len);
+  total += sizeof(pfx_block) - 1 + block_len;
+  total += sizeof(pfx_bypass) - 1 + bypass_len;
+  if (has_timeout) {
+    total += sizeof(pfx_timeout) - 1 +
+             mesi_json_uint_len(lcf->timeout_seconds);
+  }
+  if (has_tmpl) {
+    total += sizeof(pfx_tmpl) - 1 + 2 +
+             mesi_json_escaped_len(lcf->cache_key_template.data,
+                                   lcf->cache_key_template.len);
+  }
+  if (has_ctx) {
+    total += sizeof(pfx_ctx) - 1 + strlen(ctx_json);
+  }
+  total += 1;  // '}'
+  total += 1;  // NUL
+
+  char *buf = ngx_palloc(pool, total);
+  if (buf == NULL) {
+    return NULL;
+  }
+
+  // Pass 2: write.
+  u_char *w = (u_char *)buf;
+  ngx_memcpy(w, pfx_depth, sizeof(pfx_depth) - 1);
+  w += sizeof(pfx_depth) - 1;
+  mesi_json_write_uint(&w, depth);
+
+  ngx_memcpy(w, pfx_url, sizeof(pfx_url) - 1);
+  w += sizeof(pfx_url) - 1;
+  mesi_json_append_str(&w, (const u_char *)base_url, url_len);
+
+  ngx_memcpy(w, pfx_hosts, sizeof(pfx_hosts) - 1);
+  w += sizeof(pfx_hosts) - 1;
+  mesi_json_append_str(&w, (const u_char *)allowed_hosts, hosts_len);
+
+  ngx_memcpy(w, pfx_block, sizeof(pfx_block) - 1);
+  w += sizeof(pfx_block) - 1;
+  ngx_memcpy(w, block_str, block_len);
+  w += block_len;
+
+  ngx_memcpy(w, pfx_bypass, sizeof(pfx_bypass) - 1);
+  w += sizeof(pfx_bypass) - 1;
+  ngx_memcpy(w, bypass_str, bypass_len);
+  w += bypass_len;
+
+  if (has_timeout) {
+    ngx_memcpy(w, pfx_timeout, sizeof(pfx_timeout) - 1);
+    w += sizeof(pfx_timeout) - 1;
+    mesi_json_write_uint(&w, lcf->timeout_seconds);
+  }
+  if (has_tmpl) {
+    ngx_memcpy(w, pfx_tmpl, sizeof(pfx_tmpl) - 1);
+    w += sizeof(pfx_tmpl) - 1;
+    mesi_json_append_str(&w, lcf->cache_key_template.data,
+                         lcf->cache_key_template.len);
+  }
+  if (has_ctx) {
+    size_t ctx_len = strlen(ctx_json);
+    ngx_memcpy(w, pfx_ctx, sizeof(pfx_ctx) - 1);
+    w += sizeof(pfx_ctx) - 1;
+    ngx_memcpy(w, ctx_json, ctx_len);
+    w += ctx_len;
+  }
+
+  *w++ = '}';
+  *w = '\0';
+  return buf;
+}
+
 // ngx_http_mesi_unicode_space returns the width in bytes of the UTF-8 rune
 // starting at p when it is a Unicode whitespace rune that libgomesi's
 // strings.Fields treats as a separator (Go's unicode.IsSpace), 0 otherwise.
@@ -870,6 +1064,26 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
     // Zero length with a non-NULL data pointer — same terminal-response
     // contract as the other fail-closed paths below (never a NULL-pos
     // zero-size buffer for the body writer).
+    return (ngx_str_t){0, (u_char *)""};
+  }
+
+  // Global per-include fetch budget (#184). The directive setter
+  // validated [1, MESI_MAX_TIMEOUT_SECONDS] at config load and
+  // ngx_conf_merge_value only ever stores the unset sentinel or a
+  // validated value, so this guard is defense-in-depth: an
+  // unvalidated stored value fails the request closed (the module's
+  // existing fail-closed empty terminal response) with an ERR log
+  // instead of being silently clamped or defaulted — never a silent
+  // substitution. Go-side ParseJson would reject such a value anyway
+  // (warn + NULL); this keeps the failure local and logged with the
+  // directive name even against a stale libgomesi without that symbol.
+  if (lcf->timeout_seconds != NGX_CONF_UNSET &&
+      (lcf->timeout_seconds < 1 ||
+       lcf->timeout_seconds > MESI_MAX_TIMEOUT_SECONDS)) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "mesi: mesi_timeout %d out of range [1, %d]; failing "
+                  "request (fail closed)",
+                  (int)lcf->timeout_seconds, MESI_MAX_TIMEOUT_SECONDS);
     return (ngx_str_t){0, (u_char *)""};
   }
 
@@ -951,7 +1165,52 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
                          : "";
 
   char *message = NULL;
-  if (lcf->cache_key_template.len > 0 && EsiParseWithConfigCtx != NULL) {
+
+  // mesi_timeout routing (#184): when the directive is set, the whole
+  // parse is routed through libgomesi's ParseJson entry point (the
+  // #167 schema) so {"timeoutSeconds":N} reaches the core — the same
+  // used_parse_json pattern Apache has used since #167. The blob
+  // carries every other resolved setting (depth, base URL, SSRF flags,
+  // optional cache key template + request context), so behaviour
+  // matches the legacy positional path exactly except for the timeout.
+  // When the symbol is missing (older libgomesi.so), fall through to
+  // the legacy chain below with a logged per-request warning — the
+  // directive is ignored (the 30s default applies), never a crash and
+  // never a silently wrong config. used_parse_json distinguishes
+  // "not attempted" from "ParseJson returned NULL" — a NULL must NOT
+  // fall back silently; it fails the request closed below (config
+  // errors are already logged Go-side).
+  int used_parse_json = 0;
+  if (lcf->timeout_seconds != NGX_CONF_UNSET) {
+    if (EsiParseJson != NULL) {
+      used_parse_json = 1;
+      // build_request_ctx_json returns "" when no template is
+      // configured or the template uses no ${header:}/${cookie:}
+      // placeholder — the same optimisation as the positional
+      // ParseWithConfigCtx path below.
+      char *ctx_json = build_request_ctx_json(r, &lcf->cache_key_template,
+                                               r->pool);
+      char *parse_cfg_json =
+          build_parse_json_config(lcf, max_depth, base_url_cstr, hosts_cstr,
+                                  ctx_json, r->pool);
+      if (ctx_json == NULL || parse_cfg_json == NULL) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "mesi: failed to allocate ParseJson config; failing "
+                      "request (fail closed)");
+        return (ngx_str_t){0, (u_char *)""};
+      }
+      message = EsiParseJson(input_cstr, parse_cfg_json);
+    } else {
+      ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                    "mesi: mesi_timeout is set but libgomesi lacks "
+                    "ParseJson — mesi_timeout ignored (default %ds "
+                    "timeout applies)",
+                    MESI_DEFAULT_TIMEOUT_SECONDS);
+    }
+  }
+
+  if (!used_parse_json &&
+      lcf->cache_key_template.len > 0 && EsiParseWithConfigCtx != NULL) {
     // ParseWithConfigCtx extends ParseWithConfigEx with the
     // cacheKeyTemplate + requestCtxJSON parameters: the shared core
     // installs a CacheKeyFunc that evaluates the template via
@@ -974,7 +1233,7 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
                                     hosts_cstr, lcf->block_private_ips,
                                     lcf->allow_private_ips_for_allowed,
                                     template_cstr, ctx_json);
-  } else if (lcf->cache_key_template.len > 0) {
+  } else if (!used_parse_json && lcf->cache_key_template.len > 0) {
     // Fail loud, never silently wrong keys: with a stale libgomesi that
     // lacks ParseWithConfigCtx the template CANNOT be honoured, so warn
     // per request and fall back to the URL-only DefaultCacheKey path
@@ -985,7 +1244,7 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
                   "using URL-only cache keys");
   }
 
-  if (message == NULL) {
+  if (!used_parse_json && message == NULL) {
     if (EsiParseWithConfigEx != NULL) {
       // ParseWithConfigEx extends ParseWithConfig with the
       // allowPrivateIPsForAllowedHosts parameter: hosts listed in
@@ -1146,6 +1405,18 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
     EsiParseWithConfigCtx = NULL;
   }
 
+  // ParseJson is optional: the JSON config entry point that carries
+  // timeoutSeconds (the #167 schema, routed when mesi_timeout is set,
+  // #184). Older libgomesi.so builds without it keep working: the
+  // directive then degrades to a per-request warning in parse() and
+  // the default 30s applies — never a crash, never a link-time hard
+  // dependency (same pattern as ParseWithConfigEx / ParseWithConfigCtx
+  // above).
+  EsiParseJson = (ParseJsonFunc)dlsym(go_module, "ParseJson");
+  if (dlerror() != NULL) {
+    EsiParseJson = NULL;
+  }
+
   EsiInitCache = (InitCacheFunc)dlsym(go_module, "InitCache");
   if (dlerror() != NULL) {
     EsiInitCache = NULL;
@@ -1248,6 +1519,90 @@ static char *ngx_http_mesi_set_max_depth(ngx_conf_t *cf, ngx_command_t *cmd,
   return NGX_CONF_OK;
 }
 
+// ngx_http_mesi_set_timeout parses the `mesi_timeout` directive
+// argument (#184). Deliberately NOT ngx_conf_set_num_slot: the stock
+// slot setter only runs ngx_atoi — digits-only but unbounded on both
+// ends, so `mesi_timeout 0` would pass `nginx -t` and make EVERY
+// include fail immediately with ErrTimeBudgetExceeded (mesi/fetch.go)
+// instead of meaning "no timeout". This setter mirrors Apache's
+// parse_nonneg_int with min=1 (mod_mesi.c set_timeout) and the
+// mesi_max_depth setter above: non-empty, digits only (rejects "-1",
+// "+1", "1.5", "abc", "3foo"), and the accumulated value must stay
+// within [1, MESI_MAX_TIMEOUT_SECONDS] (early exit bounds the
+// accumulator, so it can never overflow ngx_int_t). The range matches
+// libgomesi's config.ValidateTimeout, so nginx and the Go side can
+// never disagree. Every rejection fails config load with an
+// ERR-level (EMERG) log that names the directive and the offending
+// value — never a silent default.
+static char *ngx_http_mesi_set_timeout(ngx_conf_t *cf, ngx_command_t *cmd,
+                                       void *conf) {
+  ngx_http_mesi_loc_conf_t *lcf = conf;
+  ngx_str_t *value = cf->args->elts;  // value[0] = directive name (TAKE1)
+  ngx_int_t val = 0;
+  size_t i;
+
+  (void)cmd;  // offset is informational; the setter writes lcf directly.
+
+  // Reject a repeated directive in the same scope, matching the
+  // "is duplicate" behaviour of the ngx_conf_set_*_slot setters used
+  // by every other directive in this module — a silent last-wins would
+  // substitute the operator's intent without a word.
+  if (lcf->timeout_seconds != NGX_CONF_UNSET) {
+    return "is duplicate";
+  }
+
+  // NGX_CONF_TAKE1 guarantees one argument, but an empty quoted string
+  // ("") is still a zero-length token — reject it instead of letting
+  // the loop below parse "" as a silent 0 (which would then be range-
+  // rejected with a misleading message).
+  if (value[1].len == 0) {
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "\"mesi_timeout\" directive requires an argument "
+                       "(an integer in [1, %d])",
+                       MESI_MAX_TIMEOUT_SECONDS);
+    return NGX_CONF_ERROR;
+  }
+
+  for (i = 0; i < value[1].len; i++) {
+    u_char c = value[1].data[i];
+    if (c < '0' || c > '9') {
+      // atoi would silently coerce "abc" (→ 0 = every include fails),
+      // "-1" and "2.5" (→ 2). Fail fast.
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "invalid value \"%V\" in \"mesi_timeout\" "
+                         "directive: must be a positive integer "
+                         "(digits only) in [1, %d]",
+                         &value[1], MESI_MAX_TIMEOUT_SECONDS);
+      return NGX_CONF_ERROR;
+    }
+    val = val * 10 + (c - '0');
+    if (val > MESI_MAX_TIMEOUT_SECONDS) {
+      // Early exit: the accumulator can never grow past
+      // MESI_MAX_TIMEOUT_SECONDS * 10 + 9, so this cannot overflow
+      // ngx_int_t regardless of argument length.
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "value \"%V\" out of range in \"mesi_timeout\" "
+                         "directive: must be in [1, %d]",
+                         &value[1], MESI_MAX_TIMEOUT_SECONDS);
+      return NGX_CONF_ERROR;
+    }
+  }
+
+  // Explicit 0 ("0", "00", …): digits-only passed, but the landed
+  // #167 contract rejects 0 — it is NOT "no timeout" (see the setter
+  // comment above).
+  if (val < 1) {
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "value \"%V\" out of range in \"mesi_timeout\" "
+                       "directive: must be in [1, %d]",
+                       &value[1], MESI_MAX_TIMEOUT_SECONDS);
+    return NGX_CONF_ERROR;
+  }
+
+  lcf->timeout_seconds = val;
+  return NGX_CONF_OK;
+}
+
 static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
   ngx_http_mesi_loc_conf_t *conf;
   conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_mesi_loc_conf_t));
@@ -1256,6 +1611,7 @@ static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
   }
   conf->enable_mesi = NGX_CONF_UNSET;
   conf->max_depth = NGX_CONF_UNSET;
+  conf->timeout_seconds = NGX_CONF_UNSET;
   conf->cache_size = NGX_CONF_UNSET;
   conf->cache_ttl = NGX_CONF_UNSET;
   conf->cache_redis_db = NGX_CONF_UNSET;
@@ -1276,6 +1632,19 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   // an unset child inherits the parent's value.
   ngx_conf_merge_value(conf->max_depth, prev->max_depth,
                        MESI_DEFAULT_MAX_DEPTH);
+  // Unset STAYS NGX_CONF_UNSET (-1) — deliberately NOT a merged 30:
+  // the sentinel is what distinguishes "mesi_timeout configured" (the
+  // parse routes through ParseJson, #184) from "unset" (the
+  // byte-identical legacy positional path, where libgomesi's
+  // historical 30s default is applied Go-side). Merging to a literal
+  // 30 — as the issue sketched — would route every parse through
+  // ParseJson and log the stale-libgomesi warning even when the
+  // operator never set the directive. A child location that sets the
+  // directive overrides its parent's; an unset child inherits the
+  // parent's value (same -1-sentinel rule as Apache's MesiTimeout,
+  // mod_mesi.c merge_mesi_config).
+  ngx_conf_merge_value(conf->timeout_seconds, prev->timeout_seconds,
+                       NGX_CONF_UNSET);
   ngx_conf_merge_str_value(conf->cache_backend, prev->cache_backend, "");
   ngx_conf_merge_value(conf->cache_size, prev->cache_size, 10000);
   ngx_conf_merge_value(conf->cache_ttl, prev->cache_ttl, 30);

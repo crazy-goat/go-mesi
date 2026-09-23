@@ -113,6 +113,53 @@ location / {
 
 See [examples/nginx-max-depth.conf](../../examples/nginx-max-depth.conf) for a full example file.
 
+## Timeout
+
+The `mesi_timeout` directive bounds how long a single `<esi:include>` fetch may take during an ESI parse. Until #184 this budget was hardcoded to 30 seconds inside libgomesi.
+
+### Directive
+
+#### `mesi_timeout`
+
+- **Syntax:** `mesi_timeout <number>`
+- **Default:** `30` effective (libgomesi's historical hardcoded value — unset keeps the byte-identical legacy path, where the 30s is applied Go-side by `defaultParseTimeout()`; the C side stores an unset sentinel rather than the literal 30, see the merge note below)
+- **Context:** `location`
+- **Range:** `[1, 86400]` seconds (`24h`, the same cap as Apache `MesiTimeout` and the PHP extension's `timeout` — libgomesi's `config.MaxTimeoutSeconds`)
+
+Semantics:
+
+- **Unset** → `30`. Omitting the directive behaves exactly like previous releases: the request stays on the legacy `ParseWithConfigCtx`/`ParseWithConfigEx`/`ParseWithConfig`/`Parse` path byte-for-byte.
+- **`1`–`86400`** bound each individual `<esi:include>` fetch (the budget covers the whole fetch — every redirect hop and the response-body read share the same deadline — not each hop separately). It bounds ESI subrequests, **not** the overall client-facing response: nginx's own `proxy_read_timeout` and friends still govern that distinction.
+- **`0` is rejected** at config load — it does **not** mean "no timeout": the core fails every include immediately when `Timeout <= 0` (`mesi/fetch.go` → `ErrTimeBudgetExceeded`; Caddy likewise rejects a non-positive `timeout`), and an unlimited budget would pin one goroutine per queued include while a backend hangs.
+
+Validation is strict and happens at config load (`nginx -t` fails — no silent default): the argument must be a non-empty, digits-only integer within `[1, 86400]`. Negatives (`-1`), signs (`+1`), decimals (`1.5`), non-integers (`abc`, `3foo`), empty values (`""`), explicit `0`, anything above the cap (`86401`, oversized digit strings) and a bare argument-less `mesi_timeout;` are all rejected with an error naming the directive and the offending value. The check is done by a custom setter rather than `ngx_conf_set_num_slot`, whose `ngx_atoi`-based parse has no lower or upper bound (`mesi_timeout 0` would otherwise load fine and fail every include).
+
+When the directive is set, the whole parse is routed through libgomesi's **`ParseJson`** entry point as `{"timeoutSeconds":N}` (in seconds — the nanosecond conversion happens Go-side in `config.ResolveTimeout`); the blob also carries the other resolved settings (`maxDepth`, `defaultUrl`, `allowedHosts`, SSRF flags, optional `cacheKeyTemplate` + `requestCtx`), so behaviour matches the positional path exactly except for the timeout. With an older `libgomesi.so` that lacks the `ParseJson` symbol, the directive is ignored with a per-request warning (`mesi: mesi_timeout is set but libgomesi lacks ParseJson — mesi_timeout ignored (default 30s timeout applies)`) and the 30s default applies — never a crash, never a silently wrong config. Nested `location` blocks inherit the directive from their enclosing location: the unset sentinel (`NGX_CONF_UNSET`) survives `ngx_conf_merge_value` — deliberately **not** a merged literal `30`, which would route every parse through `ParseJson` even when the directive is absent — so an unset child takes the parent's value and a child that sets the directive overrides the parent.
+
+### Example
+
+```nginx
+location /tight-sla/ {
+    enable_mesi on;
+    mesi_timeout 2;    # abort includes that take longer than 2s
+    proxy_pass http://backend;
+}
+
+location /slow-backend/ {
+    enable_mesi on;
+    mesi_timeout 120;  # generous budget for legitimately slow backends
+    proxy_pass http://backend;
+}
+
+location / {
+    enable_mesi on;
+    # mesi_timeout unset → default 30s
+    proxy_pass http://backend;
+}
+```
+
+See [examples/nginx-timeout.conf](../../examples/nginx-timeout.conf) for a full example file.
+
 ## Shared HTTP Client
 
 Not available in the nginx module: there is no shared-client directive (unlike Apache's `MesiSharedHTTPClient` and the CLI's `-shared-http-client`) and no `InitHTTPClient` wiring. Each `<esi:include>` fetch creates its own `http.Client` for the request, so TCP/TLS connection pooling across includes is not available — every include performs its own connection setup. Each per-include client still uses the SSRF-safe transport, so `mesi_block_private_ips` protection applies to every fetch.
