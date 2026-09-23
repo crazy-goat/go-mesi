@@ -292,5 +292,58 @@ for CASE in explicit-zero absent; do
     fi
 done
 
+echo "--- Max Workers Tests (#224) ---"
+
+# Include bodies are deliberately text/plain so recursion stays in the
+# caller's parse and
+# inherits the MaxWorkers cap. Four nested levels and two sibling marker
+# jobs per non-leaf level ensure every constrained parse has multiple jobs.
+for CASE in cap-2 cap-100 absent; do
+    if [ "$CASE" = "cap-2" ]; then
+        start_rr -block-private-ips=false -max-workers 2
+    elif [ "$CASE" = "cap-100" ]; then
+        start_rr -block-private-ips=false -max-workers 100
+    else
+        start_rr -block-private-ips=false
+    fi
+    RESPONSE=$(curl -fsS http://localhost:9090/deep-page)
+    if echo "$RESPONSE" | grep -q "AFTER-DEEP" \
+        && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+        for LEVEL in 4 3 2 1; do
+            echo "$RESPONSE" | grep -q "LEVEL-$LEVEL-START" \
+                && echo "$RESPONSE" | grep -q "LEVEL-$LEVEL-END" || {
+                    echo "FAIL: $CASE omitted a deep nesting marker at level $LEVEL"
+                    echo "Response: $RESPONSE"
+                    exit 1
+                }
+            if [ "$LEVEL" -gt 1 ]; then
+                echo "$RESPONSE" | grep -q "LEVEL-MARKER-$LEVEL-A" \
+                    && echo "$RESPONSE" | grep -q "LEVEL-MARKER-$LEVEL-B" || {
+                        echo "FAIL: $CASE omitted sibling marker jobs at level $LEVEL"
+                        echo "Response: $RESPONSE"
+                        exit 1
+                    }
+            fi
+        done
+        echo "PASS: $CASE fully rendered all nested and sibling jobs"
+    else
+        echo "FAIL: $CASE did not fully render deep nesting"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+done
+
+# Explicit zero must take the same library-default path as absent.
+start_rr -block-private-ips=false -max-workers 0
+RESPONSE_ZERO=$(curl -fsS http://localhost:9090/deep-page)
+start_rr -block-private-ips=false
+RESPONSE_ABSENT=$(curl -fsS http://localhost:9090/deep-page)
+if [ "$RESPONSE_ZERO" = "$RESPONSE_ABSENT" ]; then
+    echo "PASS: explicit zero and absent MaxWorkers produce byte-identical output"
+else
+    echo "FAIL: explicit zero and absent MaxWorkers differ"
+    exit 1
+fi
+
 echo ""
 echo "=== All RoadRunner tests passed ==="

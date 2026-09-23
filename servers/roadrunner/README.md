@@ -45,6 +45,7 @@ http:
 | `timeout` | string | `"10s"` | Per-include ESI fetch time budget (Go duration format), from 1s through 24h. Omit to use the historical 10s default; explicit invalid, zero, or negative values fail plugin initialization. |
 | `max_response_size` | int64 | `0` (unlimited) | Maximum response-body bytes for each individual ESI include. Over-limit includes fail closed and render fallback/error-marker content; negative values and values above `9223372036854775806` are rejected. |
 | `max_concurrent_requests` | int | `0` (unlimited) | Maximum concurrent ESI include HTTP fetches within one page render. Includes beyond the cap wait for a slot and are not dropped; negative values and values above `999999999` are rejected. |
+| `max_workers` | int | `0` (`runtime.NumCPU()*4`) | Maximum token-processing drain-pool workers per `MESIParse` call. Each nested parse creates its own pool and inherits the cap; negative values and values above `999999999` are rejected. |
 | `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
 | `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`, `"memcached"`. |
 | `cache_size` | int | `10000` | Max entries for memory cache backend. |
@@ -114,6 +115,30 @@ http:
   middleware:
     mesi:
       max_concurrent_requests: 3
+```
+
+#### Maximum token-processing workers
+
+`max_workers` caps the ESI token-processing drain pool for one page-render
+`MESIParse` call. Each nested parse creates its own pool with the same cap, so
+this is per parse level, not a RoadRunner-global limit. It differs from
+`max_concurrent_requests`, which controls HTTP-fetch admission with a separate
+semaphore; `MaxWorkers` also limits token-processing work, and on flat pages
+it bounds fetch parallelism because each worker processes one include at a
+time.
+
+Absent and explicit `0` both select the core library default
+`runtime.NumCPU()*4`, preserving the previous behavior. This is not unlimited
+(`max_concurrent_requests: 0` is unlimited). Values must be in
+`[0, 999999999]`. Negative values are rejected because the core silently
+substitutes its default for any non-positive `MaxWorkers`; values above the cap
+also fail plugin initialization instead of silently degrading.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      max_workers: 8
 ```
 
 #### Shared HTTP Client
