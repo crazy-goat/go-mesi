@@ -31,6 +31,9 @@ func durationToSeconds(d time.Duration) int32 {
 }
 
 func (c *MemcachedCache) Get(ctx context.Context, key string) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
 	item, err := c.client.Get(key)
 	if err == memcache.ErrCacheMiss {
 		return "", false, nil
@@ -42,6 +45,9 @@ func (c *MemcachedCache) Get(ctx context.Context, key string) (string, bool, err
 }
 
 func (c *MemcachedCache) Set(ctx context.Context, key string, value string, ttl time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	expire := c.defaultTTL
 	if ttl > 0 {
 		expire = durationToSeconds(ttl)
@@ -54,5 +60,8 @@ func (c *MemcachedCache) Set(ctx context.Context, key string, value string, ttl 
 }
 
 func (c *MemcachedCache) Delete(ctx context.Context, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return c.client.Delete(key)
 }
