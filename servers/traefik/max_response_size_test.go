@@ -81,9 +81,12 @@ func TestMaxResponseSizeDecodeRejectsOverflowAndNonIntegers(t *testing.T) {
 	// Values an int64 field CANNOT represent never reach New(): the
 	// config decode into the typed field fails first, which also fails
 	// middleware creation (traefik has no ParseConfig — a decode error
-	// is loud). The `json` tag here mirrors the `yaml` tag traefik
-	// uses: both decode into the same int64, so both share the type
-	// constraint being proven.
+	// is loud). json.Unmarshal into the int64 field is used here as a
+	// stand-in for traefik's real pipeline (file provider stringifies
+	// every scalar, then tagless mapstructure coerces into the field):
+	// both share the int64 type constraint being proven, and the four
+	// reject classes were verified to fail loud in that real pipeline
+	// end-to-end (paerser v0.2.2 + traefik's pinned mapstructure).
 	cases := []struct {
 		name  string
 		value string
@@ -174,7 +177,7 @@ func TestServeHTTPMaxResponseSizeRejectsOversizedInclude(t *testing.T) {
 	frag := sizedFragment("MesiBytesPayload 200 ", 200)
 	defer frag.Close()
 
-	p, err := New(context.Background(), esiPageWithInclude(frag, "/frag"), &Config{MaxResponseSize: 100}, "test")
+	p, err := New(context.Background(), esiPageWithInclude(frag, "/frag"), &Config{MaxResponseSize: 100, BlockPrivateIPs: false /* loopback httptest backend — keep the dial-time SSRF filter off */}, "test")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -203,7 +206,7 @@ func TestServeHTTPMaxResponseSizeRejectRendersIncludeErrorMarker(t *testing.T) {
 	frag := sizedFragment("MesiBytesPayload 200 ", 200)
 	defer frag.Close()
 
-	cfg := &Config{MaxResponseSize: 100, IncludeErrorMarker: "<!-- esi error -->"}
+	cfg := &Config{MaxResponseSize: 100, IncludeErrorMarker: "<!-- esi error -->", BlockPrivateIPs: false /* loopback httptest backend — keep the dial-time SSRF filter off */}
 	p, err := New(context.Background(), esiPageWithInclude(frag, "/frag"), cfg, "test")
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -227,7 +230,7 @@ func TestServeHTTPMaxResponseSizeAllowsWithinLimit(t *testing.T) {
 	frag := sizedFragment("MesiBytesPayload 4096 ", fragSize)
 	defer frag.Close()
 
-	p, err := New(context.Background(), esiPageWithInclude(frag, "/frag"), &Config{MaxResponseSize: 1048576}, "test")
+	p, err := New(context.Background(), esiPageWithInclude(frag, "/frag"), &Config{MaxResponseSize: 1048576, BlockPrivateIPs: false /* loopback httptest backend — keep the dial-time SSRF filter off */}, "test")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
