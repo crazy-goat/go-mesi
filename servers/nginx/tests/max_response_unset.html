@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Max Response Size Unset Test</title>
+</head>
+<body>
+    <h1>Max Response Size Unset Test</h1>
+    <!-- Location /max-response-unset/ never sets
+         mesi_max_response_size → unlimited (libgomesi leaves
+         MaxResponseSize at 0 on the legacy positional path; there is
+         NO implicit 10 MB default on this path — the
+         CreateDefaultConfig 10 MB only reaches Go callers of that
+         constructor). The backend returns a 10 MB + 1 byte body
+         (/bytes/10485761): if unset ever became a 10 MB cap (the
+         issue's proposal) this include would be rejected and the
+         payload marker line would be absent. Used by test.sh
+         (#208). -->
+    <esi:include src="http://backend:8000/bytes/10485761" />
+    <p>After unset include</p>
+</body>
+</html>
