@@ -1877,9 +1877,11 @@ fi
 rm -f /tmp/mesi-mw-deep-2.html /tmp/mesi-mw-deep-100.html /tmp/mesi-mw-deep-2.flat /tmp/mesi-mw-deep-100.flat
 
 echo "=== Test 65: mesi_max_workers 2 — 20 includes drain through a 2-goroutine pool (#219) ==="
-# /mw-2/ sets ONLY mesi_max_workers 2 (proving the routing condition
-# sends an mw-only config through ParseJson with the timeout /
-# max-response-size / max-concurrent-requests keys absent).
+# /mw-2/ sets ONLY mesi_max_workers 2 — an mw-only config routed
+# through ParseJson (the routing condition's mw arm), consistent
+# with the timeout / max-response-size / max-concurrent-requests
+# keys being absent (code-verified via has_timeout/has_maxrs/
+# has_maxcr, not observable through the gauge).
 # Assertions: peak == 2 — the upper bound is the hard pool invariant
 # (workerCount = min(2, 20), each goroutine fetches one include at a
 # time, mesi/parser.go; an unrouted parse would reach >= 4 and fail

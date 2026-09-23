@@ -1718,8 +1718,8 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
   // libgomesi.so builds without it keep working: the directives then
   // degrade to a per-request warning in parse() and the defaults
   // apply (30s / unlimited / unlimited / library-default NumCPU*4
-  // pool) — never a crash, never a
-  // link-time hard dependency (same pattern as ParseWithConfigEx /
+  // pool) — never a crash, never a link-time hard dependency (same
+  // pattern as ParseWithConfigEx /
   // ParseWithConfigCtx above).
   EsiParseJson = (ParseJsonFunc)dlsym(go_module, "ParseJson");
   if (dlerror() != NULL) {
