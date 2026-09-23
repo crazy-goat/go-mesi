@@ -915,6 +915,260 @@ else
     exit 1
 fi
 
+echo "=== Test 45: mesi_timeout 2 — 5s include aborted at ~2s (#184) ==="
+# The backend (tests/server.py) serves /sleep/<seconds>/<label>, which
+# blocks for <seconds> and then returns "<label> Waited <seconds>".
+# Wall-clock assertions use curl's %{time_total} (seconds, decimal) so
+# they are portable (no GNU date +%N dependency). This is also the
+# propagation proof that a configured mesi_timeout reaches libgomesi's
+# ParseJson {"timeoutSeconds":N} key: if the key never arrived, the
+# legacy 30s budget would let the full 5s sleep through and the
+# fragment would render.
+TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 20 http://localhost:18080/timeout-2/)
+RESPONSE=$(cat /tmp/mesi-timeout-body.txt)
+rm -f /tmp/mesi-timeout-body.txt
+if awk -v t="$TIME_TOTAL" 'BEGIN {exit !(t >= 1.5 && t <= 4.0)}' \
+    && echo "$RESPONSE" | grep -q "After timeout include" \
+    && ! echo "$RESPONSE" | grep -q "timeout2 Waited" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: include failed within ~2s (elapsed ${TIME_TOTAL}s, fragment absent, tag stripped)"
+else
+    echo "FAIL: mesi_timeout 2 did not abort the 5s include (elapsed ${TIME_TOTAL}s)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 46: mesi_timeout 30 — 10s include succeeds (#184) ==="
+# Floor 9.5s proves the complete backend sleep happened (cold URL —
+# never fetched before; failures are never cached); the ceiling keeps
+# the assertion well under the 30s budget's own bound.
+TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 40 http://localhost:18080/timeout-30/)
+RESPONSE=$(cat /tmp/mesi-timeout-body.txt)
+rm -f /tmp/mesi-timeout-body.txt
+if awk -v t="$TIME_TOTAL" 'BEGIN {exit !(t >= 9.5 && t <= 25.0)}' \
+    && echo "$RESPONSE" | grep -q "timeout30 Waited 10" \
+    && echo "$RESPONSE" | grep -q "After slow include"; then
+    echo "PASS: 10s include succeeded under mesi_timeout 30 (elapsed ${TIME_TOTAL}s)"
+else
+    echo "FAIL: mesi_timeout 30 did not let the 10s include through (elapsed ${TIME_TOTAL}s)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 47: mesi_timeout unset — default 30s aborts a 31s include (#184) ==="
+# The root location (/) has no mesi_timeout directive → the documented
+# 30s default on the byte-identical legacy positional path. Backend
+# sleeps 31s: the budget fires at ~30s (no fragment, chrome intact, no
+# raw tag). Elapsed must be >= 28s (a smaller default would drop below
+# the floor) and the fragment must be absent — the issue's proposed
+# "0 = no timeout" default would render it at ~31s, so the content
+# check pins the default to a finite 30s budget.
+TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 55 http://localhost:18080/timeout-default.html)
+RESPONSE=$(cat /tmp/mesi-timeout-body.txt)
+rm -f /tmp/mesi-timeout-body.txt
+if awk -v t="$TIME_TOTAL" 'BEGIN {exit !(t >= 28.0 && t <= 40.0)}' \
+    && echo "$RESPONSE" | grep -q "After default include" \
+    && ! echo "$RESPONSE" | grep -q "timeoutdefault Waited" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: unset mesi_timeout aborted the 31s include at ~30s (elapsed ${TIME_TOTAL}s)"
+else
+    echo "FAIL: unset mesi_timeout no longer behaves like the 30s default (elapsed ${TIME_TOTAL}s)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 48: mesi_timeout merge — child inherits the parent's value (#184) ==="
+# Parent sets 2, the nested child location has no directive: the child
+# must inherit 2 through ngx_conf_merge_value over the unset sentinel
+# (5s include aborted on both the parent URL and the child URL). A
+# child that wrongly kept the unset sentinel would let the 5s fragment
+# through and fail the content check.
+for TIMEOUT_URL in http://localhost:18080/timeout-merge-inherit/ \
+                   http://localhost:18080/timeout-merge-inherit/child/; do
+    TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 20 "$TIMEOUT_URL")
+    RESPONSE=$(cat /tmp/mesi-timeout-body.txt)
+    if awk -v t="$TIME_TOTAL" 'BEGIN {exit !(t >= 1.5 && t <= 4.0)}' \
+        && echo "$RESPONSE" | grep -q "After timeout include" \
+        && ! echo "$RESPONSE" | grep -q "timeout2 Waited" \
+        && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+        echo "PASS: ${TIMEOUT_URL} aborted the 5s include at ~2s (elapsed ${TIME_TOTAL}s)"
+    else
+        echo "FAIL: ${TIMEOUT_URL} did not inherit/keep mesi_timeout 2 (elapsed ${TIME_TOTAL}s)"
+        echo "Response: $RESPONSE"
+        rm -f /tmp/mesi-timeout-body.txt
+        exit 1
+    fi
+    rm -f /tmp/mesi-timeout-body.txt
+done
+
+echo "=== Test 49: mesi_timeout merge — child's own value overrides the parent (#184) ==="
+# Parent sets 2, the nested child sets 30: the child must win (the 5s
+# include arrives complete — floor 4.5s proves the full sleep ran) and
+# the parent itself must keep aborting at 2s.
+TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 25 http://localhost:18080/timeout-merge-override/)
+RESPONSE=$(cat /tmp/mesi-timeout-body.txt)
+rm -f /tmp/mesi-timeout-body.txt
+if awk -v t="$TIME_TOTAL" 'BEGIN {exit !(t >= 1.5 && t <= 4.0)}' \
+    && echo "$RESPONSE" | grep -q "After timeout include" \
+    && ! echo "$RESPONSE" | grep -q "timeout2 Waited" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: parent location keeps its own mesi_timeout 2 (elapsed ${TIME_TOTAL}s)"
+else
+    echo "FAIL: parent location (mesi_timeout 2) did not abort the 5s include (elapsed ${TIME_TOTAL}s)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 25 http://localhost:18080/timeout-merge-override/child/)
+RESPONSE=$(cat /tmp/mesi-timeout-body.txt)
+rm -f /tmp/mesi-timeout-body.txt
+if awk -v t="$TIME_TOTAL" 'BEGIN {exit !(t >= 4.5 && t <= 20.0)}' \
+    && echo "$RESPONSE" | grep -q "timeout2 Waited 5" \
+    && echo "$RESPONSE" | grep -q "After timeout include"; then
+    echo "PASS: child location's mesi_timeout 30 overrode the parent's 2 (elapsed ${TIME_TOTAL}s)"
+else
+    echo "FAIL: child location did not override the parent's mesi_timeout (elapsed ${TIME_TOTAL}s)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 50: Config validation — mesi_timeout boundary values (#184) ==="
+# (a) Boundary classes ACCEPTED: the range minimum 1 and the cap
+#     MESI_MAX_TIMEOUT_SECONDS (86400).
+for GOOD in 1 86400; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_timeout ${GOOD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-timeout.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-timeout.conf' < /tmp/nginx-mesi-timeout.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-timeout.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "syntax is ok"; then
+        echo "PASS: valid mesi_timeout ${GOOD} accepted by nginx -t"
+    else
+        echo "FAIL: nginx rejected valid mesi_timeout ${GOOD}"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (b) Format classes REJECTED: negative, non-integer, decimal, trailing
+#     garbage, explicit plus sign — atoi/ngx_atoi-style coercion must
+#     never turn these into a plausible budget ("-1" wraps when cast,
+#     "1.5" truncates, "abc" → 0 would fail every include).
+for BAD in '-1' 'abc' '1.5' '3foo' '+1'; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_timeout ${BAD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-timeout.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-timeout.conf' < /tmp/nginx-mesi-timeout.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-timeout.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "must be a positive integer"; then
+        echo "PASS: invalid mesi_timeout ${BAD} rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject invalid mesi_timeout ${BAD} with the expected error"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (c) Range classes REJECTED: explicit 0 (NOT "no timeout" — the core
+#     fails every include immediately when Timeout <= 0), cap+1 and a
+#     20-digit overflow input (the setter's early exit bounds its own
+#     accumulator, so the value can never overflow ngx_int_t regardless
+#     of argument length).
+for BAD in 0 86401 99999999999999999999; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_timeout ${BAD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-timeout.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-timeout.conf' < /tmp/nginx-mesi-timeout.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-timeout.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "out of range"; then
+        echo "PASS: out-of-range mesi_timeout ${BAD} rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject out-of-range mesi_timeout ${BAD} with the expected error"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (d) Empty value REJECTED: "" must not silently become a silent 0.
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_timeout "";' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-mesi-timeout.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-timeout.conf' < /tmp/nginx-mesi-timeout.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-timeout.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q "requires an argument"; then
+    echo "PASS: empty mesi_timeout rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject an empty mesi_timeout"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+# (e) Missing argument REJECTED: a bare `mesi_timeout;` (zero args) is
+#     caught by NGX_CONF_TAKE1 before the setter runs.
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_timeout;' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-mesi-timeout.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-timeout.conf' < /tmp/nginx-mesi-timeout.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-timeout.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q 'invalid number of arguments in "mesi_timeout"'; then
+    echo "PASS: argument-less mesi_timeout rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject a mesi_timeout without an argument"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+rm -f /tmp/nginx-mesi-timeout.conf
+
 docker compose down
 
 echo ""
