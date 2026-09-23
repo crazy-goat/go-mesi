@@ -57,6 +57,19 @@ type Config struct {
 	// New() with an error naming the option — an explicit value is
 	// never silently replaced by a default.
 	MaxResponseSize int64 `json:"maxResponseSize" yaml:"maxResponseSize"`
+	// MaxConcurrentRequests caps the number of concurrent
+	// <esi:include> HTTP fetches within one page render — one
+	// mesi.MESIParse call (the admission-control semaphore the core
+	// installs only when the value is > 0, mesi/parser.go:78).
+	// 0 — the zero value and the absent option alike — is
+	// "unlimited", byte-identical to this plugin's pre-#215
+	// behaviour: ServeHTTP's EsiParserConfig literal never set the
+	// field. A negative or a value above [0, 999999999] fails New()
+	// with an error naming the option — an explicit value is never
+	// silently normalized the way the core would (it only warns
+	// "max_concurrent_requests_invalid" and rewrites a negative to
+	// 0 = unlimited, #329).
+	MaxConcurrentRequests int `json:"maxConcurrentRequests" yaml:"maxConcurrentRequests"`
 }
 
 func CreateConfig() *Config {
@@ -68,15 +81,16 @@ func CreateConfig() *Config {
 }
 
 type ResponsePlugin struct {
-	next            http.Handler
-	name            string
-	config          *Config
-	cache           mesi.Cache
-	cacheTTL        time.Duration
-	timeout         time.Duration
-	maxResponseSize int64
-	sharedTransport *http.Transport
-	closeFn         func() error
+	next                  http.Handler
+	name                  string
+	config                *Config
+	cache                 mesi.Cache
+	cacheTTL              time.Duration
+	timeout               time.Duration
+	maxResponseSize       int64
+	maxConcurrentRequests int
+	sharedTransport       *http.Transport
+	closeFn               func() error
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
@@ -100,12 +114,18 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		return nil, err
 	}
 
+	maxConcurrentRequests, err := resolveMaxConcurrentRequests(config.MaxConcurrentRequests)
+	if err != nil {
+		return nil, err
+	}
+
 	p := &ResponsePlugin{
-		next:            next,
-		name:            name,
-		config:          config,
-		timeout:         timeout,
-		maxResponseSize: maxResponseSize,
+		next:                  next,
+		name:                  name,
+		config:                config,
+		timeout:               timeout,
+		maxResponseSize:       maxResponseSize,
+		maxConcurrentRequests: maxConcurrentRequests,
 	}
 
 	if config.SharedHTTPClient {
@@ -214,6 +234,70 @@ func resolveMaxResponseSize(v int64) (int64, error) {
 	return v, nil
 }
 
+// maxMaxConcurrentRequests is the upper bound for the
+// `maxConcurrentRequests` plugin option: 999999999, the #170
+// transport-derived cap shared by every landed implementation —
+// libgomesi's config.MaxMaxConcurrentRequests
+// (libgomesi/internal/config/max_concurrent_requests.go:26, a separate
+// module unimportable here — keep-in-sync pattern), Apache's
+// MESI_MAX_MAX_CONCURRENT_REQUESTS (servers/apache/mod_mesi.c:214),
+// nginx's MESI_MAX_MAX_CONCURRENT_REQUESTS (#214,
+// servers/nginx/ngx_http_mesi_module.c:76), the PHP extension's
+// MESI_MAX_MAX_CONCURRENT_REQUESTS (php-ext/mesi.c:71) and the CLI's
+// maxMaxConcurrentRequests (cli/mesi-cli.go:72). Neither the core (a
+// bare int documented only as "0 = unlimited", mesi/config.go:33) nor
+// Caddy (uncapped strconv.Atoi, servers/caddy/mesi.go:347-355 — the
+// #452 gap family, deliberately not inherited, same reasoning as
+// #187's timeout upper bound) defines a maximum: the bound is derived
+// from the transport — the value crosses to Apache as a C `int`
+// (32-bit on every platform Apache 2.4 supports) guarded at 9 digits
+// by the shared strict parsers. The semaphore is a `chan struct{}` of
+// zero-size elements, so the cap exists for portability, not memory.
+const maxMaxConcurrentRequests = 999999999
+
+// resolveMaxConcurrentRequests maps the `maxConcurrentRequests` plugin
+// option (see Config) onto the per-parse admission cap.
+//
+// Absent and explicit 0 both resolve to 0 — the core only installs the
+// admission-control semaphore when MaxConcurrentRequests > 0
+// (mesi/parser.go:78), so 0 (and therefore the absent option too)
+// means "unlimited": byte-identical to the pre-#215 behaviour, where
+// ServeHTTP's EsiParserConfig literal simply left the field at its
+// zero value (mesi.CreateDefaultConfig() never sets it either —
+// mesi/config.go:98-110 — and this plugin never calls that
+// constructor). Unlike `timeout` (#187), a zero cap really IS
+// "unlimited" here: no core path fails on it.
+//
+// A positive value caps concurrent <esi:include> fetches within ONE
+// MESIParse call; includes queued beyond the cap WAIT for a free slot
+// (the admission wait shares the per-include timeout deadline,
+// mesi/fetch.go:140-155) — they are never dropped. Negatives are
+// rejected because the core would only warn
+// ("max_concurrent_requests_invalid") and normalize them to 0 =
+// unlimited (#329), i.e. a malformed explicit value would silently
+// pass as the documented "unlimited" — New() fails loud instead
+// (project rule: no silent defaults; the same config-load rejection
+// as every landed sibling: Apache #170, php-ext #206, CLI #192,
+// nginx #214). Values above maxMaxConcurrentRequests are rejected for
+// the parity reasons documented on that constant. Range therefore
+// [0, 999999999]. A malformed or out-of-range EXPLICIT value fails
+// middleware creation with an error naming the option — never a
+// silent fallback (the traefik plugin API has no ParseConfig, so
+// New() is the failure site — same fail-loud contract as
+// resolveTimeout and resolveMaxResponseSize above; decode-level
+// failures like decimals/overflow/non-integers fail traefik's config
+// decode before New(), which also fails middleware creation — the
+// same empirical finding #210 documented for the int64 field).
+func resolveMaxConcurrentRequests(v int) (int, error) {
+	if v < 0 {
+		return 0, fmt.Errorf("invalid maxConcurrentRequests %d: value must not be negative (0 = unlimited, range [0, %d])", v, maxMaxConcurrentRequests)
+	}
+	if v > maxMaxConcurrentRequests {
+		return 0, fmt.Errorf("invalid maxConcurrentRequests %d: value must be at most %d", v, maxMaxConcurrentRequests)
+	}
+	return v, nil
+}
+
 func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	customWriter := middleware.NewResponseWriter(rw)
 
@@ -233,6 +317,7 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			DefaultUrl:                     middleware.GetDefaultUrl(req),
 			Timeout:                        p.timeout,
 			MaxResponseSize:                p.maxResponseSize,
+			MaxConcurrentRequests:          p.maxConcurrentRequests,
 			BlockPrivateIPs:                p.config.BlockPrivateIPs,
 			IncludeErrorMarker:             p.config.IncludeErrorMarker,
 			AllowedHosts:                   p.config.AllowedHosts,

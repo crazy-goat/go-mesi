@@ -45,6 +45,29 @@ http:
       service: test-server
       rule: Host(`maxrs1m.domain.com`)
 
+    # Max concurrent requests fixtures (#215): same backend, one cap
+    # middleware each. The absent case rides the default `mesi`
+    # middleware on `domain.com` (byte-compatible with pre-#215
+    # behaviour). No cacheBackend anywhere: traefik caching is opt-in
+    # (CreateConfig() never seeds cacheBackend), and the 20 distinct
+    # /hold/HOLDFRAG-{i} include URLs of the funnel fixture must all
+    # reach the backend's peak gauge un-deduped.
+    mcr3:
+      middlewares:
+        - mesi-mcr-3
+      entrypoints:
+        - http
+      service: test-server
+      rule: Host(`mcr3.domain.com`)
+
+    mcr0:
+      middlewares:
+        - mesi-mcr-0
+      entrypoints:
+        - http
+      service: test-server
+      rule: Host(`mcr0.domain.com`)
+
   services:
     test-server:
       loadBalancer:
@@ -76,3 +99,16 @@ http:
       plugin:
         mesi:
           maxResponseSize: 1048576
+
+    mesi-mcr-3:
+      plugin:
+        mesi:
+          maxConcurrentRequests: 3
+
+    # Explicit "unlimited" — same as omitting the option, stated on
+    # purpose (#215): 0 must reach the core as the documented
+    # "unlimited" (no admission semaphore installed).
+    mesi-mcr-0:
+      plugin:
+        mesi:
+          maxConcurrentRequests: 0

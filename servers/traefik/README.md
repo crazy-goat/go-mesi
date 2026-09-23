@@ -170,6 +170,69 @@ http:
           maxResponseSize: 1048576
 ```
 
+## Max Concurrent Requests
+
+`maxConcurrentRequests` caps how many `<esi:include>` HTTP fetches may run at
+the same time during a single ESI parse (one page render). Until #215 the
+Traefik plugin had no way to configure this limit.
+
+- **Format:** plain integer — concurrent fetches (no suffixes, exactly like
+  Apache `MesiMaxConcurrentRequests`, nginx `mesi_max_concurrent_requests`,
+  the PHP extension `max_concurrent_requests` and the CLI
+  `-max-concurrent-requests`).
+- **Default / absent:** `0` = **unlimited** — byte-identical to previous
+  behaviour: `ServeHTTP` is Go-direct — it builds `mesi.EsiParserConfig`
+  itself and never set the field, so it stayed at its zero value `0`, and
+  the core only installs the admission-control semaphore when the value is
+  `> 0` (`mesi/parser.go:78`). There is no hidden default on this path
+  (`mesi.CreateDefaultConfig()` never sets the field either —
+  `mesi/config.go`).
+- **Range:** `[0, 999999999]` — the same cap as Apache
+  `MesiMaxConcurrentRequests` (#170), nginx `mesi_max_concurrent_requests`
+  (#214), the PHP extension's `max_concurrent_requests` (#206) and the CLI
+  `-max-concurrent-requests` (#192) — libgomesi's
+  `config.MaxMaxConcurrentRequests`. The bound is transport-derived (a C
+  `int` + the shared 9-digit strict parsers) — neither the core nor Caddy
+  caps the value (Caddy's uncapped `strconv.Atoi` belongs to the #452 gap
+  family and is deliberately not inherited).
+- **Scope: per-page-render, NOT Traefik-global.** The limit applies within
+  ONE `mesi.MESIParse` call — one page render. Each concurrent request's own
+  parse builds its own admission semaphore, so with 4 Traefik workers each
+  rendering a page under `maxConcurrentRequests: 5`, total outbound ESI
+  connections can reach 20 (4 × 5). Includes queued beyond the cap **wait**
+  for a free slot (bounded by the `timeout` fetch budget — the admission
+  wait shares the same deadline, `mesi/fetch.go`); they are never dropped.
+- **`0` is accepted and means "unlimited"** — the documented core contract
+  shared with Apache `MesiMaxConcurrentRequests 0` (#170), Caddy
+  `max_concurrent_requests 0`, the PHP extension (#206) and the CLI (#192).
+- **Reject behavior:** a negative (`-1`, `-5`) or out-of-range
+  (`1000000000`) EXPLICIT value fails middleware creation with an error
+  naming `maxConcurrentRequests` — never a silent fallback to the default
+  (the core would only warn `max_concurrent_requests_invalid` and normalize
+  a negative to `0` = unlimited, #329, so a malformed explicit value must
+  never silently pass as the documented "unlimited" — the same config-load
+  rejection as every landed sibling). Values an `int` cannot represent
+  (20-digit overflow) and non-integers (`1.5`, `"abc"`) never reach
+  `New()`: the config decode into the typed field fails first, which also
+  fails middleware creation.
+
+> **Known core limitation (#453):** nested `MESIParse` calls (a fetched
+> fragment containing further includes) replace the inherited semaphore with
+> a fresh one, so with NESTED includes the effective cap can reach cap ×
+> nesting depth for one page render. Flat pages (the common case) are capped
+> exactly; #453 is tracked separately and is not fixed by this option.
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          # At most 3 concurrent include fetches per page render —
+          # queued includes wait for a slot (never dropped).
+          maxConcurrentRequests: 3
+```
+
 ## Allowed Hosts (SSRF whitelist)
 
 When `allowedHosts` is set, only ESI include destinations whose host is listed
@@ -293,6 +356,7 @@ http:
 | `maxDepth` | int | `5` | Maximum ESI recursion depth. Omit for the default. Explicit `0` is passthrough (no ESI fetch). Values outside `[0, 10000]` are rejected. |
 | `timeout` | string | `"10s"` | Per-include fetch budget as a Go duration (e.g. `"5s"`, `"1m"`); range `[1s, 24h]`. Malformed or out-of-range explicit values fail middleware creation (no silent default). |
 | `maxResponseSize` | int64 | `0` (unlimited) | Per-include response body cap in **bytes** (per SINGLE include, not per page; over-limit includes fail closed through the include-error path — never truncated); range `[0, 9223372036854775806]`. Absent = unlimited (no implicit 10 MB). Negative / `MaxInt64` explicit values fail middleware creation; above-`int64` values fail the config decode (no silent default). |
+| `maxConcurrentRequests` | int | `0` (unlimited) | Concurrent `<esi:include>` fetch cap per **page render** (one `MESIParse` — not Traefik-global; each concurrent request's own parse builds its own semaphore, 4 workers × 5 → up to 20 outbound); range `[0, 999999999]`. Absent = unlimited. Includes beyond the cap **wait** for a slot (bounded by `timeout`), never dropped. Negative / `1000000000` explicit values fail middleware creation; non-integers / overflow fail the config decode (no silent default). Known core limitation: nested includes can reach cap × depth (#453) |
 | `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
 | `includeErrorMarker` | string | `""` | String rendered for failed includes (empty = silent) |
 | `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis`, `memcached` |

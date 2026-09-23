@@ -241,6 +241,99 @@ else
 fi
 rm -f /tmp/mesi-traefik-maxrs-absent.txt
 
+# --- maxConcurrentRequests tests (#215) ---
+# The backend (servers/test-server) serves /holdpage/{n}/{millis}: an
+# HTML page with n distinct <esi:include>s targeting
+# /hold/{millis}/HOLDFRAG-{i}, and the /hold + /track peak-concurrency
+# gauge (/track/reset, /track/max — the same TRACK_LOCK design as
+# servers/nginx/tests/server.py #214 and servers/apache/tests/server.py
+# #170): /hold registers each request in a peak counter BEFORE
+# sleeping, so /track/max is the deterministic maximum number of
+# concurrent fragment fetches — a hard semaphore invariant instead of a
+# wall-clock assertion (mirrors Apache Test 36 #170 / nginx Test 57
+# #214). The gauge is text/plain, so the mesi middleware passes the
+# control endpoints through untouched; each test resets it before its
+# own page fetch. The hold is 500 ms (NOT nginx's 1500 ms): a full
+# 20-include funnel under cap 3 spans 7 waves x hold, and Traefik's
+# default per-include budget is only 10s (#187) — it also bounds the
+# admission wait — where nginx's legacy default is 30s; 1500 ms would
+# push the last wave past the 10s deadline and fail the final
+# includes (3.5 s of funnel fits with margin). Fan-out bound for the
+# "unlimited" cases: MESIParse
+# drains includes through min(MaxWorkers=NumCPU*4, 20) goroutines
+# (mesi/parser.go:118-129, traefik never sets MaxWorkers), i.e. at
+# least 4 in any container — with 500 ms holds an uncapped parse must
+# show peak >= 4, while a cap of 3 can never exceed 3 (hard semaphore
+# invariant, mesi/fetch.go:148-154).
+
+echo "=== Test 13: maxConcurrentRequests 3 — 20 includes funneled through 3 slots (#215) ==="
+curl -s -H "Host: domain.com" http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -H "Host: mcr3.domain.com" http://localhost:18080/holdpage/20/500 -o /tmp/mesi-traefik-mcr-cap.txt
+PEAK=$(curl -s -H "Host: domain.com" http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 500" /tmp/mesi-traefik-mcr-cap.txt | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 2 ] && [ "$PEAK" -le 3 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "HOLD-PAGE" /tmp/mesi-traefik-mcr-cap.txt \
+    && grep -q "After hold include" /tmp/mesi-traefik-mcr-cap.txt \
+    && ! grep -q '<esi:include' /tmp/mesi-traefik-mcr-cap.txt; then
+    echo "PASS: peak concurrent fetches $PEAK <= 3 (cap), >= 2 (parallel slots), all 20 fragments queued and delivered"
+else
+    echo "FAIL: maxConcurrentRequests 3 did not funnel the 20 includes (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-traefik-mcr-cap.txt
+    rm -f /tmp/mesi-traefik-mcr-cap.txt
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-traefik-mcr-cap.txt
+
+echo "=== Test 14: maxConcurrentRequests 0 — explicit unlimited, fan-out unthrottled (#215) ==="
+# mcr0.domain.com stores an explicit 0: it must reach the core as
+# "unlimited" (no admission semaphore — the core only installs it when
+# the value is > 0, mesi/parser.go:78). Peak >= 4 distinguishes this
+# from the cap-3 middleware; the fan-out bound above explains the floor.
+curl -s -H "Host: domain.com" http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -H "Host: mcr0.domain.com" http://localhost:18080/holdpage/20/500 -o /tmp/mesi-traefik-mcr-zero.txt
+PEAK=$(curl -s -H "Host: domain.com" http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 500" /tmp/mesi-traefik-mcr-zero.txt | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 4 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "HOLD-PAGE" /tmp/mesi-traefik-mcr-zero.txt \
+    && grep -q "After hold include" /tmp/mesi-traefik-mcr-zero.txt \
+    && ! grep -q '<esi:include' /tmp/mesi-traefik-mcr-zero.txt; then
+    echo "PASS: peak concurrent fetches $PEAK >= 4 under explicit maxConcurrentRequests 0 (unlimited), all 20 fragments delivered"
+else
+    echo "FAIL: maxConcurrentRequests 0 did not behave as unlimited (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-traefik-mcr-zero.txt
+    rm -f /tmp/mesi-traefik-mcr-zero.txt
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-traefik-mcr-zero.txt
+
+echo "=== Test 15: absent maxConcurrentRequests — backward compat, fan-out unthrottled (#215) ==="
+# The default middleware on domain.com never sets the option →
+# ServeHTTP's EsiParserConfig literal forwards the resolved 0
+# (unlimited), byte-identical to pre-#215 behaviour. Peak >= 4 pins
+# that absence never throttles.
+curl -s -H "Host: domain.com" http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -H "Host: domain.com" http://localhost:18080/holdpage/20/500 -o /tmp/mesi-traefik-mcr-absent.txt
+PEAK=$(curl -s -H "Host: domain.com" http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 500" /tmp/mesi-traefik-mcr-absent.txt | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 4 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "HOLD-PAGE" /tmp/mesi-traefik-mcr-absent.txt \
+    && grep -q "After hold include" /tmp/mesi-traefik-mcr-absent.txt \
+    && ! grep -q '<esi:include' /tmp/mesi-traefik-mcr-absent.txt; then
+    echo "PASS: absent maxConcurrentRequests stayed unlimited — peak $PEAK >= 4, all 20 fragments delivered"
+else
+    echo "FAIL: absent maxConcurrentRequests did not behave as unlimited (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-traefik-mcr-absent.txt
+    rm -f /tmp/mesi-traefik-mcr-absent.txt
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-traefik-mcr-absent.txt
+
 docker compose down
 
 echo ""
