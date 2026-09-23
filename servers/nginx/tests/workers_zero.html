@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>workers_zero.html</title>
+</head>
+<body>
+    <h1>workers_zero.html</h1>
+    <!-- Served by location /mw-0/ (mesi_max_workers 0); the 20 slow includes below must drain through the configured token-processing pool (peak tracked by the backend /hold counters via /track/max). Labels 1001-1020 are unique to this fixture (#219).
+         Used by test.sh (#219). Do not mention the fragment
+         marker text or a literal ESI tag in this comment —
+         test.sh greps the rendered response. -->
+    <esi:include src="http://backend:8000/hold/1500/1001" />
+    <esi:include src="http://backend:8000/hold/1500/1002" />
+    <esi:include src="http://backend:8000/hold/1500/1003" />
+    <esi:include src="http://backend:8000/hold/1500/1004" />
+    <esi:include src="http://backend:8000/hold/1500/1005" />
+    <esi:include src="http://backend:8000/hold/1500/1006" />
+    <esi:include src="http://backend:8000/hold/1500/1007" />
+    <esi:include src="http://backend:8000/hold/1500/1008" />
+    <esi:include src="http://backend:8000/hold/1500/1009" />
+    <esi:include src="http://backend:8000/hold/1500/1010" />
+    <esi:include src="http://backend:8000/hold/1500/1011" />
+    <esi:include src="http://backend:8000/hold/1500/1012" />
+    <esi:include src="http://backend:8000/hold/1500/1013" />
+    <esi:include src="http://backend:8000/hold/1500/1014" />
+    <esi:include src="http://backend:8000/hold/1500/1015" />
+    <esi:include src="http://backend:8000/hold/1500/1016" />
+    <esi:include src="http://backend:8000/hold/1500/1017" />
+    <esi:include src="http://backend:8000/hold/1500/1018" />
+    <esi:include src="http://backend:8000/hold/1500/1019" />
+    <esi:include src="http://backend:8000/hold/1500/1020" />
+    <p>After mw0 include</p>
+</body>
+</html>

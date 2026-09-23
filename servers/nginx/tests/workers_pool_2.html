@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>workers_pool_2.html</title>
+</head>
+<body>
+    <h1>workers_pool_2.html</h1>
+    <!-- Served by location /mw-2/ (mesi_max_workers 2); the 20 slow includes below must drain through the configured token-processing pool (peak tracked by the backend /hold counters via /track/max). Labels 801-820 are unique to this fixture (#219).
+         Used by test.sh (#219). Do not mention the fragment
+         marker text or a literal ESI tag in this comment —
+         test.sh greps the rendered response. -->
+    <esi:include src="http://backend:8000/hold/1500/801" />
+    <esi:include src="http://backend:8000/hold/1500/802" />
+    <esi:include src="http://backend:8000/hold/1500/803" />
+    <esi:include src="http://backend:8000/hold/1500/804" />
+    <esi:include src="http://backend:8000/hold/1500/805" />
+    <esi:include src="http://backend:8000/hold/1500/806" />
+    <esi:include src="http://backend:8000/hold/1500/807" />
+    <esi:include src="http://backend:8000/hold/1500/808" />
+    <esi:include src="http://backend:8000/hold/1500/809" />
+    <esi:include src="http://backend:8000/hold/1500/810" />
+    <esi:include src="http://backend:8000/hold/1500/811" />
+    <esi:include src="http://backend:8000/hold/1500/812" />
+    <esi:include src="http://backend:8000/hold/1500/813" />
+    <esi:include src="http://backend:8000/hold/1500/814" />
+    <esi:include src="http://backend:8000/hold/1500/815" />
+    <esi:include src="http://backend:8000/hold/1500/816" />
+    <esi:include src="http://backend:8000/hold/1500/817" />
+    <esi:include src="http://backend:8000/hold/1500/818" />
+    <esi:include src="http://backend:8000/hold/1500/819" />
+    <esi:include src="http://backend:8000/hold/1500/820" />
+    <p>After mw2 include</p>
+</body>
+</html>

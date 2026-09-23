@@ -264,6 +264,62 @@ location / {
 
 See [examples/nginx-max-concurrent-requests.conf](../../examples/nginx-max-concurrent-requests.conf) for a full example file.
 
+## Max Workers
+
+The `mesi_max_workers` directive caps the size of the token-processing drain pool that processes `<esi:include>` ESI jobs during a single ESI parse. Until #219 the nginx module had no way to configure this limit.
+
+### Directive
+
+#### `mesi_max_workers`
+
+- **Syntax:** `mesi_max_workers <number>`
+- **Default:** unset → **library default `runtime.NumCPU()*4`** (the byte-identical legacy path, see below)
+- **Context:** `location`
+- **Range:** `[0, 999999999]` (the same cap as Apache `MesiMaxWorkers` (#171), the PHP extension's `max_workers` (#211) and the CLI `-max-workers` (#197) — libgomesi's `config.MaxMaxWorkers`)
+
+Semantics:
+
+- **Scope: per-page-render, NOT nginx-worker-global.** The limit applies within ONE `MESIParse` call — one nesting level of one page render. Each nested parse spawns its own pool and inherits the cap; each concurrent nginx request's own parse builds its own pool, so with 4 workers each rendering a page under `mesi_max_workers 8`, total token-processing goroutines can reach 32 (4 × 8). The core spawns `min(MaxWorkers, job count)` goroutines (`mesi/parser.go`) and each processes one include at a time.
+- **Unset** → **library default `runtime.NumCPU()*4`**. Omitting the directive keeps the request on the legacy `ParseWithConfigCtx`/`ParseWithConfigEx`/`ParseWithConfig`/`Parse` path byte-for-byte: libgomesi leaves `EsiParserConfig.MaxWorkers` at `0` on every positional path and the core substitutes `runtime.NumCPU()*4` for any value `<= 0` (`mesi/parser.go`) — there is no hidden default anywhere on this path (`mesi.CreateDefaultConfig()` never sets the field either; same cross-platform contract as the core's "Zero means runtime.NumCPU()*4" (`mesi/config.go`) and Caddy's unset `max_workers`).
+- **`0` is accepted and means "library default"** — the documented core contract shared with Apache `MesiMaxWorkers 0` (#171), Caddy `max_workers 0`, the PHP extension (#211) and the CLI (#197). Because `0` *is* storable, the unset sentinel is `NGX_CONF_UNSET` (`-1`, re-installed in `create_loc_conf` because `ngx_pcalloc` zeroes): a child location's explicit `mesi_max_workers 0` overrides an inherited cap while an unset child inherits it. With a current `libgomesi.so` there is **no observable difference** between an explicit `0` and an absent directive (both resolve to `0` Go-side and the core substitutes `NumCPU*4` for both); the only difference is routing: an explicit directive routes the parse through `ParseJson` (sending `{"maxWorkers":0}`), so against an old `libgomesi.so` without that symbol only the explicit directive warns — same honest answer as `mesi_timeout`/`mesi_max_response_size`/`mesi_max_concurrent_requests`.
+- **`1`–`999999999`** cap the drain pool at that size. `1` serializes token processing (useful for debugging). The bound is transport-derived (a C `int` + the shared 9-digit strict parsers) — neither the core nor Caddy caps the value; the core further clamps the pool to the job count, so an over-large value never over-spawns. **Negatives are rejected at config load**: the core substitutes the default for any `<= 0` **silently, with no warning at all** (there is no #329-style `max_concurrent_requests_invalid` for `MaxWorkers` — that silent substitution is tracked as #456), so a malformed explicit value must never silently pass as the documented "library default"; libgomesi's Go-side check fails loud instead (warn + NULL, `ParseJson`).
+
+**Distinction from `mesi_max_concurrent_requests`:** that directive bounds concurrent `<esi:include>` HTTP fetches (an admission semaphore — connection fan-out against the backend); this one bounds the CPU-side goroutine pool that processes tokens/includes — since each goroutine fetches one include at a time, on a flat page it also caps fetch concurrency at that level, but it additionally bounds token-processing work (CPU-intensive include-tree traversal on deeply nested pages; `mesi_max_workers 1` serializes token processing — useful for debugging), which the semaphore does not.
+
+Validation is strict and happens at config load (`nginx -t` fails — no silent default): the argument must be a non-empty, digits-only plain integer within `[0, 999999999]`. Negatives (`-1`), signs (`+1`), decimals (`1.5`), non-integers (`abc`, `3foo`), empty values (`""`), anything above the cap (`1000000000`, oversized digit strings), a bare argument-less `mesi_max_workers;` and a repeated directive in the same scope (`"is duplicate"`) are all rejected with an error naming the directive and the offending value. **Deviation from the issue's `ngx_conf_set_num_slot` sketch:** the stock slot setter only runs `ngx_atoi`, which has no upper bound (`1000000000` would pass and diverge from every other platform) — the custom setter (the `mesi_max_depth` #180 / `mesi_timeout` #184 / `mesi_max_response_size` #208 / `mesi_max_concurrent_requests` #214 pattern) guards per digit against the cap *before* the multiply, so no intermediate can ever overflow `ngx_int_t`.
+
+When the directive is set, the whole parse is routed through libgomesi's **`ParseJson`** entry point as `{"maxWorkers":N}` (an explicit `0` is sent as `{"maxWorkers":0}`, matching Apache #171 / php-ext #211; an unset directive omits the key and stays on the legacy positional path); the blob also carries the other resolved settings (`maxDepth`, `defaultUrl`, `allowedHosts`, SSRF flags, optional `timeoutSeconds`, `maxResponseSize`, `maxConcurrentRequests`, `cacheKeyTemplate` + `requestCtx`), so behaviour matches the positional path exactly except for the pool cap. With an older `libgomesi.so` that lacks the `ParseJson` symbol, the directive is ignored with a per-request warning (`mesi: mesi_max_workers is set but libgomesi lacks ParseJson — mesi_max_workers ignored (library default NumCPU*4 worker pool applies, the pre-#219 behaviour)`) and the library default applies — never a crash, never a silently wrong cap. A `ParseJson` NULL fails the request closed. Nested `location` blocks inherit the directive from their enclosing location: the unset sentinel survives `ngx_conf_merge_value` — deliberately **not** a merged `0` — so an unset child takes the parent's value and a child that sets the directive (including explicit `0`) overrides the parent.
+
+### Example
+
+```nginx
+location /cpu-lean/ {
+    enable_mesi on;
+    mesi_max_workers 4;    # at most 4 token-processing goroutines per parse
+    proxy_pass http://backend;
+}
+
+location /debug-serial/ {
+    enable_mesi on;
+    mesi_max_workers 1;    # serialize token processing (debugging)
+    proxy_pass http://backend;
+}
+
+location /unlimited/ {
+    enable_mesi on;
+    mesi_max_workers 0;    # explicit "library default" NumCPU*4 (overrides an inherited cap)
+    proxy_pass http://backend;
+}
+
+location / {
+    enable_mesi on;
+    # mesi_max_workers unset → library default NumCPU*4 (legacy path, byte-identical)
+    proxy_pass http://backend;
+}
+```
+
+See [examples/nginx-max-workers.conf](../../examples/nginx-max-workers.conf) for a full example file.
+
 ## Shared HTTP Client
 
 Not available in the nginx module: there is no shared-client directive (unlike Apache's `MesiSharedHTTPClient` and the CLI's `-shared-http-client`) and no `InitHTTPClient` wiring. Each `<esi:include>` fetch creates its own `http.Client` for the request, so TCP/TLS connection pooling across includes is not available — every include performs its own connection setup. Each per-include client still uses the SSRF-safe transport, so `mesi_block_private_ips` protection applies to every fetch.

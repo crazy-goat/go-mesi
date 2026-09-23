@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Max Workers Deep Nesting Test</title>
+</head>
+<body>
+    <h1>Max Workers Deep Nesting Test</h1>
+    <!-- Locations /mw-2/ (mesi_max_workers 2) and /mw-100/ (mesi_max_workers 100) both serve this page; the four-level nested chain below (workers_lvl_1 -> workers_lvl_2 -> workers_lvl_3 -> workers_lvl_4) must be fully expanded under EITHER cap, with every level marker present and in order — MaxWorkers only bounds parallelism, never correctness.
+         Used by test.sh (#219). Do not mention the level marker text or a literal ESI tag in this comment — test.sh greps the rendered response. -->
+    <esi:include src="http://backend:8000/workers_lvl_1.html" />
+    <p>After deep include</p>
+</body>
+</html>

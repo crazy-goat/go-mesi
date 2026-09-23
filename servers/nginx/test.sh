@@ -1819,6 +1819,409 @@ else
     exit 1
 fi
 
+# --- mesi_max_workers tests (#219) ---
+# Observable for this directive is the DRAIN POOL plus render
+# CORRECTNESS, never a timing window: MESIParse spawns
+# min(MaxWorkers, job count) goroutines (mesi/parser.go) and each
+# processes one include at a time, so on a flat page the backend
+# peak-concurrency counter can never exceed the pool size — with
+# mesi_max_workers 2 that is a hard peak == 2 (a broken route that
+# never renders the "maxWorkers" key would use the library default
+# pool min(NumCPU*4, 20) >= 4 and show peak >= 4 instead).
+# Fan-out floor for the "library default" cases (explicit 0 / unset /
+# cap 100): the pool is min(cap or NumCPU*4, 20) goroutines, i.e. at
+# least 4 in any container — with 1500 ms holds an unthrottled parse
+# must show peak >= 4 (same deterministic bound Apache #171 Tests
+# 41/42 and this suite's #214 tests rely on). Each page fans out to 20
+# DISTINCT /hold labels (801-820, 901-920, 1001-1020, 1101-1120,
+# 1201-1220, 1301-1320, 1401-1420, 1501-1520) so every include
+# reaches the backend (duplicate URLs would be served from the
+# process-wide shared cache, #484) and no label collides with any
+# other fixture.
+
+echo "=== Test 64: mesi_max_workers 2 vs 100 — deep-nesting stress completes correctly (#219) ==="
+# The issue's AC: a four-level nested chain (workers_deep.html ->
+# workers_lvl_1 -> workers_lvl_2 -> workers_lvl_3 -> workers_lvl_4)
+# under max_workers 2 and under max_workers 100 must BOTH complete
+# correctly. The ordered marker assertion (all seven markers — 3
+# STARTs, the level-4 body and 3 ENDs — in nesting order after
+# flattening newlines) proves every level was fetched AND re-parsed; a
+# raw tag left behind would fail the tag check. The final byte-for-byte
+# comparison proves cap 2 vs cap 100 changed NOTHING in the output:
+# MaxWorkers bounds pool parallelism only, so the observable is
+# identical fully-rendered bodies — deliberately NO timing assertions
+# (the pool's scheduling is invisible in the output; mirrors Apache
+# #171's Test 39 proof).
+for MW_CAP in 2 100; do
+    curl -s --max-time 60 -o /tmp/mesi-mw-deep-$MW_CAP.html "http://localhost:18080/mw-$MW_CAP/workers_deep.html"
+    tr -d '\n' < /tmp/mesi-mw-deep-$MW_CAP.html > /tmp/mesi-mw-deep-$MW_CAP.flat
+    if grep -q "MW-LVL-1-START.*MW-LVL-2-START.*MW-LVL-3-START.*MW-LVL-4-BODY.*MW-LVL-3-END.*MW-LVL-2-END.*MW-LVL-1-END" /tmp/mesi-mw-deep-$MW_CAP.flat \
+        && grep -q "After deep include" /tmp/mesi-mw-deep-$MW_CAP.html \
+        && ! grep -q '<esi:include' /tmp/mesi-mw-deep-$MW_CAP.html; then
+        echo "PASS: mesi_max_workers $MW_CAP — four-level nested chain fully expanded (all level markers present, in order, no raw tags)"
+    else
+        echo "FAIL: mesi_max_workers $MW_CAP did not complete the deep-nesting stress correctly"
+        head -c 500 /tmp/mesi-mw-deep-$MW_CAP.html
+        rm -f /tmp/mesi-mw-deep-2.html /tmp/mesi-mw-deep-100.html /tmp/mesi-mw-deep-2.flat /tmp/mesi-mw-deep-100.flat
+        exit 1
+    fi
+done
+if cmp -s /tmp/mesi-mw-deep-2.html /tmp/mesi-mw-deep-100.html; then
+    echo "PASS: max_workers 2 and max_workers 100 deliver byte-identical fully-rendered bodies"
+else
+    echo "FAIL: deep-nesting bodies differ between mesi_max_workers 2 and 100"
+    diff /tmp/mesi-mw-deep-2.html /tmp/mesi-mw-deep-100.html | head -20 || true
+    rm -f /tmp/mesi-mw-deep-2.html /tmp/mesi-mw-deep-100.html /tmp/mesi-mw-deep-2.flat /tmp/mesi-mw-deep-100.flat
+    exit 1
+fi
+rm -f /tmp/mesi-mw-deep-2.html /tmp/mesi-mw-deep-100.html /tmp/mesi-mw-deep-2.flat /tmp/mesi-mw-deep-100.flat
+
+echo "=== Test 65: mesi_max_workers 2 — 20 includes drain through a 2-goroutine pool (#219) ==="
+# /mw-2/ sets ONLY mesi_max_workers 2 — an mw-only config routed
+# through ParseJson (the routing condition's mw arm), consistent
+# with the timeout / max-response-size / max-concurrent-requests
+# keys being absent (code-verified via has_timeout/has_maxrs/
+# has_maxcr, not observable through the gauge).
+# Assertions: peak == 2 — the upper bound is the hard pool invariant
+# (workerCount = min(2, 20), each goroutine fetches one include at a
+# time, mesi/parser.go; an unrouted parse would reach >= 4 and fail
+# this bound) and the lower bound proves the pool has both slots
+# working in parallel rather than serializing to 1 (both goroutines
+# grab their first buffered job within microseconds while each backend
+# hold lasts 1500 ms — the deterministic bound Apache Test 40/#171
+# pins with the same fixture shape). All 20 fragments must arrive:
+# includes beyond the pool are queued in the jobs channel, not dropped.
+curl -s http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mw-pool2.html http://localhost:18080/mw-2/
+PEAK=$(curl -s http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mw-pool2.html | wc -l | tr -d ' ')
+if [ "$PEAK" -eq 2 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After mw2 include" /tmp/mesi-mw-pool2.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mw-pool2.html; then
+    echo "PASS: peak concurrent fetches $PEAK == 2 (drain-pool bound), all 20 fragments queued and delivered"
+else
+    echo "FAIL: mesi_max_workers 2 did not bound the drain pool (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mw-pool2.html
+    rm -f /tmp/mesi-mw-pool2.html
+    exit 1
+fi
+rm -f /tmp/mesi-mw-pool2.html
+
+echo "=== Test 66: mesi_max_workers 100 — pool clamps to job count, page renders completely (#219) ==="
+# /mw-100/: workerCount = min(100, 20) = 20 — an over-cap pool is a
+# documented no-op (the core additionally clamps to the job count, so
+# an over-large value never over-spawns, #171's cap rationale). The 20
+# includes drain unthrottled: peak in [4, 20] (floor = the library
+# pool bound above, ceiling = fixture size) and, the issue's actual
+# AC, the page must render COMPLETELY — all fragments, chrome, no raw
+# tags. A value of 100 that never arrived would still pass a bare
+# "renders" check, so the peak >= 4 floor additionally pins that the
+# parse did not serialize to 1 (e.g. a mis-routed "1").
+curl -s http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mw-pool100.html http://localhost:18080/mw-100/
+PEAK=$(curl -s http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mw-pool100.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 4 ] && [ "$PEAK" -le 20 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After mw100 include" /tmp/mesi-mw-pool100.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mw-pool100.html; then
+    echo "PASS: mesi_max_workers 100 rendered completely — peak $PEAK in [4, 20] (job-count clamp), all 20 fragments delivered"
+else
+    echo "FAIL: mesi_max_workers 100 did not drain unthrottled and complete (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mw-pool100.html
+    rm -f /tmp/mesi-mw-pool100.html
+    exit 1
+fi
+rm -f /tmp/mesi-mw-pool100.html
+
+echo "=== Test 67: mesi_max_workers 0 — explicit library default, pool unthrottled (#219) ==="
+# /mw-0/ stores an explicit 0: the value must reach the core as
+# "library default" (ParseJson "maxWorkers":0 — an explicit 0
+# rejected Go-side would make ParseJson return NULL and the request
+# would fail closed with an empty body). Peak >= 4 (pool
+# min(NumCPU*4, 20)) distinguishes this from the pool-2 location; the
+# fan-out floor above explains the bound.
+curl -s http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mw-zero.html http://localhost:18080/mw-0/
+PEAK=$(curl -s http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mw-zero.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 4 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After mw0 include" /tmp/mesi-mw-zero.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mw-zero.html; then
+    echo "PASS: peak concurrent fetches $PEAK >= 4 under explicit mesi_max_workers 0 (library default), all 20 fragments delivered"
+else
+    echo "FAIL: mesi_max_workers 0 did not behave as the library default (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mw-zero.html
+    rm -f /tmp/mesi-mw-zero.html
+    exit 1
+fi
+rm -f /tmp/mesi-mw-zero.html
+
+echo "=== Test 68: mesi_max_workers unset — backward compat, pool unthrottled (#219) ==="
+# /mw-unset/ never sets the directive → the legacy parse path (no
+# ParseJson key rendered) with MaxWorkers left at 0 → library default
+# NumCPU*4, byte-identical to pre-#219 behaviour. Peak >= 4 pins that
+# unset never throttles the pool.
+curl -s http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mw-unset.html http://localhost:18080/mw-unset/
+PEAK=$(curl -s http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mw-unset.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 4 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After mw-unset include" /tmp/mesi-mw-unset.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mw-unset.html; then
+    echo "PASS: unset mesi_max_workers stayed at the library default — peak $PEAK >= 4, all 20 fragments delivered"
+else
+    echo "FAIL: unset mesi_max_workers did not behave as the library default (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mw-unset.html
+    rm -f /tmp/mesi-mw-unset.html
+    exit 1
+fi
+rm -f /tmp/mesi-mw-unset.html
+
+echo "=== Test 69: mesi_max_workers merge — child inherits the parent's cap 2 (#219) ==="
+# Parent sets 2, the nested child location has no directive: the child
+# must inherit 2 through ngx_conf_merge_value over the unset sentinel
+# (peak == 2 on BOTH URLs; a child that wrongly kept the sentinel
+# would drain unthrottled and peak >= 4). Each location serves its
+# OWN fixture (disjoint label ranges) so the second run cannot be
+# served from the shared cache with a stale peak.
+for MW_URL in http://localhost:18080/mw-merge-inherit/ \
+              http://localhost:18080/mw-merge-inherit/child/; do
+    curl -s http://localhost:18080/track/reset > /dev/null
+    curl -s --max-time 60 -o /tmp/mesi-mw-inherit.html "$MW_URL"
+    PEAK=$(curl -s http://localhost:18080/track/max)
+    FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mw-inherit.html | wc -l | tr -d ' ')
+    if [ "$PEAK" -eq 2 ] \
+        && [ "$FRAGMENTS" -eq 20 ] \
+        && grep -q "After mw-inherit" /tmp/mesi-mw-inherit.html \
+        && ! grep -q '<esi:include' /tmp/mesi-mw-inherit.html; then
+        echo "PASS: ${MW_URL} applied the cap of 2 (peak $PEAK, fragments $FRAGMENTS)"
+    else
+        echo "FAIL: ${MW_URL} did not apply a cap of 2 (peak $PEAK, fragments $FRAGMENTS)"
+        head -c 500 /tmp/mesi-mw-inherit.html
+        rm -f /tmp/mesi-mw-inherit.html
+        exit 1
+    fi
+    rm -f /tmp/mesi-mw-inherit.html
+done
+
+echo "=== Test 70: mesi_max_workers merge — child's explicit 0 overrides the parent's cap 2 (#219) ==="
+# Parent keeps capping (peak == 2), the nested child's explicit 0 must
+# win (peak >= 4) — this is what proves 0 is STORED as a configured
+# value (the unset sentinel is -1, not 0), not collapsed to unset or
+# to the parent's 2 at merge time (a sentinel-collapsed child would
+# inherit the parent's cap and show peak == 2).
+curl -s http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mw-override.html http://localhost:18080/mw-merge-override/
+PEAK=$(curl -s http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mw-override.html | wc -l | tr -d ' ')
+if [ "$PEAK" -eq 2 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After mw-override-parent include" /tmp/mesi-mw-override.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mw-override.html; then
+    echo "PASS: parent location keeps its own mesi_max_workers 2 (peak $PEAK, fragments $FRAGMENTS)"
+else
+    echo "FAIL: parent location (mesi_max_workers 2) did not cap the drain pool (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mw-override.html
+    rm -f /tmp/mesi-mw-override.html
+    exit 1
+fi
+rm -f /tmp/mesi-mw-override.html
+curl -s http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mw-override-child.html http://localhost:18080/mw-merge-override/child/
+PEAK=$(curl -s http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mw-override-child.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 4 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After mw-override-child include" /tmp/mesi-mw-override-child.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mw-override-child.html; then
+    echo "PASS: child location's explicit mesi_max_workers 0 overrode the parent's 2 (peak $PEAK >= 4, library default)"
+else
+    echo "FAIL: child location's explicit mesi_max_workers 0 did not override the parent's 2 (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mw-override-child.html
+    rm -f /tmp/mesi-mw-override-child.html
+    exit 1
+fi
+rm -f /tmp/mesi-mw-override-child.html
+
+echo "=== Test 71: Config validation — mesi_max_workers boundary values (#219) ==="
+# (a) Boundary classes ACCEPTED: explicit 0 (library default — the
+#     sentinel is -1, so 0 IS storable), 1 (serializes token
+#     processing — the documented debugging value), 4 (the shape of a
+#     default NumCPU*4 value), 100 (a typical cap) and
+#     MESI_MAX_MAX_WORKERS (999999999, the #171 transport-derived cap
+#     mirrored across every platform).
+for GOOD in 0 1 4 100 999999999; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_max_workers ${GOOD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-max-workers.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-workers.conf' < /tmp/nginx-mesi-max-workers.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-workers.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "syntax is ok"; then
+        echo "PASS: valid mesi_max_workers ${GOOD} accepted by nginx -t"
+    else
+        echo "FAIL: nginx rejected valid mesi_max_workers ${GOOD}"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (b) Format classes REJECTED: negative, sign, decimal, non-integer,
+#     trailing garbage — the issue sketched ngx_conf_set_num_slot
+#     (ngx_atoi), which rejects "-" but silently truncates "1.5" and
+#     has no upper bound; a negative must never reach the core, where
+#     ANY value <= 0 is silently substituted with NumCPU*4 and NO
+#     warning (#456 — no #329-style diagnostic exists for
+#     MaxWorkers), i.e. a malformed explicit value would silently pass
+#     as the documented "library default".
+for BAD in '-1' '+1' '1.5' 'abc' '3foo'; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_max_workers ${BAD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-max-workers.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-workers.conf' < /tmp/nginx-mesi-max-workers.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-workers.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "must be a non-negative integer"; then
+        echo "PASS: invalid mesi_max_workers ${BAD} rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject invalid mesi_max_workers ${BAD} with the expected error"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (c) Range classes REJECTED: cap+1 (1000000000 — the value ngx_atoi
+#     would have accepted and every other platform rejects) and a
+#     20-digit overflow input (the setter's per-digit guard checks
+#     against the cap BEFORE the multiply, so no intermediate can
+#     ever overflow ngx_int_t regardless of argument length).
+for BAD in 1000000000 99999999999999999999; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_max_workers ${BAD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-max-workers.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-workers.conf' < /tmp/nginx-mesi-max-workers.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-workers.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "out of range"; then
+        echo "PASS: out-of-range mesi_max_workers ${BAD} rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject out-of-range mesi_max_workers ${BAD} with the expected error"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (d) Empty value REJECTED: "" must not silently become a silent 0
+#     (= library default).
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_max_workers "";' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-mesi-max-workers.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-workers.conf' < /tmp/nginx-mesi-max-workers.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-workers.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q "requires an argument"; then
+    echo "PASS: empty mesi_max_workers rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject an empty mesi_max_workers"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+# (e) Missing argument REJECTED: a bare `mesi_max_workers;` (zero
+#     args) is caught by NGX_CONF_TAKE1 before the setter runs.
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_max_workers;' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-mesi-max-workers.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-workers.conf' < /tmp/nginx-mesi-max-workers.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-workers.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q 'invalid number of arguments in "mesi_max_workers"'; then
+    echo "PASS: argument-less mesi_max_workers rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject a mesi_max_workers without an argument"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+# (f) Duplicate in the same scope REJECTED: matches the "is
+#     duplicate" behaviour of every ngx_conf_set_*_slot directive in
+#     this module (a silent last-wins would substitute the operator's
+#     intent without a word).
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_max_workers 2;' \
+    '      mesi_max_workers 5;' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-mesi-max-workers.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-workers.conf' < /tmp/nginx-mesi-max-workers.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-workers.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q 'is duplicate'; then
+    echo "PASS: repeated mesi_max_workers rejected by nginx -t (is duplicate)"
+else
+    echo "FAIL: nginx did not reject a repeated mesi_max_workers"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+rm -f /tmp/nginx-mesi-max-workers.conf
+
 docker compose down
 
 echo ""
