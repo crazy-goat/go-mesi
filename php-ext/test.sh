@@ -441,6 +441,79 @@ else
     exit 1
 fi
 
+echo ""
+echo "=== Test 25: max_workers=2 drains 20 includes through a 2-goroutine pool (peak == 2) (#211) ==="
+# Observable for max_workers is the DRAIN POOL, not a semaphore (#171):
+# MESIParse spawns min(MaxWorkers, job count) goroutines
+# (mesi/parser.go:118-129) and each processes one include at a time (the
+# fetch is synchronous inside the goroutine), so on this flat page the
+# backend peak-concurrency counter can never exceed the pool size — with
+# max_workers=2 that is a hard peak <= 2 (a broken route — key not
+# rendered / not resolved — would fall back to the default pool
+# min(NumCPU*4, 20) >= 4 and show peak >= 4 instead, failing this
+# bound: the ceiling also proves the maxWorkers key reached the core).
+# The exact lower bound peak == 2 mirrors Apache Test 40 (#171) and CLI
+# Test 33 (#197): both goroutines grab their first (buffered,
+# parser.go:132,175-178) job within microseconds while each backend hold
+# lasts 1500 ms, so the two holds must overlap — the ceiling is the hard
+# pool invariant, the floor proves both slots work in parallel rather
+# than serializing to 1. All 20 fragments are queued behind the pool and
+# delivered — never dropped.
+#
+# Budget (the absent timeout key): the documented 30s default applies
+# (positional path; a max_workers-only ParseJson blob resolves
+# timeoutSeconds absent -> config.ResolveTimeout(nil) = 30s), and the
+# budget ERODES as the parse runs (WithElapsedTime, parser.go:158): an
+# include picked up at time t gets 30s - t. Workers 2 -> 10 waves x
+# 1500 ms = ~15s nominal; the last wave starts ~13.5s leaving ~16.5s
+# >> 1.5s, so only waves averaging >= 2.85s (~1.9x nominal) could push
+# it past the 28.5s erosion floor. Tests 26/27 fan out through a pool
+# of min(NumCPU*4, 20) >= 4 goroutines -> <= 5 waves = ~7.5s worst
+# case. No explicit timeout is passed through the blob — that would
+# violate the per-key conditional rendering contract.
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-workers-pool)
+FRAGMENTS=$(printf '%s' "$RESPONSE" | grep -o 'Held 1500' | wc -l | tr -d ' ')
+PEAK=$(curl -s http://localhost:$TEST_PORT/max-workers-peak)
+if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -le 2 ] && [ "$PEAK" -ge 2 ] \
+   && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: pool 2 bounded: peak=$PEAK (==2 hard pool bound + both slots parallel), 20/20 fragments delivered"
+else
+    echo "FAIL: max_workers=2 did not bound the drain pool (peak=$PEAK, fragments=$FRAGMENTS)"
+    echo "Response: ${RESPONSE:0:300}"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 26: max_workers=0 -> library default pool (peak >= 4) (#211) ==="
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-workers-zero)
+FRAGMENTS=$(printf '%s' "$RESPONSE" | grep -o 'Held 1500' | wc -l | tr -d ' ')
+PEAK=$(curl -s http://localhost:$TEST_PORT/max-workers-peak)
+if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 4 ] \
+   && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: explicit 0 = library default: peak=$PEAK >= 4, 20/20 fragments delivered"
+else
+    echo "FAIL: explicit 0 was not the library default (peak=$PEAK, fragments=$FRAGMENTS)"
+    echo "Response: ${RESPONSE:0:300}"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 27: max_workers absent -> library default pool (peak >= 4) (#211) ==="
+RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-workers-absent)
+FRAGMENTS=$(printf '%s' "$RESPONSE" | grep -o 'Held 1500' | wc -l | tr -d ' ')
+PEAK=$(curl -s http://localhost:$TEST_PORT/max-workers-peak)
+if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 4 ] \
+   && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: absent key library default: peak=$PEAK >= 4, 20/20 fragments delivered"
+else
+    echo "FAIL: absent key did not behave as the library default (peak=$PEAK, fragments=$FRAGMENTS)"
+    echo "Response: ${RESPONSE:0:300}"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
 if [ "${CI:-}" != "true" ]; then
   docker compose down -v
 fi
