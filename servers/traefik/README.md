@@ -202,6 +202,16 @@ Traefik plugin had no way to configure this limit.
   connections can reach 20 (4 × 5). Includes queued beyond the cap **wait**
   for a free slot (bounded by the `timeout` fetch budget — the admission
   wait shares the same deadline, `mesi/fetch.go`); they are never dropped.
+- **Starvation risk (queued, never dropped, but budget-bounded):** queued
+  includes share the per-include `timeout` budget — the admission wait has
+  the same deadline (`mesi/fetch.go`). So if
+  `ceil(includes / cap) × backend latency > timeout` (e.g. 20 includes ×
+  500 ms under a cap of 3 = 7 waves ≈ 3.5 s against `timeout: "2s"`), the
+  trailing waves outlive the budget and their includes fail their fetch,
+  rendering the empty marker / fallback body. Size the cap so the funnel
+  drains inside the budget; with traefik's default `10s` the 500 ms fixture
+  fits with margin (why `servers/traefik/test.sh` uses 500 ms holds instead
+  of nginx's 1500 ms).
 - **`0` is accepted and means "unlimited"** — the documented core contract
   shared with Apache `MesiMaxConcurrentRequests 0` (#170), Caddy
   `max_concurrent_requests 0`, the PHP extension (#206) and the CLI (#192).
