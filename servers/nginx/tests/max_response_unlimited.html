@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Max Response Size Unlimited Test</title>
+</head>
+<body>
+    <h1>Max Response Size Unlimited Test</h1>
+    <!-- Location /max-response-0/ sets mesi_max_response_size 0
+         (explicit "unlimited"); the backend returns a 50 MB body
+         (/bytes/52428800), far above any implicit default — it must
+         arrive in full. Pins the AC's "0 = unlimited" functionally;
+         the sentinel distinction (0 stored as configured, not as
+         unset) is pinned by the merge-override case in test.sh
+         (parent 100 / child 0) — no parent limit is configured in
+         this location that would make "stored 0" and "unset" differ
+         here. Used by test.sh (#208). -->
+    <esi:include src="http://backend:8000/bytes/52428800" />
+    <p>After unlimited include</p>
+</body>
+</html>

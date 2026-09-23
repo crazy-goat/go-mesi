@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Max Response Size Merge Test</title>
+</head>
+<body>
+    <h1>Max Response Size Merge Test</h1>
+    <!-- Used by ALL FOUR merge locations of test.sh Test 55 (#208):
+         the parent locations set mesi_max_response_size 100 (this
+         301-byte body must be REJECTED on the parent URL, the child
+         URL inheriting 100, and the override parent), while the
+         override child sets 0 (the same body must be DELIVERED —
+         proving 0 survives the merge as a stored value, the -1
+         sentinel rule). The body size 301 is deliberately NOT used
+         by any other fixture: the suite's /cache/ locations initialize
+         libgomesi's process-wide shared cache, which every parse
+         attaches to (libgomesi.go applySharedConfig) and which serves
+         cache hits BEFORE the core's MaxResponseSize check
+         (mesi/fetch.go:204 returns ahead of the fetch.go:288
+         size branch) — a size reused across differently-capped tests
+         would be poisoned by an earlier successful fetch. Rejected
+         fetches are never cached (fetch.go caches only on success),
+         so the three reject assertions stay deterministic. NOTE: keep
+         the payload marker string OUT of this comment — test.sh greps
+         the rendered responses for its absence. Used by test.sh
+         (#208). -->
+    <esi:include src="http://backend:8000/bytes/301" />
+    <p>After merge include</p>
+</body>
+</html>

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Max Response Size Reject Test</title>
+</head>
+<body>
+    <h1>Max Response Size Reject Test</h1>
+    <!-- Location /max-response-100/ sets mesi_max_response_size 100;
+         the backend returns a 200-byte body (/bytes/200), so the size
+         check must fail the fetch and render nothing (empty
+         IncludeErrorMarker — no payload marker line, no raw tag left
+         behind; the core fails CLOSED, it never truncates). The SAME
+         page served from the unset root location must deliver the
+         payload — that is the control that proves the rejection is
+         caused by the directive, not a broken endpoint. NOTE: keep
+         the payload marker string OUT of this comment — test.sh greps
+         the rendered response for its absence. Used by test.sh
+         (#208). -->
+    <esi:include src="http://backend:8000/bytes/200" />
+    <p>After reject include</p>
+</body>
+</html>

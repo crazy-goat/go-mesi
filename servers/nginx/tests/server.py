@@ -2,6 +2,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 import time
 
+# Hard cap for generated bodies (256 MB) — enough for the 50 MB
+# max_response_size "unlimited" case while keeping a hostile URL
+# from exhausting the container's memory (mirrors Apache's
+# tests/server.py cap, #169).
+MAX_GENERATED_BYTES = 268435456
+
 counter = 0
 lang_counter = 0
 
@@ -39,6 +45,40 @@ class Handler(BaseHTTPRequestHandler):
                     # budget can expire while this response is being
                     # written (nginx aborted the connection at
                     # mesi_timeout).
+                    pass
+                return
+
+        if self.path.startswith('/bytes/'):
+            # /bytes/<size> (#208): exactly <size> bytes, prefixed with
+            # a "MesiBytesPayload <size>" marker line when the size
+            # leaves room for it, so test.sh can prove the whole
+            # fragment arrived (grep marker + wc -c) or was rejected
+            # (marker absent). A checked-in static fixture cannot
+            # express "500 KB" / "50 MB" without bloating the repo,
+            # hence generation — mirrors Apache's tests/server.py
+            # /bytes endpoint (#169). Invalid or oversized requests
+            # fall through to the static handler (404).
+            parts = self.path.split('?', 1)[0].split('/')
+            try:
+                size = int(parts[2]) if len(parts) >= 3 else -1
+            except ValueError:
+                size = -1
+            if 0 <= size <= MAX_GENERATED_BYTES:
+                marker = ('MesiBytesPayload ' + parts[2] + '\n').encode()
+                if size >= len(marker):
+                    body = marker + b'x' * (size - len(marker))
+                else:
+                    body = b'x' * size
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    # Expected in the size/timeout tests: the ESI fetch
+                    # can fail or the budget can expire while this
+                    # response is being written.
                     pass
                 return
 

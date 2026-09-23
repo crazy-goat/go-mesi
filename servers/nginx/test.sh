@@ -1169,6 +1169,290 @@ fi
 
 rm -f /tmp/nginx-mesi-timeout.conf
 
+# --- mesi_max_response_size tests (#208) ---
+# The backend (tests/server.py) serves /bytes/<size>, a body of exactly
+# <size> bytes prefixed with a "MesiBytesPayload <size>" marker line.
+# Assertions combine the marker (fragment arrived / was rejected) with
+# wc -c (the whole body was delivered, not just the marker).
+
+echo "=== Test 51: mesi_max_response_size 100 — 200-byte include rejected (#208) ==="
+RESPONSE=$(curl -s --max-time 10 http://localhost:18080/max-response-100/)
+if echo "$RESPONSE" | grep -q "After reject include" \
+    && ! echo "$RESPONSE" | grep -q "MesiBytesPayload" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: 200-byte include rejected by mesi_max_response_size 100 (marker absent, tag stripped — fail closed, not truncated)"
+    # Control: the SAME page served from the unset root location must
+    # deliver the payload — proves the rejection above comes from the
+    # directive, not a broken endpoint or fixture.
+    CONTROL=$(curl -s --max-time 10 http://localhost:18080/max_response_reject.html)
+    if echo "$CONTROL" | grep -q "MesiBytesPayload 200" \
+        && echo "$CONTROL" | grep -q "After reject include" \
+        && ! echo "$CONTROL" | grep -q '<esi:include'; then
+        echo "PASS: control — same page on the unset root location delivers the 200-byte payload"
+    else
+        echo "FAIL: control — same page on the unset root location did not deliver the payload"
+        echo "Response: $CONTROL"
+        exit 1
+    fi
+else
+    echo "FAIL: mesi_max_response_size 100 did not reject the 200-byte include"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 52: mesi_max_response_size 1048576 — 500 KB include succeeds (#208) ==="
+curl -s --max-time 60 -o /tmp/mesi-mrs-accept.html http://localhost:18080/max-response-1m/
+SIZE=$(wc -c < /tmp/mesi-mrs-accept.html | tr -d ' ')
+if [ "$SIZE" -gt 512000 ] \
+    && grep -q "MesiBytesPayload 512000" /tmp/mesi-mrs-accept.html \
+    && grep -q "After accept include" /tmp/mesi-mrs-accept.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mrs-accept.html; then
+    echo "PASS: 500 KB include delivered in full under mesi_max_response_size 1048576 ($SIZE bytes)"
+else
+    echo "FAIL: mesi_max_response_size 1048576 did not deliver the 500 KB include (size $SIZE)"
+    head -c 500 /tmp/mesi-mrs-accept.html
+    rm -f /tmp/mesi-mrs-accept.html
+    exit 1
+fi
+rm -f /tmp/mesi-mrs-accept.html
+
+echo "=== Test 53: mesi_max_response_size 0 — unlimited, 50 MB include succeeds (#208) ==="
+curl -s --max-time 120 -o /tmp/mesi-mrs-unlimited.html http://localhost:18080/max-response-0/
+SIZE=$(wc -c < /tmp/mesi-mrs-unlimited.html | tr -d ' ')
+if [ "$SIZE" -gt 52428800 ] \
+    && grep -q "MesiBytesPayload 52428800" /tmp/mesi-mrs-unlimited.html \
+    && grep -q "After unlimited include" /tmp/mesi-mrs-unlimited.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mrs-unlimited.html; then
+    echo "PASS: 50 MB include delivered in full under mesi_max_response_size 0 (unlimited, $SIZE bytes)"
+else
+    echo "FAIL: mesi_max_response_size 0 did not behave as unlimited (size $SIZE)"
+    head -c 500 /tmp/mesi-mrs-unlimited.html
+    rm -f /tmp/mesi-mrs-unlimited.html
+    exit 1
+fi
+rm -f /tmp/mesi-mrs-unlimited.html
+
+echo "=== Test 54: mesi_max_response_size unset — backward compat, 10 MB + 1 include succeeds (#208) ==="
+# The location never sets the directive → the legacy positional path,
+# where libgomesi leaves MaxResponseSize at 0 (unlimited). The body is
+# 10 MB + 1 byte: the issue's proposed implicit 10 MB default would
+# reject it, so a passing test pins "unset → unlimited"
+# byte-identical to pre-#208 behaviour.
+curl -s --max-time 60 -o /tmp/mesi-mrs-unset.html http://localhost:18080/max-response-unset/
+SIZE=$(wc -c < /tmp/mesi-mrs-unset.html | tr -d ' ')
+if [ "$SIZE" -gt 10485761 ] \
+    && grep -q "MesiBytesPayload 10485761" /tmp/mesi-mrs-unset.html \
+    && grep -q "After unset include" /tmp/mesi-mrs-unset.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mrs-unset.html; then
+    echo "PASS: unset mesi_max_response_size stayed unlimited — 10 MB + 1 include delivered ($SIZE bytes)"
+else
+    echo "FAIL: unset mesi_max_response_size did not behave as unlimited (size $SIZE)"
+    head -c 500 /tmp/mesi-mrs-unset.html
+    rm -f /tmp/mesi-mrs-unset.html
+    exit 1
+fi
+rm -f /tmp/mesi-mrs-unset.html
+
+echo "=== Test 55: mesi_max_response_size merge — inherit 100 / child 0 overrides (#208) ==="
+# All four merge locations serve max_response_merge.html (a 301-byte
+# /bytes/301 include — a size no other fixture uses). WHY a distinct
+# size: the suite's /cache/ locations initialize libgomesi's
+# process-wide shared cache, which every parse attaches to
+# (libgomesi.go applySharedConfig) and which serves cache hits BEFORE
+# the core's MaxResponseSize check (mesi/fetch.go:204 returns ahead of
+# the fetch.go:288 size branch) — reusing a size whose fetch already
+# SUCCEEDED under a different cap (e.g. the /bytes/200 control of
+# Test 51) would be served from cache here and bypass the directive.
+# Rejected fetches are never cached (fetch.go caches only on success),
+# so the three reject assertions below stay deterministic.
+# Inherit: parent sets 100, the nested child has no directive — the
+# child must inherit 100 through ngx_conf_merge_off_value over the
+# unset sentinel (the 301-byte include is rejected on BOTH URLs). A
+# child that wrongly kept the sentinel would deliver the payload.
+for MRS_URL in http://localhost:18080/max-response-merge-inherit/ \
+               http://localhost:18080/max-response-merge-inherit/child/; do
+    RESPONSE=$(curl -s --max-time 10 "$MRS_URL")
+    if echo "$RESPONSE" | grep -q "After merge include" \
+        && ! echo "$RESPONSE" | grep -q "MesiBytesPayload" \
+        && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+        echo "PASS: ${MRS_URL} rejected the 301-byte include (inherited mesi_max_response_size 100)"
+    else
+        echo "FAIL: ${MRS_URL} did not inherit/keep mesi_max_response_size 100"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+done
+# Override: parent keeps rejecting, the child's explicit 0 must arrive
+# — this is what proves 0 is STORED as a configured value (the
+# unset sentinel is -1, not 0), not collapsed to unset or
+# to the parent's 100 at merge time.
+RESPONSE=$(curl -s --max-time 10 http://localhost:18080/max-response-merge-override/)
+if echo "$RESPONSE" | grep -q "After merge include" \
+    && ! echo "$RESPONSE" | grep -q "MesiBytesPayload" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: parent location keeps its own mesi_max_response_size 100 (301-byte include rejected)"
+else
+    echo "FAIL: parent location (mesi_max_response_size 100) did not reject the 301-byte include"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+RESPONSE=$(curl -s --max-time 10 http://localhost:18080/max-response-merge-override/child/)
+if echo "$RESPONSE" | grep -q "MesiBytesPayload 301" \
+    && echo "$RESPONSE" | grep -q "After merge include" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: child location's explicit mesi_max_response_size 0 overrode the parent's 100 (unlimited)"
+else
+    echo "FAIL: child location's mesi_max_response_size 0 did not override the parent's 100"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 56: Config validation — mesi_max_response_size boundary values (#208) ==="
+# (a) Boundary classes ACCEPTED: explicit 0 (unlimited — the sentinel
+#     is -1, so 0 IS storable), the range minimum is covered by 0/1,
+#     a normal byte count, and the cap MESI_MAX_MAX_RESPONSE_SIZE
+#     (9223372036854775806 = math.MaxInt64 - 1, the value keeping the
+#     core's MaxResponseSize+1 LimitReader bound positive).
+for GOOD in 0 1 1048576 9223372036854775806; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_max_response_size ${GOOD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-max-response-size.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-response-size.conf' < /tmp/nginx-mesi-max-response-size.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-response-size.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "syntax is ok"; then
+        echo "PASS: valid mesi_max_response_size ${GOOD} accepted by nginx -t"
+    else
+        echo "FAIL: nginx rejected valid mesi_max_response_size ${GOOD}"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (b) Format classes REJECTED: negative, sign, decimal, non-integer,
+#     trailing garbage, and a k/m/g size SUFFIX — the issue sketched
+#     ngx_parse_size (suffix grammar), but every other platform landed
+#     plain-integer bytes (Apache parse_nonneg_off / php-ext IS_LONG /
+#     CLI int64), so the cross-platform contract wins and "10m" fails
+#     config load instead of meaning 10485760 here but being invalid
+#     on Apache/php/CLI.
+for BAD in '-1' '+1' '1.5' 'abc' '3foo' '100abc' '10m'; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_max_response_size ${BAD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-max-response-size.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-response-size.conf' < /tmp/nginx-mesi-max-response-size.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-response-size.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "must be a non-negative integer"; then
+        echo "PASS: invalid mesi_max_response_size ${BAD} rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject invalid mesi_max_response_size ${BAD} with the expected error"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (c) Range classes REJECTED: cap+1 (= math.MaxInt64 — the core's
+#     MaxResponseSize+1 LimitReader bound would wrap negative and
+#     silently render an empty body, #448), cap+2 (overflows int64)
+#     and a 20-digit overflow input — the setter's per-digit guard
+#     checks against the cap BEFORE the multiply, so no intermediate
+#     ever wraps off_t regardless of argument length.
+for BAD in 9223372036854775807 9223372036854775808 99999999999999999999; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_max_response_size ${BAD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-max-response-size.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-response-size.conf' < /tmp/nginx-mesi-max-response-size.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-response-size.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "out of range"; then
+        echo "PASS: out-of-range mesi_max_response_size ${BAD} rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject out-of-range mesi_max_response_size ${BAD} with the expected error"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (d) Empty value REJECTED: "" must not silently become a silent 0
+#     (= unlimited).
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_max_response_size "";' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-mesi-max-response-size.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-response-size.conf' < /tmp/nginx-mesi-max-response-size.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-response-size.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q "requires an argument"; then
+    echo "PASS: empty mesi_max_response_size rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject an empty mesi_max_response_size"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+# (e) Missing argument REJECTED: a bare `mesi_max_response_size;`
+#     (zero args) is caught by NGX_CONF_TAKE1 before the setter runs.
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_max_response_size;' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-mesi-max-response-size.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-response-size.conf' < /tmp/nginx-mesi-max-response-size.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-response-size.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q 'invalid number of arguments in "mesi_max_response_size"'; then
+    echo "PASS: argument-less mesi_max_response_size rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject a mesi_max_response_size without an argument"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+rm -f /tmp/nginx-mesi-max-response-size.conf
+
 docker compose down
 
 echo ""

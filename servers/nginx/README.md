@@ -160,6 +160,60 @@ location / {
 
 See [examples/nginx-timeout.conf](../../examples/nginx-timeout.conf) for a full example file.
 
+## Response Size
+
+The `mesi_max_response_size` directive caps the HTTP response body size, in bytes, of a single `<esi:include>` fetch. Until #208 the nginx module had no way to control this limit.
+
+### Directive
+
+#### `mesi_max_response_size`
+
+- **Syntax:** `mesi_max_response_size <bytes>`
+- **Default:** unset → **unlimited** (the byte-identical legacy path, see below — *not* 10 MB)
+- **Context:** `location`
+- **Range:** `[0, 9223372036854775806]` bytes (`math.MaxInt64 - 1`, the same cap as Apache `MesiMaxResponseSize`, the PHP extension's `max_response_size` and the CLI `-max-response-size` — libgomesi's `config.MaxMaxResponseSize`)
+
+Semantics:
+
+- **Unset** → **unlimited**. Omitting the directive keeps the request on the legacy `ParseWithConfigCtx`/`ParseWithConfigEx`/`ParseWithConfig`/`Parse` path byte-for-byte: libgomesi leaves `EsiParserConfig.MaxResponseSize` at `0` on every positional path, which the core treats as "no limit" (`mesi/fetch.go` only limits when `MaxResponseSize > 0`). There is **no implicit 10 MB default on this path** — the `10 * 1024 * 1024` of `mesi.CreateDefaultConfig()` only reaches Go callers using that constructor (the issue's "default 10 MB" premise was corrected for libgomesi/Caddy/Apache in #169 and for the PHP extension in #201).
+- **`1`–`9223372036854775806`** cap each individual `<esi:include>` response body. The limit is **per SINGLE include, not per page**: a page with 10 includes each under the limit can total far more than the limit. When a response exceeds the cap the fetch **fails closed** — the include renders through the include-error path (the empty `IncludeErrorMarker`, a fallback `<esi:include>` body, or `onerror="continue"`), never a truncated body and never a crashed worker.
+- **`0` is accepted and means "unlimited"** — the documented core contract (`mesi/fetch.go`) shared with Caddy `max_response_size 0` and Apache `MesiMaxResponseSize 0`. **Memory-exhaustion risk:** with `0` (and with the directive unset) a single `<esi:include>` pointing at an unbounded backend can exhaust nginx worker memory — set a cap wherever the backend is not fully trusted.
+- The upper bound exists because the core computes `MaxResponseSize + 1` for its `io.LimitReader` (`mesi/fetch.go`): at `math.MaxInt64` that wraps negative and the include would silently render an empty body instead of failing (#448).
+
+Validation is strict and happens at config load (`nginx -t` fails — no silent default): the argument must be a non-empty, **digits-only plain integer of bytes** within `[0, 9223372036854775806]`. Negatives (`-1`), signs (`+1`), decimals (`1.5`), non-integers (`abc`, `3foo`), trailing garbage (`100abc`), size suffixes (`10m`), empty values (`""`), anything above the cap (`9223372036854775807`, oversized digit strings) and a bare argument-less `mesi_max_response_size;` are all rejected with an error naming the directive and the offending value. **Deviation from the issue's `ngx_parse_size` sketch:** `k`/`m`/`g` suffixes are deliberately *not* accepted — Apache's `parse_nonneg_off`, the PHP extension's `IS_LONG` check and the CLI's `int64` flag are all plain-integer-bytes, and the cross-platform value grammar wins (the setter also guards per digit against the cap *before* the multiply, so no intermediate can ever wrap `off_t`). The check is done by a custom setter rather than `ngx_conf_set_size_slot`/`ngx_conf_set_off_slot`, whose parses have no upper bound against this cap.
+
+When the directive is set, the whole parse is routed through libgomesi's **`ParseJson`** entry point as `{"maxResponseSize":N}` (in bytes); the blob also carries the other resolved settings (`maxDepth`, `defaultUrl`, `allowedHosts`, SSRF flags, optional `timeoutSeconds`, `cacheKeyTemplate` + `requestCtx`), so behaviour matches the positional path exactly except for the cap. With an older `libgomesi.so` that lacks the `ParseJson` symbol, the directive is ignored with a per-request warning (`mesi: mesi_max_response_size is set but libgomesi lacks ParseJson — mesi_max_response_size ignored (unlimited response size applies, the pre-#208 behaviour)`) and unlimited applies — never a crash, never a silently wrong cap. Nested `location` blocks inherit the directive from their enclosing location: the unset sentinel (`NGX_CONF_UNSET`) survives `ngx_conf_merge_off_value` — deliberately **not** a merged `0` or a merged 10 MB — so an unset child takes the parent's value, a child that sets the directive overrides the parent, and because `0` *is* storable ("unlimited") the sentinel being `-1` is what lets a child's explicit `mesi_max_response_size 0` override a parent's limit.
+
+### Example
+
+```nginx
+location /small-fragments/ {
+    enable_mesi on;
+    mesi_max_response_size 1048576;   # fragments over 1 MB fail their fetch
+    proxy_pass http://backend;
+}
+
+location /tiny-fragments/ {
+    enable_mesi on;
+    mesi_max_response_size 100;       # tight cap for tiny fragments
+    proxy_pass http://backend;
+}
+
+location /trusted-backend/ {
+    enable_mesi on;
+    mesi_max_response_size 0;         # explicit "unlimited" (memory risk!)
+    proxy_pass http://backend;
+}
+
+location / {
+    enable_mesi on;
+    # mesi_max_response_size unset → unlimited (legacy path, byte-identical)
+    proxy_pass http://backend;
+}
+```
+
+See [examples/nginx-max-response-size.conf](../../examples/nginx-max-response-size.conf) for a full example file.
+
 ## Shared HTTP Client
 
 Not available in the nginx module: there is no shared-client directive (unlike Apache's `MesiSharedHTTPClient` and the CLI's `-shared-http-client`) and no `InitHTTPClient` wiring. Each `<esi:include>` fetch creates its own `http.Client` for the request, so TCP/TLS connection pooling across includes is not available — every include performs its own connection setup. Each per-include client still uses the SSRF-safe transport, so `mesi_block_private_ips` protection applies to every fetch.
