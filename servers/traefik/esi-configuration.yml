@@ -8,14 +8,41 @@ http:
       service: test-server
       rule: Host(`domain.com`)
 
+    # Timeout fixtures (#187): same backend, one budget middleware each.
+    timeout2:
+      middlewares:
+        - mesi-timeout-2
+      entrypoints:
+        - http
+      service: test-server
+      rule: Host(`timeout2.domain.com`)
+
+    timeout30:
+      middlewares:
+        - mesi-timeout-30
+      entrypoints:
+        - http
+      service: test-server
+      rule: Host(`timeout30.domain.com`)
+
   services:
     test-server:
       loadBalancer:
         servers:
-          - url: http://test-server:8080
+          - url: http://test-server:80
         passHostHeader: false
 
   middlewares:
     mesi:
       plugin:
         mesi: {}
+
+    mesi-timeout-2:
+      plugin:
+        mesi:
+          timeout: "2s"
+
+    mesi-timeout-30:
+      plugin:
+        mesi:
+          timeout: "30s"

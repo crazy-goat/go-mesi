@@ -76,6 +76,33 @@ func holdHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(label + " Held " + strconv.Itoa(millis)))
 }
 
+// slowPageHandler serves /slow/{millis}: an HTML page whose single
+// <esi:include> targets the /hold/{millis} sleep endpoint above. It gives
+// the timeout tests a page with a slow fragment (the root HtmlTemplate's
+// include points at the fast /esi). The duration is validated exactly
+// like holdHandler's, because it is interpolated into the include URL;
+// strconv.Atoi + Itoi also normalises it, so only validated digits reach
+// the markup.
+func slowPageHandler(w http.ResponseWriter, r *http.Request) {
+	millis, err := strconv.Atoi(r.PathValue("millis"))
+	if err != nil || millis < 0 || millis > 60000 {
+		http.Error(w, "invalid hold duration", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Slow ESI</title>
+</head>
+<body>
+<h1>SLOW-PAGE</h1>
+<esi:include src="http://test-server/hold/` + strconv.Itoa(millis) + `/SLOW-FRAG" />
+<esi:remove>Failed to include ESI</esi:remove>
+</body>
+</html>`))
+}
+
 // trackHandler serves /track/reset (zero both counters) and /track/max
 // (the recorded peak) as text/plain control endpoints.
 func trackHandler(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +145,7 @@ func main() {
 	}))
 
 	http.HandleFunc("/hold/{millis}/{label}", holdHandler)
+	http.HandleFunc("/slow/{millis}", echoHeaders(slowPageHandler))
 	http.HandleFunc("/track/{action}", trackHandler)
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))
