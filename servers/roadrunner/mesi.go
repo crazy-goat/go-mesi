@@ -46,6 +46,10 @@ const DefaultMaxResponseSize int64 = 0
 // with Apache, nginx, PHP extension, CLI, and Traefik.
 const MaxMaxConcurrentRequests = 999999999
 
+// MaxMaxWorkers is the transport-derived upper bound shared with Apache,
+// nginx, PHP extension, CLI, and libgomesi.
+const MaxMaxWorkers = 999999999
+
 type Config struct {
 	// MaxDepth limits ESI nesting. A nil pointer is "unset" (default 5).
 	// Explicit 0 is passthrough (disable ESI), matching Caddy / Apache #166
@@ -71,6 +75,9 @@ type Config struct {
 	// MaxConcurrentRequests caps concurrent include HTTP fetches within one
 	// page-render MESIParse call. Zero (unset) is unlimited.
 	MaxConcurrentRequests int `mapstructure:"max_concurrent_requests"`
+	// MaxWorkers caps the token-processing drain pool per MESIParse call.
+	// Zero (unset) selects the core library default runtime.NumCPU()*4.
+	MaxWorkers int `mapstructure:"max_workers"`
 }
 
 func intPtr(v int) *int { return &v }
@@ -111,6 +118,9 @@ func (p *Plugin) Init() error {
 		return err
 	}
 	if err := validateMaxConcurrentRequests(p.config.MaxConcurrentRequests); err != nil {
+		return err
+	}
+	if err := validateMaxWorkers(p.config.MaxWorkers); err != nil {
 		return err
 	}
 
@@ -181,6 +191,15 @@ func validateMaxConcurrentRequests(value int) error {
 	return nil
 }
 
+// validateMaxWorkers rejects values the core would silently normalize to its
+// default, as well as values above the shared transport-derived cap.
+func validateMaxWorkers(value int) error {
+	if value < 0 || value > MaxMaxWorkers {
+		return fmt.Errorf("invalid max_workers %d: must be in [0, %d] (0 = library default runtime.NumCPU()*4)", value, MaxMaxWorkers)
+	}
+	return nil
+}
+
 func parseTimeout(raw string) (time.Duration, error) {
 	d, err := time.ParseDuration(raw)
 	if err != nil {
@@ -244,6 +263,7 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 				IncludeErrorMarker:             p.config.IncludeErrorMarker,
 				MaxResponseSize:                p.config.MaxResponseSize,
 				MaxConcurrentRequests:          p.config.MaxConcurrentRequests,
+				MaxWorkers:                     p.config.MaxWorkers,
 			}
 
 			if p.cache != nil {

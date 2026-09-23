@@ -1,0 +1,8 @@
+# Cap the ESI token-processing drain pool per MESIParse call.
+# Zero/absent uses the core default runtime.NumCPU()*4; each nested parse
+# creates its own pool with this cap. This is separate from
+# max_concurrent_requests, which controls HTTP fetch admission.
+http:
+  middleware:
+    mesi:
+      max_workers: 8

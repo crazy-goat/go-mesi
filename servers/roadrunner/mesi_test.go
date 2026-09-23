@@ -71,6 +71,42 @@ func TestInitMaxResponseSizeBoundaries(t *testing.T) {
 	}
 }
 
+func TestInitMaxWorkersBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		value   int
+		wantErr bool
+	}{
+		{name: "zero_uses_library_default", value: 0},
+		{name: "one_worker", value: 1},
+		{name: "typical_limit", value: 8},
+		{name: "accepted_max", value: MaxMaxWorkers},
+		{name: "negative_one", value: -1, wantErr: true},
+		{name: "negative_multiple", value: -5, wantErr: true},
+		{name: "max_plus_one", value: MaxMaxWorkers + 1, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Plugin{config: &Config{MaxWorkers: tc.value}}
+			err := p.Init()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected max_workers %d to fail", tc.value)
+				}
+				if !strings.Contains(err.Error(), "max_workers") {
+					t.Errorf("expected error to name max_workers, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Init with max_workers %d: %v", tc.value, err)
+			}
+			if p.config.MaxWorkers != tc.value {
+				t.Errorf("MaxWorkers = %d, want configured value %d", p.config.MaxWorkers, tc.value)
+			}
+		})
+	}
+}
+
 func TestInitMaxConcurrentRequestsBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -298,6 +334,78 @@ func TestInitDefaultsMaxConcurrentRequestsUnlimited(t *testing.T) {
 	}
 	if defaults.MaxConcurrentRequests != 0 {
 		t.Fatalf("CreateConfig MaxConcurrentRequests = %d, want zero-value unlimited", defaults.MaxConcurrentRequests)
+	}
+}
+
+func TestInitMaxWorkersAbsentDefaultsToLibraryValue(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init with absent max_workers: %v", err)
+	}
+	if p.config.MaxWorkers != 0 {
+		t.Fatalf("absent max_workers = %d, want 0 (library default)", p.config.MaxWorkers)
+	}
+	defaults := CreateConfig()
+	if err := (&Plugin{config: defaults}).Init(); err != nil {
+		t.Fatalf("Init with CreateConfig defaults: %v", err)
+	}
+	if defaults.MaxWorkers != 0 {
+		t.Fatalf("CreateConfig MaxWorkers = %d, want zero-value library default", defaults.MaxWorkers)
+	}
+}
+
+func TestMiddlewareMaxWorkersMapping(t *testing.T) {
+	const maxWorkers = 2
+	const includeCount = 8
+	var fetched []string
+	var mu sync.Mutex
+	var page strings.Builder
+	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		fetched = append(fetched, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprintf(w, "WORKER-FRAGMENT-%s", strings.TrimPrefix(r.URL.Path, "/fragment/"))
+	}))
+	t.Cleanup(fragmentServer.Close)
+	// Use the server's actual URL in includes while keeping a deterministic,
+	// fully rendered response assertion. This confirms the middleware copies
+	// the configured worker value into EsiParserConfig.
+	page.WriteString("<html><body>WORKERS-PAGE")
+	for i := 0; i < includeCount; i++ {
+		fmt.Fprintf(&page, `<esi:include src="%s/fragment/%d" />`, fragmentServer.URL, i)
+	}
+	page.WriteString("WORKERS-PAGE-END</body></html>")
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(page.String()))
+	})
+
+	block := false
+	p := &Plugin{config: &Config{MaxWorkers: maxWorkers, BlockPrivateIPs: &block}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	p.Middleware(upstream).ServeHTTP(rec, httptest.NewRequest("GET", "http://example.com/", nil))
+	body := rec.Body.String()
+	mu.Lock()
+	gotFetched := len(fetched)
+	mu.Unlock()
+	if gotFetched != includeCount {
+		t.Errorf("fetched %d fragments, want %d", gotFetched, includeCount)
+	}
+	for i := 0; i < includeCount; i++ {
+		if !strings.Contains(body, fmt.Sprintf("WORKER-FRAGMENT-%d", i)) {
+			t.Errorf("missing fragment %d from response %q", i, body)
+		}
+	}
+	if strings.Contains(body, "<esi:include") {
+		t.Errorf("raw include tag remained in response: %q", body)
+	}
+	if !strings.Contains(body, "WORKERS-PAGE") || !strings.Contains(body, "WORKERS-PAGE-END") {
+		t.Errorf("page markers missing from response: %q", body)
 	}
 }
 

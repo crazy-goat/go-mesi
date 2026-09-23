@@ -25,6 +25,7 @@ func main() {
 	timeout := flag.String("timeout", "", "Per-include ESI fetch budget as a Go duration (unset = plugin default 10s)")
 	maxResponseSize := flag.Int64("max-response-size", 0, "Maximum bytes per ESI include response (0 = unlimited)")
 	maxConcurrentRequests := flag.Int("max-concurrent-requests", 0, "Maximum concurrent ESI include fetches (0 = unlimited)")
+	maxWorkers := flag.Int("max-workers", 0, "Maximum token-processing workers per ESI parse (0 = library default)")
 	flag.Parse()
 
 	config := roadrunner.CreateConfig()
@@ -36,6 +37,7 @@ func main() {
 	}
 	config.MaxResponseSize = *maxResponseSize
 	config.MaxConcurrentRequests = *maxConcurrentRequests
+	config.MaxWorkers = *maxWorkers
 	config.BlockPrivateIPs = blockPrivateIPs
 	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
 	// Only override CreateConfig()'s default (5) when -max-depth is
@@ -154,6 +156,35 @@ func main() {
 		}
 		b.WriteString("HOLD-PAGE-END</body></html>")
 		_, _ = w.Write([]byte(b.String()))
+	})
+	// /deep/{level} returns three jobs at every non-leaf level: one child
+	// page plus two marker fragments. That makes a cap of 2 constrain each
+	// parse pool while deterministic markers prove nested drains complete.
+	mux.HandleFunc("/deep/{level}", func(w http.ResponseWriter, r *http.Request) {
+		level, err := strconv.Atoi(r.PathValue("level"))
+		if err != nil || level < 1 || level > 5 {
+			http.Error(w, "invalid deep level", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		var body strings.Builder
+		fmt.Fprintf(&body, "LEVEL-%d-START", level)
+		if level > 1 {
+			fmt.Fprintf(&body, `<esi:include src="http://127.0.0.1:9090/deep/%d" />`, level-1)
+			for _, marker := range []string{"A", "B"} {
+				fmt.Fprintf(&body, `<esi:include src="http://127.0.0.1:9090/deep-marker/%d-%s" />`, level, marker)
+			}
+		}
+		fmt.Fprintf(&body, "LEVEL-%d-END", level)
+		_, _ = w.Write([]byte(body.String()))
+	})
+	mux.HandleFunc("/deep-marker/{marker}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprintf(w, "LEVEL-MARKER-%s", r.PathValue("marker"))
+	})
+	mux.HandleFunc("/deep-page", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/deep/4" />AFTER-DEEP</body></html>`))
 	})
 	mux.HandleFunc("/plain", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
