@@ -205,5 +205,22 @@ else
     exit 1
 fi
 
+echo "--- Timeout Tests ---"
+
+echo "=== Test 14: timeout 2s aborts slow 5s include (#189) ==="
+start_rr -block-private-ips=false -timeout 2s
+START=$(date +%s)
+RESPONSE=$(curl -s http://localhost:9090/timeout)
+ELAPSED=$(( $(date +%s) - START ))
+if [ "$ELAPSED" -ge 1 ] && [ "$ELAPSED" -lt 5 ] \
+    && ! echo "$RESPONSE" | grep -q "SLOW_FRAGMENT" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: configured 2s budget aborted the 5s include after ${ELAPSED}s"
+else
+    echo "FAIL: timeout did not abort the slow include (elapsed ${ELAPSED}s)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
 echo ""
 echo "=== All RoadRunner tests passed ==="

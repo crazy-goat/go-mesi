@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/crazy-goat/go-mesi/mesi"
 )
@@ -25,8 +26,86 @@ func TestInitDefaults(t *testing.T) {
 	if p.config.MaxDepth == nil || *p.config.MaxDepth != 5 {
 		t.Errorf("Expected MaxDepth 5, got %v", p.config.MaxDepth)
 	}
+	if p.timeout != DefaultTimeout {
+		t.Errorf("Expected timeout %s, got %s", DefaultTimeout, p.timeout)
+	}
 	if p.cache != nil {
 		t.Error("Expected nil cache with default config")
+	}
+}
+
+func TestParseTimeoutDefaultValue(t *testing.T) {
+	got, err := parseTimeout("10s")
+	if err != nil {
+		t.Fatalf("parseTimeout(10s): %v", err)
+	}
+	if got != DefaultTimeout {
+		t.Errorf("parseTimeout(10s) = %s, want default %s", got, DefaultTimeout)
+	}
+}
+
+func TestParseTimeoutAcceptedValues(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{name: "minimum_1s", value: "1s", want: time.Second},
+		{name: "typical_5s", value: "5s", want: 5 * time.Second},
+		{name: "minutes_1m", value: "1m", want: time.Minute},
+		{name: "maximum_24h", value: "24h", want: 24 * time.Hour},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseTimeout(tc.value)
+			if err != nil {
+				t.Fatalf("parseTimeout(%q): %v", tc.value, err)
+			}
+			if got != tc.want {
+				t.Errorf("parseTimeout(%q) = %s, want %s", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseTimeoutRejectedValues(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{name: "explicit_empty", value: ""},
+		{name: "zero", value: "0s"},
+		{name: "negative", value: "-1s"},
+		{name: "subsecond", value: "999ms"},
+		{name: "above_maximum_seconds", value: "86401s"},
+		{name: "above_maximum_duration", value: "25h"},
+		{name: "missing_unit", value: "15"},
+		{name: "decimal", value: "1.5"},
+		{name: "trailing_garbage", value: "3foo"},
+		{name: "not_a_duration", value: "abc"},
+		{name: "overflow", value: "999999999999999999999s"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseTimeout(tc.value)
+			if err == nil {
+				t.Fatalf("expected parseTimeout(%q) to fail", tc.value)
+			}
+			if !strings.Contains(err.Error(), "timeout") {
+				t.Errorf("expected error to name timeout, got %v", err)
+			}
+		})
+	}
+}
+
+func TestInitRejectsInvalidTimeout(t *testing.T) {
+	for _, value := range []string{"abc", "0s", "25h"} {
+		t.Run(value, func(t *testing.T) {
+			p := &Plugin{config: &Config{Timeout: value}}
+			if err := p.Init(); err == nil {
+				t.Fatalf("expected Init to reject timeout %q", value)
+			}
+		})
 	}
 }
 
@@ -97,6 +176,40 @@ func TestClose(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Close(); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
+func TestMiddlewareUsesConfiguredTimeout(t *testing.T) {
+	fragment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(3 * time.Second)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("SLOW_FRAGMENT"))
+	}))
+	t.Cleanup(fragment.Close)
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + fragment.URL + `/slow" /></body></html>`))
+	})
+	blockPrivateIPs := false
+	p := &Plugin{config: &Config{Timeout: "1s", BlockPrivateIPs: &blockPrivateIPs}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	start := time.Now()
+	rec := httptest.NewRecorder()
+	p.Middleware(upstream).ServeHTTP(rec, httptest.NewRequest("GET", "http://example.com/", nil))
+	elapsed := time.Since(start)
+
+	if elapsed < 700*time.Millisecond || elapsed > 2500*time.Millisecond {
+		t.Errorf("configured 1s timeout took %v; want approximately 1s and below the backend's 3s delay", elapsed)
+	}
+	if strings.Contains(rec.Body.String(), "SLOW_FRAGMENT") {
+		t.Errorf("slow fragment was included despite timeout: %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "<esi:include") {
+		t.Errorf("raw include tag left in response: %q", rec.Body.String())
 	}
 }
 

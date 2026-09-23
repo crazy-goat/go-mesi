@@ -42,7 +42,7 @@ http:
 | `block_private_ips` | bool | `true` | Block ESI includes to private/reserved IPs (loopback, RFC 1918, CGNAT, link-local, cloud metadata `169.254.169.254`, benchmark/documentation ranges) at dial time. Set `false` to allow internal includes (e.g. service meshes). |
 | `allowed_hosts` | array | `[]` | Host whitelist restricting which ESI include destinations are fetched. Exact or subdomain-suffix match with a `.` boundary (rejects suffix injection); case-insensitive; ports ignored. Empty list = all hosts allowed (subject to `block_private_ips`). The whitelist check runs by hostname before the dial-time private-IP check and does NOT bypass it. |
 | `allow_private_ips_for_allowed_hosts` | bool | `false` | When `true`, hosts listed in `allowed_hosts` may resolve to private/reserved IPs (the dial-time block is bypassed for them). Only effective when `block_private_ips` is `true` AND `allowed_hosts` is non-empty; no effect under `shared_http_client` (the shared transport bakes `block_private_ips` at startup). **Trusts DNS** — a compromised entry in `allowed_hosts` can reach internal/private addresses. |
-| `timeout` | string | `"10s"` | Maximum time for ESI processing (Go duration format). |
+| `timeout` | string | `"10s"` | Per-include ESI fetch time budget (Go duration format), from 1s through 24h. Omit to use the historical 10s default; explicit invalid, zero, or negative values fail plugin initialization. |
 | `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
 | `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`, `"memcached"`. |
 | `cache_size` | int | `10000` | Max entries for memory cache backend. |
@@ -52,6 +52,24 @@ http:
 | `cache_redis_password` | string | `""` | Redis AUTH password. |
 | `cache_redis_db` | int | `0` | Redis database number. |
 | `cache_memcached_servers` | array | `[]` | Memcached server addresses (host:port). |
+
+#### Per-include timeout
+
+The global `timeout` sets the fetch budget for each `<esi:include>`. It is
+not a limit on RoadRunner workers or concurrent incoming requests. The default
+is `10s`; accepted values are Go duration strings from `1s` through `24h`.
+Malformed, zero, negative, sub-second, and over-24h values are rejected during
+plugin initialization.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      timeout: "15s"
+```
+
+The budget applies to the full include fetch (including redirects and waiting
+for a concurrent-fetch slot), not the time to process an entire page.
 
 #### Shared HTTP Client
 Enables TCP connection reuse across ESI includes. The shared client uses an SSRF-safe transport that blocks private IPs.
