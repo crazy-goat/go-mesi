@@ -27,6 +27,12 @@ const MaxCacheTTL = 24 * time.Hour
 // nginx / CLI / libgomesi defaults.
 const DefaultCacheSize = 10000
 
+// DefaultTimeout preserves RoadRunner's historical per-include ESI fetch budget.
+const DefaultTimeout = 10 * time.Second
+
+// MaxTimeout is the maximum accepted per-include ESI fetch budget.
+const MaxTimeout = 24 * time.Hour
+
 type Config struct {
 	// MaxDepth limits ESI nesting. A nil pointer is "unset" (default 5).
 	// Explicit 0 is passthrough (disable ESI), matching Caddy / Apache #166
@@ -71,6 +77,7 @@ type Plugin struct {
 	config          *Config
 	cache           mesi.Cache
 	cacheTTL        time.Duration
+	timeout         time.Duration
 	sharedTransport *http.Transport
 	blockPrivateIPs bool
 	closeFn         func() error
@@ -86,6 +93,16 @@ func (p *Plugin) Init() error {
 	} else if *p.config.MaxDepth < 0 || uint64(*p.config.MaxDepth) > mesi.MaxMaxDepth {
 		return fmt.Errorf("max_depth must be in [0, %d], got %d", mesi.MaxMaxDepth, *p.config.MaxDepth)
 	}
+
+	timeoutRaw := p.config.Timeout
+	if timeoutRaw == "" {
+		timeoutRaw = "10s"
+	}
+	timeout, err := parseTimeout(timeoutRaw)
+	if err != nil {
+		return err
+	}
+	p.timeout = timeout
 
 	// BlockPrivateIPs defaults to true (secure by default). A nil pointer
 	// means "unset" and keeps the safe default; an explicit false opts out
@@ -114,6 +131,24 @@ func (p *Plugin) Init() error {
 	}
 
 	return nil
+}
+
+// parseTimeout converts the timeout string to the per-include fetch budget.
+// An omitted value preserves RoadRunner's historical 10s budget; any
+// explicitly supplied value must be a positive Go duration no greater than
+// 24h, matching the shared timeout contract.
+func parseTimeout(raw string) (time.Duration, error) {
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid timeout %q: %w", raw, err)
+	}
+	if d < time.Second {
+		return 0, fmt.Errorf("invalid timeout %q: must be at least 1s", raw)
+	}
+	if d > MaxTimeout {
+		return 0, fmt.Errorf("invalid timeout %q: exceeds max %s", raw, MaxTimeout)
+	}
+	return d, nil
 }
 
 // parseCacheTTL converts the cache_ttl string to a Duration while
@@ -158,7 +193,7 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 				Context:                        r.Context(),
 				MaxDepth:                       uint(p.maxDepth()),
 				DefaultUrl:                     middleware.GetDefaultUrl(r),
-				Timeout:                        10 * time.Second,
+				Timeout:                        p.timeoutBudget(),
 				BlockPrivateIPs:                p.blockPrivateIPs,
 				AllowedHosts:                   p.config.AllowedHosts,
 				AllowPrivateIPsForAllowedHosts: p.config.AllowPrivateIPsForAllowedHosts,
@@ -200,6 +235,13 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 			w.Write(customWriter.Body().Bytes())
 		}
 	})
+}
+
+func (p *Plugin) timeoutBudget() time.Duration {
+	if p.timeout == 0 {
+		return DefaultTimeout
+	}
+	return p.timeout
 }
 
 func (p *Plugin) maxDepth() int {

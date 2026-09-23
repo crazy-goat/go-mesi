@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/crazy-goat/go-mesi/servers/roadrunner"
 )
@@ -18,11 +19,15 @@ func main() {
 	blockPrivateIPs := flag.Bool("block-private-ips", true, "Block ESI includes to private/reserved IPs at dial time")
 	allowPrivateIPsForAllowedHosts := flag.Bool("allow-private-ips-for-allowed-hosts", false, "Bypass the dial-time private-IP block for hosts listed in -allowed-hosts")
 	maxDepth := flag.Int("max-depth", 5, "Maximum ESI nesting depth (0 = passthrough: no include fetched, tags stripped; unset = plugin default 5)")
+	timeout := flag.String("timeout", "", "Per-include ESI fetch budget as a Go duration (unset = plugin default 10s)")
 	flag.Parse()
 
 	config := roadrunner.CreateConfig()
 	if *allowedHosts != "" {
 		config.AllowedHosts = strings.Split(*allowedHosts, ",")
+	}
+	if *timeout != "" {
+		config.Timeout = *timeout
 	}
 	config.BlockPrivateIPs = blockPrivateIPs
 	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
@@ -102,6 +107,15 @@ func main() {
 	mux.HandleFunc("/nested-depth", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/nested-depth/outer" /></body></html>`))
+	})
+	mux.HandleFunc("/slow-fragment", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("SLOW_FRAGMENT"))
+	})
+	mux.HandleFunc("/timeout", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/slow-fragment" /></body></html>`))
 	})
 
 	handler := plugin.Middleware(mux)
