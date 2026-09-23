@@ -1,0 +1,87 @@
+# Traefik Max Response Size Configuration Example
+#
+# Caps the HTTP response body size, in bytes, of a single
+# <esi:include> fetch — per SINGLE include, not per page. An
+# over-limit include fails its fetch and renders through the
+# include-error path (empty includeErrorMarker / fallback body /
+# onerror="continue") — fail closed, never a truncated body.
+#
+#   - Format: plain integer — bytes (no k/m/g suffixes, exactly like
+#     Apache MesiMaxResponseSize, nginx mesi_max_response_size, the
+#     PHP extension max_response_size and the CLI
+#     -max-response-size).
+#   - Default / absent: 0 = UNLIMITED — byte-identical to the
+#     behaviour before #210 (ServeHTTP's EsiParserConfig literal
+#     never set the field; the core only limits when
+#     MaxResponseSize > 0, mesi/fetch.go). There is NO implicit
+#     10 MB default on this path — mesi.CreateDefaultConfig()'s
+#     10 * 1024 * 1024 only reaches Go callers of that
+#     constructor, which this Go-direct plugin never is.
+#   - Range: [0, 9223372036854775806] (math.MaxInt64 - 1) — the
+#     core computes MaxResponseSize + 1 for its io.LimitReader
+#     (mesi/fetch.go); at MaxInt64 that wraps negative and the
+#     include would silently render an empty body (#448).
+#   - Malformed or out-of-range EXPLICIT values fail middleware
+#     creation with an error naming `maxResponseSize` — never a
+#     silent fallback to a default: -1 / -5 (the core's > 0 check
+#     would silently treat them as "unlimited") and
+#     9223372036854775807 are rejected by New();
+#     9223372036854775808+, 1.5 and "abc" fail the config decode
+#     into the typed int64 field first. 0 IS accepted and means
+#     "unlimited".
+#   - MEMORY RISK: 0 (and the absent option) lets a single include
+#     against an unbounded backend exhaust Traefik's memory — set a
+#     cap wherever the backend is not fully trusted.
+#
+# Usage:
+#   Include this in your Traefik dynamic configuration (esi-configuration.yml)
+#   or in your Docker/Kubernetes Traefik config.
+
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          maxDepth: 5
+          # Fragments over 1 MB fail their fetch and render as the
+          # fallback body / empty marker instead of the body.
+          maxResponseSize: 1048576
+
+    # Tight cap for tiny fragments: includes over 100 bytes are
+    # rejected fail-closed (never truncated).
+    mesi-tiny-fragments:
+      plugin:
+        mesi:
+          maxResponseSize: 100
+
+    # Explicit "unlimited" — same as omitting the option, but stated
+    # on purpose (memory risk against untrusted backends!).
+    mesi-unlimited:
+      plugin:
+        mesi:
+          maxResponseSize: 0
+
+  routers:
+    my-app:
+      middlewares:
+        - mesi
+      service: my-app
+      rule: Host(`example.com`)
+
+    tiny-fragments-app:
+      middlewares:
+        - mesi-tiny-fragments
+      service: my-app
+      rule: Host(`tiny.example.com`)
+
+    trusted-backend-app:
+      middlewares:
+        - mesi-unlimited
+      service: my-app
+      rule: Host(`trusted.example.com`)
+
+  services:
+    my-app:
+      loadBalancer:
+        servers:
+          - url: http://backend:8080

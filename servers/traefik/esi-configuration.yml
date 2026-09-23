@@ -25,6 +25,26 @@ http:
       service: test-server
       rule: Host(`timeout30.domain.com`)
 
+    # Max response size fixtures (#210): same backend, one cap
+    # middleware each. The absent case rides the default `mesi`
+    # middleware on `domain.com` (byte-compatible with pre-#210
+    # behaviour).
+    maxrs100:
+      middlewares:
+        - mesi-maxrs-100
+      entrypoints:
+        - http
+      service: test-server
+      rule: Host(`maxrs100.domain.com`)
+
+    maxrs1m:
+      middlewares:
+        - mesi-maxrs-1m
+      entrypoints:
+        - http
+      service: test-server
+      rule: Host(`maxrs1m.domain.com`)
+
   services:
     test-server:
       loadBalancer:
@@ -46,3 +66,13 @@ http:
       plugin:
         mesi:
           timeout: "30s"
+
+    mesi-maxrs-100:
+      plugin:
+        mesi:
+          maxResponseSize: 100
+
+    mesi-maxrs-1m:
+      plugin:
+        mesi:
+          maxResponseSize: 1048576

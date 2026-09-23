@@ -110,6 +110,66 @@ http:
           timeout: "2s"
 ```
 
+## Response Size
+
+`maxResponseSize` caps the HTTP response body size, in bytes, of a single
+`<esi:include>` fetch. Until #210 the Traefik plugin had no way to
+control this limit.
+
+- **Format:** plain integer — bytes (no `k`/`m`/`g` suffixes, exactly
+  like Apache `MesiMaxResponseSize`, nginx `mesi_max_response_size`,
+  the PHP extension `max_response_size` and the CLI
+  `-max-response-size`).
+- **Default / absent:** `0` = **unlimited** when the option is absent —
+  byte-identical to previous behaviour: `ServeHTTP` is Go-direct — it
+  builds `mesi.EsiParserConfig` itself and never set the field, so it
+  stayed at its zero value `0`, which the core treats as "no limit"
+  (`mesi/fetch.go` only limits when `MaxResponseSize > 0`). There is
+  **no implicit 10 MB default on this path** — the
+  `10 * 1024 * 1024` of `mesi.CreateDefaultConfig()` only reaches Go
+  callers of that constructor, which this plugin never is (the same
+  premise correction as #169 / #201 / #208; see the `timeout` section
+  above for the same Go-direct note).
+- **Range:** `[0, 9223372036854775806]` bytes (`math.MaxInt64 - 1`, the
+  same cap as Apache `MesiMaxResponseSize`, nginx
+  `mesi_max_response_size` (#208), the PHP extension's
+  `max_response_size` (#201) and the CLI `-max-response-size` (#186)).
+  The upper bound exists because the core computes
+  `MaxResponseSize + 1` for its `io.LimitReader` (`mesi/fetch.go`): at
+  `math.MaxInt64` that wraps negative and the include would silently
+  render an empty body instead of failing (#448).
+- **Scope:** **per SINGLE include, not per page** — a page with 10
+  includes each under the limit can total far more than the limit. An
+  over-limit include **fails closed** through the include-error path
+  (the empty `includeErrorMarker`, a fallback `<esi:include>` body, or
+  `onerror="continue"`) — never a truncated body.
+- **`0` is accepted and means "unlimited"** — the documented core
+  contract shared with Caddy `max_response_size 0`, Apache
+  `MesiMaxResponseSize 0` and nginx's `mesi_max_response_size 0` (#208).
+  **Memory-exhaustion risk:** with `0` (and with the option absent) a
+  single `<esi:include>` pointing at an unbounded backend can exhaust
+  Traefik's memory — set a cap wherever the backend is not fully
+  trusted.
+- **Reject behavior:** a negative (`-1`, `-5`) or out-of-range
+  (`9223372036854775807` = `math.MaxInt64`) EXPLICIT value fails
+  middleware creation with an error naming `maxResponseSize` — never a
+  silent fallback to a default (a negative would silently behave as
+  "unlimited" on the core's `> 0` check). Values an `int64` cannot
+  represent (`9223372036854775808`+) and non-integers never reach
+  `New()`: the config decode into the typed field fails first, which
+  also fails middleware creation.
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          # Fragments over 1 MB fail their fetch and render as the
+          # fallback body / empty marker instead of the body.
+          maxResponseSize: 1048576
+```
+
 ## Allowed Hosts (SSRF whitelist)
 
 When `allowedHosts` is set, only ESI include destinations whose host is listed
@@ -232,6 +292,7 @@ http:
 |--------|------|---------|-------------|
 | `maxDepth` | int | `5` | Maximum ESI recursion depth. Omit for the default. Explicit `0` is passthrough (no ESI fetch). Values outside `[0, 10000]` are rejected. |
 | `timeout` | string | `"10s"` | Per-include fetch budget as a Go duration (e.g. `"5s"`, `"1m"`); range `[1s, 24h]`. Malformed or out-of-range explicit values fail middleware creation (no silent default). |
+| `maxResponseSize` | int64 | `0` (unlimited) | Per-include response body cap in **bytes** (per SINGLE include, not per page; over-limit includes fail closed through the include-error path — never truncated); range `[0, 9223372036854775806]`. Absent = unlimited (no implicit 10 MB). Negative / `MaxInt64` explicit values fail middleware creation; above-`int64` values fail the config decode (no silent default). |
 | `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
 | `includeErrorMarker` | string | `""` | String rendered for failed includes (empty = silent) |
 | `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis`, `memcached` |
