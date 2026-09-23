@@ -1,0 +1,50 @@
+# Traefik Max Workers Configuration Example
+#
+# Caps the token-processing drain pool for ESI jobs within one
+# mesi.MESIParse call — one nesting level of one page render. Each nested
+# parse starts its own pool and inherits the cap.
+#
+#   - Format: plain integer — worker count (no suffixes).
+#   - Default / absent: 0 = the core library default runtime.NumCPU()*4,
+#     byte-identical to pre-#220 behaviour (ServeHTTP's EsiParserConfig
+#     literal left MaxWorkers at zero). Explicit 0 has the same meaning.
+#     Unlike maxConcurrentRequests, 0 does NOT mean unlimited.
+#   - Range: [0, 999999999], the transport-derived cap shared by Apache
+#     MesiMaxWorkers (#171), nginx mesi_max_workers (#219), php-ext
+#     max_workers (#211), CLI -max-workers (#197), and libgomesi.
+#   - Negative values fail middleware creation: the core would silently
+#     substitute runtime.NumCPU()*4 for any value <= 0, with no warning
+#     (#456 tracks the direct-caller/platform gap). Values above the cap
+#     fail middleware creation; non-integers and integer overflow fail
+#     the typed config decode. No malformed explicit value is defaulted.
+#   - Distinction: maxWorkers bounds token-processing goroutines;
+#     maxConcurrentRequests is the separate admission semaphore for HTTP
+#     fetches. On a flat page each worker fetches one include at a time,
+#     but MaxWorkers additionally bounds token-processing work.
+#   - Scope: per page-render parse, not Traefik-global. Nested parses
+#     create a separate worker pool at each recursion level (the behavior
+#     the deep-nesting fixture exercises).
+#
+# Usage: include this in Traefik's dynamic configuration.
+
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          maxDepth: 5
+          # Keep token-processing parallelism bounded for each render.
+          maxWorkers: 8
+
+  routers:
+    my-app:
+      middlewares:
+        - mesi
+      service: my-app
+      rule: Host(`example.com`)
+
+  services:
+    my-app:
+      loadBalancer:
+        servers:
+          - url: http://backend:8080

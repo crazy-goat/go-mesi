@@ -178,6 +178,53 @@ func slowPageHandler(w http.ResponseWriter, r *http.Request) {
 // slowPageHandler's, because both are interpolated into the include
 // URLs; strconv.Atoi + Itoa normalises them, so only validated digits
 // reach the markup.
+//
+// deepPageHandler serves /deeppage/{depth}/{cap}: an ESI page with a
+// deterministic nested include chain. The depth and cap are validated
+// before interpolation, so malformed values cannot create invalid include
+// URLs or unbounded markup. The fixture mirrors four-level nesting coverage
+// in nginx #219 and Apache #171, making MaxWorkers' drain correctness
+// observable without timing assumptions.
+func deepPageHandler(w http.ResponseWriter, r *http.Request) {
+	depth, err := strconv.Atoi(r.PathValue("depth"))
+	if err != nil || depth < 1 || depth > 8 {
+		http.Error(w, "invalid nesting depth", http.StatusBadRequest)
+		return
+	}
+	capValue, err := strconv.Atoi(r.PathValue("cap"))
+	if err != nil || capValue < 1 || capValue > 999999999 {
+		http.Error(w, "invalid worker cap", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html><html><body><h1>DEEP-PAGE</h1><esi:include src="http://test-server/deep/` + strconv.Itoa(depth) + `/` + strconv.Itoa(capValue) + `" /><p>AFTER-DEEP</p></body></html>`))
+}
+
+// deepHandler serves /deep/{level}/{cap}. Each fragment is itself HTML and
+// at levels above one includes the next level, with uniquely-labelled markers
+// before and after the nested fragment. This yields stable ordering that
+// demonstrates each recursion drained fully.
+func deepHandler(w http.ResponseWriter, r *http.Request) {
+	level, err := strconv.Atoi(r.PathValue("level"))
+	if err != nil || level < 1 || level > 8 {
+		http.Error(w, "invalid nesting level", http.StatusBadRequest)
+		return
+	}
+	capValue, err := strconv.Atoi(r.PathValue("cap"))
+	if err != nil || capValue < 1 || capValue > 999999999 {
+		http.Error(w, "invalid worker cap", http.StatusBadRequest)
+		return
+	}
+	levelText := strconv.Itoa(level)
+	body := `<section>LEVEL-` + levelText + `-START</section>`
+	if level > 1 {
+		body += `<esi:include src="http://test-server/deep/` + strconv.Itoa(level-1) + `/` + strconv.Itoa(capValue) + `" />`
+	}
+	body += `<section>LEVEL-` + levelText + `-MARKER</section><section>LEVEL-` + levelText + `-END</section>`
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(body))
+}
+
 func holdPageHandler(w http.ResponseWriter, r *http.Request) {
 	count, err := strconv.Atoi(r.PathValue("n"))
 	if err != nil || count < 0 || count > maxGeneratedIncludes {
@@ -255,6 +302,8 @@ func main() {
 	http.HandleFunc("/bytespage/{size}", echoHeaders(bytesPageHandler))
 	http.HandleFunc("/slow/{millis}", echoHeaders(slowPageHandler))
 	http.HandleFunc("/holdpage/{n}/{millis}", echoHeaders(holdPageHandler))
+	http.HandleFunc("/deeppage/{depth}/{cap}", echoHeaders(deepPageHandler))
+	http.HandleFunc("/deep/{level}/{cap}", deepHandler)
 	http.HandleFunc("/track/{action}", trackHandler)
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))

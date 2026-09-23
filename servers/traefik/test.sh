@@ -334,6 +334,68 @@ else
 fi
 rm -f /tmp/mesi-traefik-mcr-absent.txt
 
+# --- maxWorkers tests (#220) ---
+# The /deeppage/{depth}/{cap} fixture serves a deterministic four-level
+# nested chain. Each level contributes START/MARKER/END labels around its
+# single nested include, so the output proves every recursion drained fully.
+# This checks correctness, not timing: MaxWorkers caps the token-processing
+# pool; maxConcurrentRequests (#215) is the separate fetch-admission limit.
+# The absent case uses the core's runtime.NumCPU()*4 library default.
+echo "=== Test 16: maxWorkers 2 — deep nesting drains completely (#220) ==="
+curl -s --max-time 60 -H "Host: maxworkers2.domain.com" http://localhost:18080/deeppage/4/4 -o /tmp/mesi-traefik-maxworkers-2.txt
+echo "=== Test 17: maxWorkers 100 — deep nesting matches cap 2 (#220) ==="
+curl -s --max-time 60 -H "Host: maxworkers100.domain.com" http://localhost:18080/deeppage/4/100 -o /tmp/mesi-traefik-maxworkers-100.txt
+if grep -q "AFTER-DEEP" /tmp/mesi-traefik-maxworkers-2.txt \
+    && grep -q "AFTER-DEEP" /tmp/mesi-traefik-maxworkers-100.txt \
+    && ! grep -q '<esi:include' /tmp/mesi-traefik-maxworkers-2.txt \
+    && ! grep -q '<esi:include' /tmp/mesi-traefik-maxworkers-100.txt \
+    && cmp -s /tmp/mesi-traefik-maxworkers-2.txt /tmp/mesi-traefik-maxworkers-100.txt; then
+    for LEVEL in 4 3 2 1; do
+        grep -q "LEVEL-$LEVEL-START" /tmp/mesi-traefik-maxworkers-2.txt \
+            && grep -q "LEVEL-$LEVEL-MARKER" /tmp/mesi-traefik-maxworkers-2.txt \
+            && grep -q "LEVEL-$LEVEL-END" /tmp/mesi-traefik-maxworkers-2.txt || {
+                echo "FAIL: deep nesting omitted a marker at level $LEVEL"
+                head -c 1000 /tmp/mesi-traefik-maxworkers-2.txt
+                rm -f /tmp/mesi-traefik-maxworkers-2.txt /tmp/mesi-traefik-maxworkers-100.txt
+                docker compose down
+                exit 1
+            }
+    done
+    echo "PASS: cap 2 and cap 100 fully drained the four-level nested chain with byte-identical output"
+else
+    echo "FAIL: maxWorkers deep-nesting output incomplete or caps disagree"
+    head -c 1000 /tmp/mesi-traefik-maxworkers-2.txt
+    rm -f /tmp/mesi-traefik-maxworkers-2.txt /tmp/mesi-traefik-maxworkers-100.txt
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-traefik-maxworkers-2.txt /tmp/mesi-traefik-maxworkers-100.txt
+
+echo "=== Test 18: maxWorkers absent — library default remains in effect (#220) ==="
+curl -s --max-time 60 -H "Host: domain.com" http://localhost:18080/deeppage/4/4 -o /tmp/mesi-traefik-maxworkers-absent.txt
+if grep -q "AFTER-DEEP" /tmp/mesi-traefik-maxworkers-absent.txt \
+    && ! grep -q '<esi:include' /tmp/mesi-traefik-maxworkers-absent.txt; then
+    for LEVEL in 4 3 2 1; do
+        grep -q "LEVEL-$LEVEL-START" /tmp/mesi-traefik-maxworkers-absent.txt \
+            && grep -q "LEVEL-$LEVEL-MARKER" /tmp/mesi-traefik-maxworkers-absent.txt \
+            && grep -q "LEVEL-$LEVEL-END" /tmp/mesi-traefik-maxworkers-absent.txt || {
+                echo "FAIL: absent maxWorkers omitted nested marker at level $LEVEL"
+                head -c 1000 /tmp/mesi-traefik-maxworkers-absent.txt
+                rm -f /tmp/mesi-traefik-maxworkers-absent.txt
+                docker compose down
+                exit 1
+            }
+    done
+    echo "PASS: absent maxWorkers used the library default and fully rendered the nested chain"
+else
+    echo "FAIL: absent maxWorkers did not fully render the nested chain"
+    head -c 1000 /tmp/mesi-traefik-maxworkers-absent.txt
+    rm -f /tmp/mesi-traefik-maxworkers-absent.txt
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-traefik-maxworkers-absent.txt
+
 docker compose down
 
 echo ""

@@ -243,6 +243,57 @@ http:
           maxConcurrentRequests: 3
 ```
 
+## Max Workers
+
+`maxWorkers` caps the token-processing drain pool that processes ESI jobs
+within one `mesi.MESIParse` call — one nesting level of one page render.
+Each nested parse creates its own pool and inherits the configured cap.
+
+- **Format:** plain integer — worker count (no suffixes), matching Apache
+  `MesiMaxWorkers`, nginx `mesi_max_workers`, the PHP extension `max_workers`
+  and CLI `-max-workers`.
+- **Default / absent:** `0` = the core's library default
+  `runtime.NumCPU()*4` (`mesi/parser.go:119-122`) — byte-identical to prior
+  behaviour, because `ServeHTTP` did not set the field and
+  `CreateConfig()` does not seed it. Explicit `0` has the same library-default
+  meaning as absent. This differs from `maxConcurrentRequests`, where `0`
+  means unlimited.
+- **Range:** `[0, 999999999]`, the transport-derived cap shared by Apache
+  `MesiMaxWorkers` (#171), nginx `mesi_max_workers` (#219), PHP extension
+  `max_workers` (#211), CLI `-max-workers` (#197), and libgomesi's
+  `config.MaxMaxWorkers`. Caddy's uncapped `strconv.Atoi` is in the #452 gap
+  family and is deliberately not inherited.
+- **Reject behavior:** negative values are rejected during middleware
+  creation instead of silently becoming the default. The core substitutes
+  `runtime.NumCPU()*4` for any value `<= 0` without a warning; that negative
+  value gap is tracked separately in #456. Values above `999999999` fail
+  middleware creation; decimals, non-integers and integer overflow fail the
+  typed config decode. No malformed explicit value silently falls back.
+- **Distinction from `maxConcurrentRequests`:** `maxWorkers` bounds the
+  goroutines that process tokens/includes. The core clamps this pool to the
+  job count and each worker handles one include at a time, so it also bounds
+  fetch parallelism on a flat page. `maxConcurrentRequests` instead controls
+  admission to concurrent HTTP fetches with a semaphore; it does not cap the
+  token-processing pool. Both are per parse, not Traefik-global.
+- **Nested pages:** each recursion level drains its own pool; under the same
+  cap, a four-level include chain must render completely. The functional
+  tests compare the fully rendered bodies under caps `2` and `100` and pin
+  the absent/library-default path without timing assertions. Each level
+  contributes inline START/MARKER/END labels around its nested include.
+- **Known core behavior:** each nested `MESIParse` creates a separate pool
+  with the same configured cap; the limit is per parse level, not a
+  page-global sum across all nested parses.
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          # Bound token-processing workers for each page-render parse.
+          maxWorkers: 8
+```
+
 ## Allowed Hosts (SSRF whitelist)
 
 When `allowedHosts` is set, only ESI include destinations whose host is listed
@@ -367,6 +418,7 @@ http:
 | `timeout` | string | `"10s"` | Per-include fetch budget as a Go duration (e.g. `"5s"`, `"1m"`); range `[1s, 24h]`. Malformed or out-of-range explicit values fail middleware creation (no silent default). |
 | `maxResponseSize` | int64 | `0` (unlimited) | Per-include response body cap in **bytes** (per SINGLE include, not per page; over-limit includes fail closed through the include-error path — never truncated); range `[0, 9223372036854775806]`. Absent = unlimited (no implicit 10 MB). Negative / `MaxInt64` explicit values fail middleware creation; above-`int64` values fail the config decode (no silent default). |
 | `maxConcurrentRequests` | int | `0` (unlimited) | Concurrent `<esi:include>` fetch cap per **page render** (one `MESIParse` — not Traefik-global; each concurrent request's own parse builds its own semaphore, 4 workers × 5 → up to 20 outbound); range `[0, 999999999]`. Absent = unlimited. Includes beyond the cap **wait** for a slot (bounded by `timeout`), never dropped. Negative / `1000000000` explicit values fail middleware creation; non-integers / overflow fail the config decode (no silent default). Known core limitation: nested includes can reach cap × depth (#453) |
+| `maxWorkers` | int | `0` (`runtime.NumCPU()*4`) | Token-processing drain-pool cap per page-render parse/nesting level; each nested parse creates its own pool. Explicit `0` and absent both select the core library default (unlike `maxConcurrentRequests`, where `0` means unlimited); range `[0, 999999999]`. Negative values fail middleware creation rather than silently becoming the default (#456); over-cap values fail creation, decode-invalid values fail config loading. |
 | `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
 | `includeErrorMarker` | string | `""` | String rendered for failed includes (empty = silent) |
 | `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis`, `memcached` |

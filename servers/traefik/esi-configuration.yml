@@ -68,6 +68,24 @@ http:
       service: test-server
       rule: Host(`mcr0.domain.com`)
 
+    # Max workers fixtures (#220): same deep-nesting chain, differing
+    # only in their per-parse drain-pool cap. The absent case rides mesi.
+    maxworkers2:
+      middlewares:
+        - mesi-maxworkers-2
+      entrypoints:
+        - http
+      service: test-server
+      rule: Host(`maxworkers2.domain.com`)
+
+    maxworkers100:
+      middlewares:
+        - mesi-maxworkers-100
+      entrypoints:
+        - http
+      service: test-server
+      rule: Host(`maxworkers100.domain.com`)
+
   services:
     test-server:
       loadBalancer:
@@ -112,3 +130,13 @@ http:
       plugin:
         mesi:
           maxConcurrentRequests: 0
+
+    mesi-maxworkers-2:
+      plugin:
+        mesi:
+          maxWorkers: 2
+
+    mesi-maxworkers-100:
+      plugin:
+        mesi:
+          maxWorkers: 100

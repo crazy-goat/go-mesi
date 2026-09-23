@@ -70,6 +70,23 @@ type Config struct {
 	// "max_concurrent_requests_invalid" and rewrites a negative to
 	// 0 = unlimited, #329).
 	MaxConcurrentRequests int `json:"maxConcurrentRequests" yaml:"maxConcurrentRequests"`
+	// MaxWorkers caps the size of the token-processing drain pool
+	// that processes <esi:include> ESI jobs within one page render —
+	// one mesi.MESIParse call, i.e. one nesting level (the core
+	// spawns min(MaxWorkers, job count) goroutines,
+	// mesi/parser.go:118-129; each nested parse spawns its own pool
+	// and inherits the cap).
+	// 0 — the zero value and the absent option alike — is "library
+	// default": the core substitutes runtime.NumCPU()*4 for any value
+	// <= 0 (mesi/parser.go:119-122), byte-identical to this plugin's
+	// pre-#220 behaviour, where ServeHTTP's EsiParserConfig literal
+	// never set the field. NOTE this differs from
+	// MaxConcurrentRequests, where 0 means "unlimited". A negative or
+	// a value above [0, 999999999] fails New() with an error naming
+	// the option — the core would substitute the default for a
+	// negative SILENTLY, with no warning at all (the open #456 —
+	// cited here, deliberately not fixed).
+	MaxWorkers int `json:"maxWorkers" yaml:"maxWorkers"`
 }
 
 func CreateConfig() *Config {
@@ -89,6 +106,7 @@ type ResponsePlugin struct {
 	timeout               time.Duration
 	maxResponseSize       int64
 	maxConcurrentRequests int
+	maxWorkers            int
 	sharedTransport       *http.Transport
 	closeFn               func() error
 }
@@ -119,6 +137,11 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		return nil, err
 	}
 
+	maxWorkers, err := resolveMaxWorkers(config.MaxWorkers)
+	if err != nil {
+		return nil, err
+	}
+
 	p := &ResponsePlugin{
 		next:                  next,
 		name:                  name,
@@ -126,6 +149,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		timeout:               timeout,
 		maxResponseSize:       maxResponseSize,
 		maxConcurrentRequests: maxConcurrentRequests,
+		maxWorkers:            maxWorkers,
 	}
 
 	if config.SharedHTTPClient {
@@ -298,6 +322,76 @@ func resolveMaxConcurrentRequests(v int) (int, error) {
 	return v, nil
 }
 
+// maxMaxWorkers is the upper bound for the `maxWorkers` plugin
+// option: 999999999, the #171 transport-derived cap shared by every
+// landed implementation — libgomesi's config.MaxMaxWorkers
+// (libgomesi/internal/config/max_workers.go:30, a separate module
+// unimportable here — keep-in-sync pattern), Apache's
+// MESI_MAX_MAX_WORKERS (servers/apache/mod_mesi.c:230), nginx's
+// MESI_MAX_MAX_WORKERS (#219,
+// servers/nginx/ngx_http_mesi_module.c:93), the PHP extension's
+// MESI_MAX_MAX_WORKERS (php-ext/mesi.c:84) and the CLI's
+// maxMaxWorkers (cli/mesi-cli.go:103). Neither the core (a bare int
+// documented only as "Zero means runtime.NumCPU()*4",
+// mesi/config.go:45-48) nor Caddy (bare strconv.Atoi,
+// servers/caddy/mesi.go:356-364 — the #452 gap family, deliberately
+// not inherited, same reasoning as #187/#210/#215) defines a maximum:
+// the bound is derived from the transport — the value crosses to
+// Apache/nginx/php as a C `int` guarded at 9 digits by the shared
+// strict parsers. The value only bounds a drain pool the core
+// additionally clamps to the job count, so an over-large value is a
+// no-op — the cap is about portability, not memory or semantics.
+const maxMaxWorkers = 999999999
+
+// resolveMaxWorkers maps the `maxWorkers` plugin option onto the
+// per-parse drain-pool cap.
+//
+// Absent and explicit 0 both resolve to 0 — the core substitutes
+// runtime.NumCPU()*4 for any value <= 0 (mesi/parser.go:119-122), so
+// 0 (and therefore the absent option too) means "library default":
+// byte-identical to the pre-#220 behaviour, where ServeHTTP's
+// EsiParserConfig literal simply left the field at its zero value
+// (mesi.CreateDefaultConfig() never sets it either —
+// mesi/config.go:98-110 — and this plugin never calls that
+// constructor). Unlike `maxConcurrentRequests` (#215), where 0 means
+// "unlimited", for this option 0 IS the documented "library default"
+// value — the same contract as Apache MesiMaxWorkers 0 (#171), Caddy
+// `max_workers 0`, nginx `mesi_max_workers 0` (#219), php-ext
+// `max_workers` #211 and CLI `-max-workers` #197.
+//
+// A positive value caps the pool at min(value, job count) goroutines
+// for ONE nesting level of ONE page render; jobs beyond the cap are
+// queued in the jobs channel, never dropped. Negatives are rejected
+// because the core would substitute the default for ANY value <= 0
+// SILENTLY, with no warning at all (there is no #329-style
+// max_concurrent_requests_invalid diagnostic for MaxWorkers —
+// mesi/parser.go:119-122 checks the value without logging), i.e. a
+// malformed explicit value would silently pass as the documented
+// "library default"; that silent substitution for negatives reaching
+// direct Go callers / the CLI / Caddy is the open #456 — cited here,
+// deliberately NOT fixed (one ticket = one PR; New() fails loud on
+// this path instead — the same config-load rejection as every landed
+// sibling: Apache #171, nginx #219, php-ext #211, CLI #197). Values
+// above maxMaxWorkers are rejected for the parity reasons documented
+// on that constant. Range therefore [0, 999999999]. A malformed or
+// out-of-range EXPLICIT value fails middleware creation with an error
+// naming the option — never a silent fallback (the traefik plugin API
+// has no ParseConfig, so New() is the failure site — same fail-loud
+// contract as resolveTimeout, resolveMaxResponseSize and
+// resolveMaxConcurrentRequests above; decode-level failures like
+// decimals/overflow/non-integers fail traefik's config decode before
+// New(), which also fails middleware creation — the same empirical
+// finding #210 documented, re-verified for this int field).
+func resolveMaxWorkers(v int) (int, error) {
+	if v < 0 {
+		return 0, fmt.Errorf("invalid maxWorkers %d: value must not be negative (0 = library default runtime.NumCPU()*4, range [0, %d])", v, maxMaxWorkers)
+	}
+	if v > maxMaxWorkers {
+		return 0, fmt.Errorf("invalid maxWorkers %d: value must be at most %d", v, maxMaxWorkers)
+	}
+	return v, nil
+}
+
 func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	customWriter := middleware.NewResponseWriter(rw)
 
@@ -318,6 +412,7 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			Timeout:                        p.timeout,
 			MaxResponseSize:                p.maxResponseSize,
 			MaxConcurrentRequests:          p.maxConcurrentRequests,
+			MaxWorkers:                     p.maxWorkers,
 			BlockPrivateIPs:                p.config.BlockPrivateIPs,
 			IncludeErrorMarker:             p.config.IncludeErrorMarker,
 			AllowedHosts:                   p.config.AllowedHosts,
