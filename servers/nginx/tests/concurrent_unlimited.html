@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>concurrent_unlimited</title>
+</head>
+<body>
+    <h1>concurrent_unlimited</h1>
+    <!-- Served by location /mcr-0/ (explicit mesi_max_concurrent_requests 0 = unlimited); the 20 slow includes below must fan out unthrottled. Labels 101-120 are unique to this fixture (#214).
+         Used by test.sh (#214). Do not mention the fragment
+         marker text or a literal ESI tag in this comment —
+         test.sh greps the rendered response. -->
+    <esi:include src="http://backend:8000/hold/1500/101" />
+    <esi:include src="http://backend:8000/hold/1500/102" />
+    <esi:include src="http://backend:8000/hold/1500/103" />
+    <esi:include src="http://backend:8000/hold/1500/104" />
+    <esi:include src="http://backend:8000/hold/1500/105" />
+    <esi:include src="http://backend:8000/hold/1500/106" />
+    <esi:include src="http://backend:8000/hold/1500/107" />
+    <esi:include src="http://backend:8000/hold/1500/108" />
+    <esi:include src="http://backend:8000/hold/1500/109" />
+    <esi:include src="http://backend:8000/hold/1500/110" />
+    <esi:include src="http://backend:8000/hold/1500/111" />
+    <esi:include src="http://backend:8000/hold/1500/112" />
+    <esi:include src="http://backend:8000/hold/1500/113" />
+    <esi:include src="http://backend:8000/hold/1500/114" />
+    <esi:include src="http://backend:8000/hold/1500/115" />
+    <esi:include src="http://backend:8000/hold/1500/116" />
+    <esi:include src="http://backend:8000/hold/1500/117" />
+    <esi:include src="http://backend:8000/hold/1500/118" />
+    <esi:include src="http://backend:8000/hold/1500/119" />
+    <esi:include src="http://backend:8000/hold/1500/120" />
+    <p>After mcr0 include</p>
+</body>
+</html>

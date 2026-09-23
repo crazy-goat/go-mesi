@@ -1453,6 +1453,372 @@ fi
 
 rm -f /tmp/nginx-mesi-max-response-size.conf
 
+# --- mesi_max_concurrent_requests tests (#214) ---
+# The backend (tests/server.py) serves /hold/<millis>/<label>: it
+# records request concurrency in a peak counter (reset/read via
+# /track/reset and /track/max, proxied through the nginx /track/
+# location), holds each request for <millis>, then returns a
+# "<label> Held <millis>" fragment. Each page fans out to 20 DISTINCT
+# labels so every include reaches the backend (the process-wide
+# shared libgomesi cache initialized by the suite's /cache/ locations
+# would otherwise dedup repeat fetches and never touch the counter —
+# hence every fixture owns its own label range). The peak counter is a
+# deterministic observable — DEVIATION from the issue's wall-clock AC
+# ("> 3*2s, < 20*2s"): mirrors Apache Test 36 (#170), which asserts
+# the semaphore invariant directly instead of timing (the issue's
+# "> 3*2s" floor also miscounts: 20 includes / 3 slots x 1.5s holds
+# spans ~7 waves, so any fixed small wall-clock floor is both flaky
+# and unfalsifiable against an uncapped parse on a fast backend).
+#
+# Fan-out bound for the "unlimited" cases: MESIParse drains includes
+# through a worker pool of min(MaxWorkers=NumCPU*4, 20) goroutines
+# (mesi/parser.go), i.e. at least 4 in any container — with 1500 ms
+# holds, an uncapped parse must show peak >= 4, while a cap of 3 can
+# never exceed 3 (hard semaphore invariant, mesi/fetch.go).
+
+echo "=== Test 57: mesi_max_concurrent_requests 3 — 20 includes funneled through 3 slots (#214) ==="
+# /mcr-3/ sets ONLY mesi_max_concurrent_requests 3 — an mcr-only
+# config routed through ParseJson (the routing condition's mcr arm),
+# consistent with the timeout/max-response-size keys being absent
+# (that absence is code-verified via has_timeout/has_maxrs, not
+# observable through the gauge). Assertions: peak <= 3 is
+# the cap itself (an uncapped parse would reach >= 4 per the fan-out
+# bound above, so this discriminates a broken route / a key that never
+# arrived); peak >= 2 proves the cap is a multi-slot queue, not a
+# serialisation to 1 (an exact peak == 3 would additionally require
+# all three first-wave dials to overlap — scheduling-dependent,
+# deliberately not asserted). All 20 fragments must arrive: includes
+# beyond the cap are QUEUED, not dropped.
+curl -s http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mcr-cap.html http://localhost:18080/mcr-3/
+PEAK=$(curl -s http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mcr-cap.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 2 ] && [ "$PEAK" -le 3 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After mcr3 include" /tmp/mesi-mcr-cap.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mcr-cap.html; then
+    echo "PASS: peak concurrent fetches $PEAK <= 3 (cap), >= 2 (parallel slots), all 20 fragments queued and delivered"
+else
+    echo "FAIL: mesi_max_concurrent_requests 3 did not funnel the 20 includes (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mcr-cap.html
+    rm -f /tmp/mesi-mcr-cap.html
+    exit 1
+fi
+rm -f /tmp/mesi-mcr-cap.html
+
+echo "=== Test 58: mesi_max_concurrent_requests 0 — explicit unlimited, fan-out unthrottled (#214) ==="
+# /mcr-0/ stores an explicit 0: the value must reach the core as
+# "unlimited" (ParseJson "maxConcurrentRequests":0 — an explicit 0
+# rejected Go-side would make ParseJson return NULL and the request
+# would fail closed with an empty body). Peak >= 4 distinguishes this
+# from the cap-3 location; the fan-out bound above explains the floor.
+curl -s http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mcr-zero.html http://localhost:18080/mcr-0/
+PEAK=$(curl -s http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mcr-zero.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 4 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After mcr0 include" /tmp/mesi-mcr-zero.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mcr-zero.html; then
+    echo "PASS: peak concurrent fetches $PEAK >= 4 under explicit mesi_max_concurrent_requests 0 (unlimited), all 20 fragments delivered"
+else
+    echo "FAIL: mesi_max_concurrent_requests 0 did not behave as unlimited (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mcr-zero.html
+    rm -f /tmp/mesi-mcr-zero.html
+    exit 1
+fi
+rm -f /tmp/mesi-mcr-zero.html
+
+echo "=== Test 59: mesi_max_concurrent_requests unset — backward compat, fan-out unthrottled (#214) ==="
+# /mcr-unset/ never sets the directive → the legacy parse path (no
+# ParseJson key rendered) with MaxConcurrentRequests left at 0 =
+# unlimited, byte-identical to pre-#214 behaviour. Peak >= 4 pins that
+# unset never throttles.
+curl -s http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mcr-unset.html http://localhost:18080/mcr-unset/
+PEAK=$(curl -s http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mcr-unset.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 4 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After mcr-unset include" /tmp/mesi-mcr-unset.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mcr-unset.html; then
+    echo "PASS: unset mesi_max_concurrent_requests stayed unlimited — peak $PEAK >= 4, all 20 fragments delivered"
+else
+    echo "FAIL: unset mesi_max_concurrent_requests did not behave as unlimited (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mcr-unset.html
+    rm -f /tmp/mesi-mcr-unset.html
+    exit 1
+fi
+rm -f /tmp/mesi-mcr-unset.html
+
+echo "=== Test 60: mesi_max_concurrent_requests merge — child inherits the parent's cap 3 (#214) ==="
+# Parent sets 3, the nested child location has no directive: the child
+# must inherit 3 through ngx_conf_merge_value over the unset sentinel
+# (peak <= 3 on BOTH URLs; a child that wrongly kept the sentinel
+# would fan out unthrottled and peak >= 4). Each location serves its
+# OWN fixture (disjoint label ranges, distinct chrome text) so the
+# second run cannot be served from the shared cache with a stale peak.
+for MCR_URL in http://localhost:18080/mcr-merge-inherit/ \
+               http://localhost:18080/mcr-merge-inherit/child/; do
+    curl -s http://localhost:18080/track/reset > /dev/null
+    curl -s --max-time 60 -o /tmp/mesi-mcr-inherit.html "$MCR_URL"
+    PEAK=$(curl -s http://localhost:18080/track/max)
+    FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mcr-inherit.html | wc -l | tr -d ' ')
+    if [ "$PEAK" -ge 2 ] && [ "$PEAK" -le 3 ] \
+        && [ "$FRAGMENTS" -eq 20 ] \
+        && grep -q "After mcr-inherit" /tmp/mesi-mcr-inherit.html \
+        && ! grep -q '<esi:include' /tmp/mesi-mcr-inherit.html; then
+        echo "PASS: ${MCR_URL} applied the cap of 3 (peak $PEAK, fragments $FRAGMENTS)"
+    else
+        echo "FAIL: ${MCR_URL} did not apply a cap of 3 (peak $PEAK, fragments $FRAGMENTS)"
+        head -c 500 /tmp/mesi-mcr-inherit.html
+        rm -f /tmp/mesi-mcr-inherit.html
+        exit 1
+    fi
+    rm -f /tmp/mesi-mcr-inherit.html
+done
+
+echo "=== Test 61: mesi_max_concurrent_requests merge — child's explicit 0 overrides the parent's cap 3 (#214) ==="
+# Parent keeps capping (peak <= 3), the nested child's explicit 0 must
+# win (peak >= 4) — this is what proves 0 is STORED as a configured
+# value (the unset sentinel is -1, not 0), not collapsed to unset or
+# to the parent's 3 at merge time.
+curl -s http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mcr-override.html http://localhost:18080/mcr-merge-override/
+PEAK=$(curl -s http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mcr-override.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 2 ] && [ "$PEAK" -le 3 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After mcr-override-parent include" /tmp/mesi-mcr-override.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mcr-override.html; then
+    echo "PASS: parent location keeps its own mesi_max_concurrent_requests 3 (peak $PEAK, fragments $FRAGMENTS)"
+else
+    echo "FAIL: parent location (mesi_max_concurrent_requests 3) did not cap the fan-out (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mcr-override.html
+    rm -f /tmp/mesi-mcr-override.html
+    exit 1
+fi
+rm -f /tmp/mesi-mcr-override.html
+curl -s http://localhost:18080/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mcr-override-child.html http://localhost:18080/mcr-merge-override/child/
+PEAK=$(curl -s http://localhost:18080/track/max)
+FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mcr-override-child.html | wc -l | tr -d ' ')
+if [ "$PEAK" -ge 4 ] \
+    && [ "$FRAGMENTS" -eq 20 ] \
+    && grep -q "After mcr-override-child include" /tmp/mesi-mcr-override-child.html \
+    && ! grep -q '<esi:include' /tmp/mesi-mcr-override-child.html; then
+    echo "PASS: child location's explicit mesi_max_concurrent_requests 0 overrode the parent's 3 (peak $PEAK >= 4, unlimited)"
+else
+    echo "FAIL: child location's explicit mesi_max_concurrent_requests 0 did not override the parent's 3 (peak $PEAK, fragments $FRAGMENTS)"
+    head -c 500 /tmp/mesi-mcr-override-child.html
+    rm -f /tmp/mesi-mcr-override-child.html
+    exit 1
+fi
+rm -f /tmp/mesi-mcr-override-child.html
+
+echo "=== Test 62: Config validation — mesi_max_concurrent_requests boundary values (#214) ==="
+# (a) Boundary classes ACCEPTED: explicit 0 (unlimited — the sentinel
+#     is -1, so 0 IS storable), 1 (tightest possible cap), a typical
+#     cap, and MESI_MAX_MAX_CONCURRENT_REQUESTS (999999999, the #170
+#     transport-derived cap mirrored across every platform).
+for GOOD in 0 1 3 999999999; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_max_concurrent_requests ${GOOD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-max-concurrent-requests.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-concurrent-requests.conf' < /tmp/nginx-mesi-max-concurrent-requests.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-concurrent-requests.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "syntax is ok"; then
+        echo "PASS: valid mesi_max_concurrent_requests ${GOOD} accepted by nginx -t"
+    else
+        echo "FAIL: nginx rejected valid mesi_max_concurrent_requests ${GOOD}"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (b) Format classes REJECTED: negative, sign, decimal, non-integer,
+#     trailing garbage — the issue sketched ngx_conf_set_num_slot
+#     (ngx_atoi), which rejects "-" but silently truncates "1.5" and
+#     has no upper bound; a negative must never reach the core, where
+#     #329 warns and normalizes it to 0 = unlimited (a malformed
+#     explicit value would silently pass as the documented one).
+for BAD in '-1' '+1' '1.5' 'abc' '3foo'; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_max_concurrent_requests ${BAD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-max-concurrent-requests.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-concurrent-requests.conf' < /tmp/nginx-mesi-max-concurrent-requests.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-concurrent-requests.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "must be a non-negative integer"; then
+        echo "PASS: invalid mesi_max_concurrent_requests ${BAD} rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject invalid mesi_max_concurrent_requests ${BAD} with the expected error"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (c) Range classes REJECTED: cap+1 (1000000000 — the value ngx_atoi
+#     would have accepted and every other platform rejects) and a
+#     20-digit overflow input (the setter's per-digit guard checks
+#     against the cap BEFORE the multiply, so no intermediate can
+#     ever overflow ngx_int_t regardless of argument length).
+for BAD in 1000000000 99999999999999999999; do
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      mesi_max_concurrent_requests ${BAD};" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-max-concurrent-requests.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-concurrent-requests.conf' < /tmp/nginx-mesi-max-concurrent-requests.conf
+    NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-concurrent-requests.conf 2>&1) || true
+    if echo "$NGINX_T_OUT" | grep -q "out of range"; then
+        echo "PASS: out-of-range mesi_max_concurrent_requests ${BAD} rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject out-of-range mesi_max_concurrent_requests ${BAD} with the expected error"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (d) Empty value REJECTED: "" must not silently become a silent 0
+#     (= unlimited).
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_max_concurrent_requests "";' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-mesi-max-concurrent-requests.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-concurrent-requests.conf' < /tmp/nginx-mesi-max-concurrent-requests.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-concurrent-requests.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q "requires an argument"; then
+    echo "PASS: empty mesi_max_concurrent_requests rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject an empty mesi_max_concurrent_requests"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+# (e) Missing argument REJECTED: a bare `mesi_max_concurrent_requests;`
+#     (zero args) is caught by NGX_CONF_TAKE1 before the setter runs.
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_max_concurrent_requests;' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-mesi-max-concurrent-requests.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-concurrent-requests.conf' < /tmp/nginx-mesi-max-concurrent-requests.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-concurrent-requests.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q 'invalid number of arguments in "mesi_max_concurrent_requests"'; then
+    echo "PASS: argument-less mesi_max_concurrent_requests rejected by nginx -t"
+else
+    echo "FAIL: nginx did not reject a mesi_max_concurrent_requests without an argument"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+# (f) Duplicate in the same scope REJECTED: matches the "is
+#     duplicate" behaviour of every ngx_conf_set_*_slot directive in
+#     this module (a silent last-wins would substitute the operator's
+#     intent without a word).
+printf '%b\n' \
+    'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+    'error_log stderr warn;' \
+    'events {}' \
+    'http {' \
+    '  server {' \
+    '    listen 18081;' \
+    '    location / {' \
+    '      enable_mesi on;' \
+    '      mesi_max_concurrent_requests 3;' \
+    '      mesi_max_concurrent_requests 5;' \
+    '    }' \
+    '  }' \
+    '}' > /tmp/nginx-mesi-max-concurrent-requests.conf
+docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-max-concurrent-requests.conf' < /tmp/nginx-mesi-max-concurrent-requests.conf
+NGINX_T_OUT=$(docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-max-concurrent-requests.conf 2>&1) || true
+if echo "$NGINX_T_OUT" | grep -q 'is duplicate'; then
+    echo "PASS: repeated mesi_max_concurrent_requests rejected by nginx -t (is duplicate)"
+else
+    echo "FAIL: nginx did not reject a repeated mesi_max_concurrent_requests"
+    echo "nginx -t output: $NGINX_T_OUT"
+    exit 1
+fi
+
+rm -f /tmp/nginx-mesi-max-concurrent-requests.conf
+
+echo "=== Test 63: mesi_max_concurrent_requests stress — 10 parallel renders of a 20-include page (#214) ==="
+# DEVIATION from the issue's AC "ab -n 100 -c 10": ab (apache2-utils)
+# is not installed in the test image, and the suite's convention for
+# concurrency proofs is curl + deterministic observables (Apache
+# #170's thread-safety test uses 20 parallel curls). 10 concurrent
+# renders of the explicit-0 page each fan out 20 includes (~200
+# backend fetches within a few seconds): every render must complete
+# with all 20 fragments, its chrome and no leftover tags — a hang
+# (deadlocked semaphore), an fd-exhaustion failure or a failed
+# ParseJson would drop fragments or stall past --max-time.
+STRESS_OK=1
+for i in $(seq 1 10); do
+    curl -s --max-time 60 -o /tmp/mesi-mcr-stress-$i.html http://localhost:18080/mcr-stress/ &
+done
+wait
+for i in $(seq 1 10); do
+    STRESS_FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mcr-stress-$i.html 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$STRESS_FRAGMENTS" -ne 20 ] \
+        || ! grep -q "After mcr-stress include" /tmp/mesi-mcr-stress-$i.html \
+        || grep -q '<esi:include' /tmp/mesi-mcr-stress-$i.html; then
+        echo "FAIL: parallel render $i incomplete (fragments ${STRESS_FRAGMENTS:-0})"
+        head -c 500 /tmp/mesi-mcr-stress-$i.html 2>/dev/null
+        STRESS_OK=0
+    fi
+    rm -f /tmp/mesi-mcr-stress-$i.html
+done
+if [ "$STRESS_OK" -eq 1 ]; then
+    echo "PASS: 10 parallel 20-include renders all completed (~200 fetches, no fd exhaustion, no hang)"
+else
+    exit 1
+fi
+
 docker compose down
 
 echo ""

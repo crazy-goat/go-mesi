@@ -60,6 +60,21 @@
 // distinguishable from it (see the merge comment below).
 #define MESI_MAX_MAX_RESPONSE_SIZE ((off_t)9223372036854775806LL)
 
+// Per-parse cap on concurrent <esi:include> HTTP fetches (#214). Matches
+// libgomesi's config.MaxMaxConcurrentRequests / Apache
+// MESI_MAX_MAX_CONCURRENT_REQUESTS / php-ext `max_concurrent_requests`
+// / CLI `-max-concurrent-requests`: values outside
+// [0, MESI_MAX_MAX_CONCURRENT_REQUESTS] are rejected at config load.
+// The upper bound is 999999999 — neither core nor Caddy caps the
+// value, so the bound is derived from the transport (a C `int` parsed
+// by the shared strict 9-digit parsers), the largest value every
+// platform can represent without a wrap (the #170 rationale). 0 is a
+// LEGITIMATE configured value ("unlimited" — the core only installs
+// the admission-control semaphore when MaxConcurrentRequests > 0,
+// mesi/parser.go), so the unset sentinel must stay distinguishable
+// from it (see the merge comment below).
+#define MESI_MAX_MAX_CONCURRENT_REQUESTS 999999999
+
 typedef struct {
   ngx_flag_t enable_mesi;
   ngx_int_t  max_depth;      // ESI nesting depth (#180): NGX_CONF_UNSET
@@ -83,6 +98,18 @@ typedef struct {
                              // MESI_MAX_MAX_RESPONSE_SIZE] validated
                              // by the directive setter — a stored
                              // value routes the parse through
+                             // libgomesi ParseJson; 0 ("unlimited")
+                             // IS storable, which is why the sentinel
+                             // is -1 and not 0
+  ngx_int_t  max_concurrent_requests; // Per-parse cap on concurrent
+                             // <esi:include> HTTP fetches (#214):
+                             // NGX_CONF_UNSET = unset (legacy
+                             // positional path, effective
+                             // "unlimited" applied Go-side), a stored
+                             // value is in [0,
+                             // MESI_MAX_MAX_CONCURRENT_REQUESTS]
+                             // validated by the directive setter — a
+                             // stored value routes the parse through
                              // libgomesi ParseJson; 0 ("unlimited")
                              // IS storable, which is why the sentinel
                              // is -1 and not 0
@@ -129,6 +156,9 @@ static char *ngx_http_mesi_set_timeout(ngx_conf_t *cf, ngx_command_t *cmd,
 static char *ngx_http_mesi_set_max_response_size(ngx_conf_t *cf,
                                                  ngx_command_t *cmd,
                                                  void *conf);
+static char *ngx_http_mesi_set_max_concurrent_requests(ngx_conf_t *cf,
+                                                       ngx_command_t *cmd,
+                                                       void *conf);
 
 typedef char *(*ParseFunc)(char *, int, char *);
 typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
@@ -187,6 +217,17 @@ static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("mesi_max_response_size"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_http_mesi_set_max_response_size, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, max_response_size), NULL},
+
+    // Per-parse cap on concurrent <esi:include> HTTP fetches (#214).
+    // Custom setter instead of ngx_conf_set_num_slot (the issue's
+    // sketch): the stock slot setter only runs ngx_atoi, which has no
+    // upper bound — `mesi_max_concurrent_requests 1000000000` would
+    // pass `nginx -t` and reach libgomesi, diverging from every other
+    // platform's [0, 999999999] range. See
+    // ngx_http_mesi_set_max_concurrent_requests below.
+    {ngx_string("mesi_max_concurrent_requests"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_http_mesi_set_max_concurrent_requests, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, max_concurrent_requests), NULL},
 
     {ngx_string("mesi_cache_backend"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
@@ -624,10 +665,10 @@ static void mesi_json_append_str(u_char **w, const u_char *s, size_t len) {
 }
 
 // Decimal rendering for the non-negative ngx_int_t values carried in
-// the ParseJson config blob (#184). Both values are range-validated
-// before they get here (depth by the directive setter + the parse()
-// guard, timeout by the directive setter + the parse() guard), so no
-// sign handling is needed and v == 0 renders as a single "0".
+// the ParseJson config blob (#184). All three values (depth, timeout,
+// max_concurrent_requests) are range-validated before they get here
+// (each by its directive setter + the parse() guard), so no sign
+// handling is needed and v == 0 renders as a single "0".
 static size_t mesi_json_uint_len(ngx_int_t v) {
   size_t n = 1;
   while (v >= 10) {
@@ -974,19 +1015,21 @@ static char *build_request_ctx_json(ngx_http_request_t *r, ngx_str_t *template,
 // entry point (the #167 config.ParseConfig schema, keys: maxDepth,
 // defaultUrl, allowedHosts, blockPrivateIPs,
 // allowPrivateIPsForAllowedHosts, cacheKeyTemplate, requestCtx,
-// timeoutSeconds, maxResponseSize). Only called when mesi_timeout or
-// mesi_max_response_size is set (that is what routes a request
-// through ParseJson, #184/#208 — mirror of Apache's
+// timeoutSeconds, maxResponseSize, maxConcurrentRequests). Only called
+// when mesi_timeout, mesi_max_response_size or
+// mesi_max_concurrent_requests is set (that is what routes a request
+// through ParseJson, #184/#208/#214 — mirror of Apache's
 // build_parse_json_config + used_parse_json pattern from #167).
 // Every other key mirrors exactly what the legacy positional path
-// would pass, so behaviour is identical except for the timeout and
-// the response size cap.
+// would pass, so behaviour is identical except for the values the
+// configured directives carry.
 // timeoutSeconds travels in SECONDS (the nanosecond conversion happens
-// Go-side in config.ResolveTimeout) and maxResponseSize in BYTES;
-// both are rendered only when their directive is configured — an
-// absent key resolves Go-side to the same value the positional path
-// applies (30s / 0 = unlimited), so each key's presence is purely a
-// function of its directive being set.
+// Go-side in config.ResolveTimeout), maxResponseSize in BYTES and
+// maxConcurrentRequests as a plain count; all three are rendered only
+// when their directive is configured — an absent key resolves Go-side
+// to the same value the positional path applies (30s / 0 = unlimited /
+// 0 = unlimited), so each key's presence is purely a function of its
+// directive being set.
 // cacheKeyTemplate/requestCtx are included only when a template is
 // configured, mirroring ParseWithConfigCtx's contract (absent/empty
 // template → URL-only keys; requestCtx is passed through verbatim as
@@ -1009,11 +1052,13 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
       ",\"allowPrivateIPsForAllowedHosts\":";
   static const char pfx_timeout[] = ",\"timeoutSeconds\":";
   static const char pfx_maxrs[] = ",\"maxResponseSize\":";
+  static const char pfx_maxcr[] = ",\"maxConcurrentRequests\":";
   static const char pfx_tmpl[] = ",\"cacheKeyTemplate\":";
   static const char pfx_ctx[] = ",\"requestCtx\":";
 
   int has_timeout = lcf->timeout_seconds != NGX_CONF_UNSET;
   int has_maxrs = lcf->max_response_size != NGX_CONF_UNSET;
+  int has_maxcr = lcf->max_concurrent_requests != NGX_CONF_UNSET;
   int has_tmpl = lcf->cache_key_template.len > 0;
   int has_ctx = has_tmpl && ctx_json != NULL && ctx_json[0] != '\0';
   const char *block_str = lcf->block_private_ips ? "true" : "false";
@@ -1039,6 +1084,10 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
   }
   if (has_maxrs) {
     total += sizeof(pfx_maxrs) - 1 + mesi_json_off_len(lcf->max_response_size);
+  }
+  if (has_maxcr) {
+    total += sizeof(pfx_maxcr) - 1 +
+             mesi_json_uint_len(lcf->max_concurrent_requests);
   }
   if (has_tmpl) {
     total += sizeof(pfx_tmpl) - 1 + 2 +
@@ -1089,6 +1138,11 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
     ngx_memcpy(w, pfx_maxrs, sizeof(pfx_maxrs) - 1);
     w += sizeof(pfx_maxrs) - 1;
     mesi_json_write_off(&w, lcf->max_response_size);
+  }
+  if (has_maxcr) {
+    ngx_memcpy(w, pfx_maxcr, sizeof(pfx_maxcr) - 1);
+    w += sizeof(pfx_maxcr) - 1;
+    mesi_json_write_uint(&w, lcf->max_concurrent_requests);
   }
   if (has_tmpl) {
     ngx_memcpy(w, pfx_tmpl, sizeof(pfx_tmpl) - 1);
@@ -1205,6 +1259,27 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
     return (ngx_str_t){0, (u_char *)""};
   }
 
+  // Per-parse concurrent-fetch cap (#214). The directive setter
+  // validated [0, MESI_MAX_MAX_CONCURRENT_REQUESTS] at config load and
+  // ngx_conf_merge_value only ever stores the unset sentinel or a
+  // validated value, so this guard is defense-in-depth: an
+  // unvalidated stored value fails the request closed (the module's
+  // existing fail-closed empty terminal response) with an ERR log
+  // instead of being silently clamped or defaulted — never a silent
+  // substitution. Go-side ParseJson would reject such a value anyway
+  // (warn + NULL); this keeps the failure local and logged with the
+  // directive name even against a stale libgomesi without that symbol.
+  if (lcf->max_concurrent_requests != NGX_CONF_UNSET &&
+      (lcf->max_concurrent_requests < 0 ||
+       lcf->max_concurrent_requests > MESI_MAX_MAX_CONCURRENT_REQUESTS)) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "mesi: mesi_max_concurrent_requests %d out of range "
+                  "[0, %d]; failing request (fail closed)",
+                  (int)lcf->max_concurrent_requests,
+                  MESI_MAX_MAX_CONCURRENT_REQUESTS);
+    return (ngx_str_t){0, (u_char *)""};
+  }
+
   if (lcf->cache_backend.len > 0 &&
       (!cache_initialized ||
        cache_last_backend.len != lcf->cache_backend.len ||
@@ -1284,24 +1359,26 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
 
   char *message = NULL;
 
-  // mesi_timeout / mesi_max_response_size routing (#184/#208): when
-  // either directive is set, the whole parse is routed through
-  // libgomesi's ParseJson entry point (the #167 schema) so
-  // {"timeoutSeconds":N} and/or {"maxResponseSize":N} reach the core
-  // — the same used_parse_json pattern Apache has used since #167.
-  // The blob carries every other resolved setting (depth, base URL,
-  // SSRF flags, optional cache key template + request context), so
-  // behaviour matches the legacy positional path exactly except for
-  // those two values. When the symbol is missing (older
-  // libgomesi.so), fall through to the legacy chain below with a
-  // logged per-request warning naming each set directive — the
-  // directives are ignored (30s / unlimited apply), never a crash and
+  // mesi_timeout / mesi_max_response_size / mesi_max_concurrent_requests
+  // routing (#184/#208/#214): when any of the three directives is set,
+  // the whole parse is routed through libgomesi's ParseJson entry
+  // point (the #167 schema) so {"timeoutSeconds":N},
+  // {"maxResponseSize":N} and/or {"maxConcurrentRequests":N} reach the
+  // core — the same used_parse_json pattern Apache has used since
+  // #167. The blob carries every other resolved setting (depth, base
+  // URL, SSRF flags, optional cache key template + request context),
+  // so behaviour matches the legacy positional path exactly except for
+  // those values. When the symbol is missing (older libgomesi.so),
+  // fall through to the legacy chain below with a logged per-request
+  // warning naming each set directive — the directives are ignored
+  // (30s / unlimited / unlimited apply), never a crash and
   // never a silently wrong config. used_parse_json distinguishes
   // "not attempted" from "ParseJson returned NULL" — a NULL must NOT
   // fall back silently; it fails the request closed below (config
   // errors are already logged Go-side).
   int configured = lcf->timeout_seconds != NGX_CONF_UNSET ||
-                   lcf->max_response_size != NGX_CONF_UNSET;
+                   lcf->max_response_size != NGX_CONF_UNSET ||
+                   lcf->max_concurrent_requests != NGX_CONF_UNSET;
   int used_parse_json = 0;
   if (configured) {
     if (EsiParseJson != NULL) {
@@ -1335,6 +1412,14 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
                       "mesi: mesi_max_response_size is set but libgomesi "
                       "lacks ParseJson — mesi_max_response_size ignored "
                       "(unlimited response size applies, the pre-#208 "
+                      "behaviour)");
+      }
+      if (lcf->max_concurrent_requests != NGX_CONF_UNSET) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "mesi: mesi_max_concurrent_requests is set but "
+                      "libgomesi lacks ParseJson — "
+                      "mesi_max_concurrent_requests ignored (unlimited "
+                      "concurrent requests apply, the pre-#214 "
                       "behaviour)");
       }
     }
@@ -1537,12 +1622,13 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
   }
 
   // ParseJson is optional: the JSON config entry point that carries
-  // timeoutSeconds and maxResponseSize (the #167 schema, routed when
-  // mesi_timeout or mesi_max_response_size is set, #184/#208). Older
+  // timeoutSeconds, maxResponseSize and maxConcurrentRequests (the
+  // #167 schema, routed when mesi_timeout, mesi_max_response_size or
+  // mesi_max_concurrent_requests is set, #184/#208/#214). Older
   // libgomesi.so builds without it keep working: the directives then
   // degrade to a per-request warning in parse() and the defaults
-  // apply (30s / unlimited) — never a crash, never a link-time hard
-  // dependency (same pattern as ParseWithConfigEx /
+  // apply (30s / unlimited / unlimited) — never a crash, never a
+  // link-time hard dependency (same pattern as ParseWithConfigEx /
   // ParseWithConfigCtx above).
   EsiParseJson = (ParseJsonFunc)dlsym(go_module, "ParseJson");
   if (dlerror() != NULL) {
@@ -1827,6 +1913,100 @@ static char *ngx_http_mesi_set_max_response_size(ngx_conf_t *cf,
   return NGX_CONF_OK;
 }
 
+// ngx_http_mesi_set_max_concurrent_requests parses the
+// `mesi_max_concurrent_requests` directive argument (#214). Deliberately
+// NOT ngx_conf_set_num_slot (the issue's sketch): the stock slot
+// setter only runs ngx_atoi — digits-only, but with no upper bound,
+// so `mesi_max_concurrent_requests 1000000000` would pass `nginx -t`
+// and reach libgomesi, diverging from Apache's parse_nonneg_int /
+// php-ext IS_LONG / CLI int64, which all cap at 999999999. This
+// setter mirrors those and this module's mesi_max_depth /
+// mesi_timeout / mesi_max_response_size setters: non-empty, digits
+// only (rejects "-1", "+1", "3.5", "abc", "3foo"), and the
+// accumulated value must stay within [0,
+// MESI_MAX_MAX_CONCURRENT_REQUESTS] with a per-digit overflow guard
+// BEFORE the multiply, so no intermediate ever wraps ngx_int_t
+// regardless of argument length. Explicit 0 IS accepted — the
+// documented "unlimited" value (the core only installs the
+// admission-control semaphore when MaxConcurrentRequests > 0,
+// mesi/parser.go) — unlike mesi_timeout 0. Negatives are rejected
+// (the core would only warn "max_concurrent_requests_invalid" and
+// normalize them to 0 = unlimited, #329 — a malformed explicit value
+// must never pass as the documented one). Unset (-1 sentinel) keeps
+// the legacy parse path, where libgomesi leaves the field at 0 —
+// byte-identical to pre-#214 nginx behaviour. Every rejection fails
+// config load with an ERR-level (EMERG) log that names the directive
+// and the offending value — never a silent default.
+static char *ngx_http_mesi_set_max_concurrent_requests(ngx_conf_t *cf,
+                                                       ngx_command_t *cmd,
+                                                       void *conf) {
+  ngx_http_mesi_loc_conf_t *lcf = conf;
+  ngx_str_t *value = cf->args->elts;  // value[0] = directive name (TAKE1)
+  ngx_int_t val = 0;
+  size_t i;
+
+  (void)cmd;  // offset is informational; the setter writes lcf directly.
+
+  // Reject a repeated directive in the same scope, matching the
+  // "is duplicate" behaviour of the ngx_conf_set_*_slot setters used
+  // by every other directive in this module — a silent last-wins would
+  // substitute the operator's intent without a word.
+  if (lcf->max_concurrent_requests != NGX_CONF_UNSET) {
+    return "is duplicate";
+  }
+
+  // NGX_CONF_TAKE1 guarantees one argument, but an empty quoted string
+  // ("") is still a zero-length token — reject it instead of letting
+  // the loop below parse "" as a silent 0 (= unlimited).
+  if (value[1].len == 0) {
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "\"mesi_max_concurrent_requests\" directive requires "
+                       "an argument (a non-negative integer in [0, %d])",
+                       MESI_MAX_MAX_CONCURRENT_REQUESTS);
+    return NGX_CONF_ERROR;
+  }
+
+  for (i = 0; i < value[1].len; i++) {
+    u_char c = value[1].data[i];
+    ngx_int_t d;
+    if (c < '0' || c > '9') {
+      // atoi/ngx_atoi-style coercion would silently accept "-1"
+      // (wrap when cast, or core warn+normalize to unlimited),
+      // "3.5" (truncate), "abc" (→ 0 = unlimited) and trailing
+      // garbage ("3foo" → 3). Cross-platform contract: plain integer,
+      // digits only. Fail fast.
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "invalid value \"%V\" in "
+                         "\"mesi_max_concurrent_requests\" directive: must "
+                         "be a non-negative integer (digits only) in "
+                         "[0, %d]",
+                         &value[1], MESI_MAX_MAX_CONCURRENT_REQUESTS);
+      return NGX_CONF_ERROR;
+    }
+    d = (ngx_int_t)(c - '0');
+    if (val > (MESI_MAX_MAX_CONCURRENT_REQUESTS - d) / 10) {
+      // Per-digit overflow guard against the cap BEFORE the multiply:
+      // no intermediate can ever wrap ngx_int_t regardless of argument
+      // length, and cap+1 (1000000000) / oversized digit strings are
+      // rejected instead of reaching libgomesi out of range.
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "value \"%V\" out of range in "
+                         "\"mesi_max_concurrent_requests\" directive: must "
+                         "be in [0, %d]",
+                         &value[1], MESI_MAX_MAX_CONCURRENT_REQUESTS);
+      return NGX_CONF_ERROR;
+    }
+    val = val * 10 + d;
+  }
+
+  // Explicit 0 ("0", "00", …): digits-only passed and 0 is the
+  // documented "unlimited" value — deliberately ACCEPTED (unlike
+  // mesi_timeout 0). Negatives can never reach here (digits only).
+
+  lcf->max_concurrent_requests = val;
+  return NGX_CONF_OK;
+}
+
 static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
   ngx_http_mesi_loc_conf_t *conf;
   conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_mesi_loc_conf_t));
@@ -1838,8 +2018,9 @@ static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
   conf->timeout_seconds = NGX_CONF_UNSET;
   // ngx_pcalloc zeroes the struct — without re-installing the
   // sentinel here, 0 ("unlimited") would masquerade as a configured
-  // value and route every parse through ParseJson (#208).
+  // value and route every parse through ParseJson (#208, #214).
   conf->max_response_size = NGX_CONF_UNSET;
+  conf->max_concurrent_requests = NGX_CONF_UNSET;
   conf->cache_size = NGX_CONF_UNSET;
   conf->cache_ttl = NGX_CONF_UNSET;
   conf->cache_redis_db = NGX_CONF_UNSET;
@@ -1890,6 +2071,19 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   // against; ngx_conf_set_off_slot does the same.
   ngx_conf_merge_off_value(conf->max_response_size,
                            prev->max_response_size, NGX_CONF_UNSET);
+  // Unset STAYS NGX_CONF_UNSET (-1) — deliberately NOT a merged 0:
+  // the sentinel is what distinguishes "mesi_max_concurrent_requests
+  // configured" (the parse routes through ParseJson, #214) from
+  // "unset" (the byte-identical legacy positional path, where
+  // libgomesi leaves the field at 0 = unlimited). And because 0 IS a
+  // storable value ("unlimited"), the sentinel being -1 (not 0) is
+  // what lets a child location's explicit
+  // `mesi_max_concurrent_requests 0` override a parent's cap while an
+  // unset child inherits it (same -1-sentinel rule as Apache's
+  // MesiMaxConcurrentRequests, mod_mesi.c merge_server_config, and
+  // this module's mesi_timeout / mesi_max_response_size).
+  ngx_conf_merge_value(conf->max_concurrent_requests,
+                       prev->max_concurrent_requests, NGX_CONF_UNSET);
   ngx_conf_merge_str_value(conf->cache_backend, prev->cache_backend, "");
   ngx_conf_merge_value(conf->cache_size, prev->cache_size, 10000);
   ngx_conf_merge_value(conf->cache_ttl, prev->cache_ttl, 30);

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>concurrent_unset</title>
+</head>
+<body>
+    <h1>concurrent_unset</h1>
+    <!-- Served by location /mcr-unset/ (no directive — legacy positional path, MaxConcurrentRequests stays 0 = unlimited, byte-identical to pre-#214 behaviour); the 20 slow includes below must fan out unthrottled. Labels 201-220 are unique to this fixture (#214).
+         Used by test.sh (#214). Do not mention the fragment
+         marker text or a literal ESI tag in this comment —
+         test.sh greps the rendered response. -->
+    <esi:include src="http://backend:8000/hold/1500/201" />
+    <esi:include src="http://backend:8000/hold/1500/202" />
+    <esi:include src="http://backend:8000/hold/1500/203" />
+    <esi:include src="http://backend:8000/hold/1500/204" />
+    <esi:include src="http://backend:8000/hold/1500/205" />
+    <esi:include src="http://backend:8000/hold/1500/206" />
+    <esi:include src="http://backend:8000/hold/1500/207" />
+    <esi:include src="http://backend:8000/hold/1500/208" />
+    <esi:include src="http://backend:8000/hold/1500/209" />
+    <esi:include src="http://backend:8000/hold/1500/210" />
+    <esi:include src="http://backend:8000/hold/1500/211" />
+    <esi:include src="http://backend:8000/hold/1500/212" />
+    <esi:include src="http://backend:8000/hold/1500/213" />
+    <esi:include src="http://backend:8000/hold/1500/214" />
+    <esi:include src="http://backend:8000/hold/1500/215" />
+    <esi:include src="http://backend:8000/hold/1500/216" />
+    <esi:include src="http://backend:8000/hold/1500/217" />
+    <esi:include src="http://backend:8000/hold/1500/218" />
+    <esi:include src="http://backend:8000/hold/1500/219" />
+    <esi:include src="http://backend:8000/hold/1500/220" />
+    <p>After mcr-unset include</p>
+</body>
+</html>
