@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>workers_merge_inherit_child.html</title>
+</head>
+<body>
+    <h1>workers_merge_inherit_child.html</h1>
+    <!-- Served by location /mw-merge-inherit/child/ (inherited mesi_max_workers 2); the 20 slow includes below must drain through the configured token-processing pool (peak tracked by the backend /hold counters via /track/max). Labels 1301-1320 are unique to this fixture (#219).
+         Used by test.sh (#219). Do not mention the fragment
+         marker text or a literal ESI tag in this comment —
+         test.sh greps the rendered response. -->
+    <esi:include src="http://backend:8000/hold/1500/1301" />
+    <esi:include src="http://backend:8000/hold/1500/1302" />
+    <esi:include src="http://backend:8000/hold/1500/1303" />
+    <esi:include src="http://backend:8000/hold/1500/1304" />
+    <esi:include src="http://backend:8000/hold/1500/1305" />
+    <esi:include src="http://backend:8000/hold/1500/1306" />
+    <esi:include src="http://backend:8000/hold/1500/1307" />
+    <esi:include src="http://backend:8000/hold/1500/1308" />
+    <esi:include src="http://backend:8000/hold/1500/1309" />
+    <esi:include src="http://backend:8000/hold/1500/1310" />
+    <esi:include src="http://backend:8000/hold/1500/1311" />
+    <esi:include src="http://backend:8000/hold/1500/1312" />
+    <esi:include src="http://backend:8000/hold/1500/1313" />
+    <esi:include src="http://backend:8000/hold/1500/1314" />
+    <esi:include src="http://backend:8000/hold/1500/1315" />
+    <esi:include src="http://backend:8000/hold/1500/1316" />
+    <esi:include src="http://backend:8000/hold/1500/1317" />
+    <esi:include src="http://backend:8000/hold/1500/1318" />
+    <esi:include src="http://backend:8000/hold/1500/1319" />
+    <esi:include src="http://backend:8000/hold/1500/1320" />
+    <p>After mw-inherit-child include</p>
+</body>
+</html>
