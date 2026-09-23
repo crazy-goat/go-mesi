@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +21,7 @@ func main() {
 	allowPrivateIPsForAllowedHosts := flag.Bool("allow-private-ips-for-allowed-hosts", false, "Bypass the dial-time private-IP block for hosts listed in -allowed-hosts")
 	maxDepth := flag.Int("max-depth", 5, "Maximum ESI nesting depth (0 = passthrough: no include fetched, tags stripped; unset = plugin default 5)")
 	timeout := flag.String("timeout", "", "Per-include ESI fetch budget as a Go duration (unset = plugin default 10s)")
+	maxResponseSize := flag.Int64("max-response-size", 0, "Maximum bytes per ESI include response (0 = unlimited)")
 	flag.Parse()
 
 	config := roadrunner.CreateConfig()
@@ -29,6 +31,7 @@ func main() {
 	if *timeout != "" {
 		config.Timeout = *timeout
 	}
+	config.MaxResponseSize = *maxResponseSize
 	config.BlockPrivateIPs = blockPrivateIPs
 	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
 	// Only override CreateConfig()'s default (5) when -max-depth is
@@ -67,6 +70,24 @@ func main() {
 <esi:remove><h1>Failed to include ESI</h1></esi:remove>
 </body>
 </html>`))
+	})
+	mux.HandleFunc("/bytes/{size}", func(w http.ResponseWriter, r *http.Request) {
+		size, err := strconv.Atoi(r.PathValue("size"))
+		if err != nil || size < 0 || size > 1048576 {
+			http.Error(w, "invalid byte count", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(strings.Repeat("x", size)))
+	})
+	mux.HandleFunc("/bytespage/{size}", func(w http.ResponseWriter, r *http.Request) {
+		size, err := strconv.Atoi(r.PathValue("size"))
+		if err != nil || size < 0 || size > 1048576 {
+			http.Error(w, "invalid byte count", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>BYTES-PAGE<esi:include src="http://127.0.0.1:9090/bytes/` + strconv.Itoa(size) + `" /></body></html>`))
 	})
 	mux.HandleFunc("/plain", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")

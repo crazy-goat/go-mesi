@@ -32,6 +32,41 @@ func TestInitDefaults(t *testing.T) {
 	if p.cache != nil {
 		t.Error("Expected nil cache with default config")
 	}
+	if p.config.MaxResponseSize != DefaultMaxResponseSize {
+		t.Errorf("Expected max response size %d (unlimited), got %d", DefaultMaxResponseSize, p.config.MaxResponseSize)
+	}
+}
+
+func TestInitMaxResponseSizeBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		size    int64
+		wantErr bool
+	}{
+		{name: "zero_is_unlimited", size: 0},
+		{name: "one_byte", size: 1},
+		{name: "typical_limit", size: 1048576},
+		{name: "accepted_max", size: MaxMaxResponseSize},
+		{name: "negative", size: -1, wantErr: true},
+		{name: "max_int64_overflow_boundary", size: MaxMaxResponseSize + 1, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Plugin{config: &Config{MaxResponseSize: tc.size}}
+			err := p.Init()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected max_response_size %d to fail", tc.size)
+				}
+				if !strings.Contains(err.Error(), "max_response_size") {
+					t.Errorf("expected error to name max_response_size, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Init with max_response_size %d: %v", tc.size, err)
+			}
+		})
+	}
 }
 
 func TestParseTimeoutDefaultValue(t *testing.T) {
@@ -210,6 +245,79 @@ func TestMiddlewareUsesConfiguredTimeout(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "<esi:include") {
 		t.Errorf("raw include tag left in response: %q", rec.Body.String())
+	}
+}
+
+func TestMiddlewareMaxResponseSize(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		size  int
+		limit int64
+		want  bool
+	}{
+		{name: "at_limit_accepted", size: 100, limit: 100, want: true},
+		{name: "one_over_limit_rejected", size: 101, limit: 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fragment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = w.Write([]byte(strings.Repeat("x", tc.size)))
+			}))
+			t.Cleanup(fragment.Close)
+
+			upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = w.Write([]byte(`<html><body><esi:include src="` + fragment.URL + `" /></body></html>`))
+			})
+			block := false
+			p := &Plugin{config: &Config{MaxResponseSize: tc.limit, BlockPrivateIPs: &block}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+
+			rec := httptest.NewRecorder()
+			p.Middleware(upstream).ServeHTTP(rec, httptest.NewRequest("GET", "http://example.com/", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d", rec.Code)
+			}
+			got := strings.Contains(rec.Body.String(), strings.Repeat("x", tc.size))
+			if got != tc.want {
+				t.Errorf("included body presence = %v, want %v (body %q)", got, tc.want, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "esi:include") {
+				t.Errorf("include tag was not processed: %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareMaxResponseSizeLegacyDefaultUnlimited(t *testing.T) {
+	fragment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(strings.Repeat("x", 200)))
+	}))
+	t.Cleanup(fragment.Close)
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + fragment.URL + `" /></body></html>`))
+	})
+	block := false
+	p := &Plugin{config: &Config{BlockPrivateIPs: &block}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	p.Middleware(upstream).ServeHTTP(rec, httptest.NewRequest("GET", "http://example.com/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), strings.Repeat("x", 200)) {
+		t.Errorf("historical unlimited default did not include fragment")
+	}
+	if strings.Contains(rec.Body.String(), "esi:include") {
+		t.Errorf("include tag was not processed: %q", rec.Body.String())
 	}
 }
 
