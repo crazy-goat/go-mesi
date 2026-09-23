@@ -25,6 +25,7 @@ func TestNewTimeoutAcceptedValues(t *testing.T) {
 		{name: "minutes_1m", value: "1m", want: time.Minute},
 		{name: "composite_1h30m", value: "1h30m", want: 90 * time.Minute},
 		{name: "decimal_1500ms", value: "1500ms", want: 1500 * time.Millisecond},
+		{name: "decimal_1.5s", value: "1.5s", want: 1500 * time.Millisecond},
 		{name: "maximum_24h", value: "24h", want: 24 * time.Hour},
 		{name: "maximum_86400s", value: "86400s", want: 24 * time.Hour},
 	}

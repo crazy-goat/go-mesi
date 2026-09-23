@@ -81,7 +81,7 @@ func holdHandler(w http.ResponseWriter, r *http.Request) {
 // the timeout tests a page with a slow fragment (the root HtmlTemplate's
 // include points at the fast /esi). The duration is validated exactly
 // like holdHandler's, because it is interpolated into the include URL;
-// strconv.Atoi + Itoi also normalises it, so only validated digits reach
+// strconv.Atoi + Itoa also normalises it, so only validated digits reach
 // the markup.
 func slowPageHandler(w http.ResponseWriter, r *http.Request) {
 	millis, err := strconv.Atoi(r.PathValue("millis"))

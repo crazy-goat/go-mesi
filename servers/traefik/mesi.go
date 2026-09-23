@@ -26,7 +26,8 @@ type Config struct {
 	// Timeout is the per-include fetch budget as a Go duration string
 	// (e.g. "10s", "5m") — the same grammar as Caddy's `timeout` and
 	// this plugin's cacheTTL. A nil pointer is "unset" (default 10s,
-	// the value this plugin has always hardcoded). A non-nil pointer
+	// the value this plugin has used since its inception — 10s from
+	// day one). A non-nil pointer
 	// must parse as a duration in [1s, 24h] or New() rejects it — an
 	// explicit value is never silently replaced by the default.
 	Timeout                        *string  `json:"timeout" yaml:"timeout"`
@@ -110,7 +111,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 // resolveTimeout maps the `timeout` plugin option (see Config) onto the
 // per-include fetch budget. Unset (nil) → 10s: the budget this plugin has
-// always hardcoded (= mesi.CreateDefaultConfig()'s 10s and Caddy's default
+// always used (= mesi.CreateDefaultConfig()'s 10s and Caddy's default
 // — the Go-direct platforms' default; libgomesi's C-entry-point 30s
 // (config.DefaultTimeoutSeconds) never applies here because traefik calls
 // the Go mesi package directly). An explicit value must parse as a Go
