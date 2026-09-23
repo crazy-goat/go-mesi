@@ -1,5 +1,10 @@
 APXS ?= apxs
 LIBGOMESI_PATH ?= /usr/lib/libgomesi.so
+APR_CANDIDATES ?= $(strip $(shell $(APXS) -q APR_INCLUDEDIR 2>/dev/null)) \
+	/opt/homebrew/opt/apr/include/apr-1 \
+	/usr/local/opt/apr/include/apr-1 \
+	/usr/include/apr-1.0
+APR_INCLUDEDIR ?= $(firstword $(foreach d,$(APR_CANDIDATES),$(if $(wildcard $(d)/apr_general.h),$(d))))
 
 all: mod_mesi.so
 
@@ -12,10 +17,10 @@ install: mod_mesi.so
 clean:
 	rm -f mod_mesi.so mod_mesi.la *.lo *.slo test_directives
 
-test: test-unit test-integration test-build-sh
+test: test-unit test-integration test-build-sh test-apr-includes
 
 test-unit: test_directives.c
-	$(CC) -o test_directives test_directives.c -I/usr/include/apr-1.0 -lapr-1 -laprutil-1
+	$(CC) -o test_directives test_directives.c -I$(APR_INCLUDEDIR) -lapr-1 -laprutil-1
 	./test_directives
 
 test-integration:
@@ -27,4 +32,7 @@ test-integration:
 test-build-sh:
 	./test_build_sh.sh
 
-.PHONY: all install clean test test-unit test-integration test-build-sh
+test-apr-includes:
+	./test_makefile.sh
+
+.PHONY: all install clean test test-unit test-integration test-build-sh test-apr-includes
