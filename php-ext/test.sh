@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
 # CI launches php -S on port 8080 (tests.yaml); the local docker path
-# publishes host port 18080 (container-internal 8080 is unchanged).
+# publishes host port $PHP_EXT_HTTP_PORT, default 18080 (container-internal 8080 is unchanged).
 # TEST_PORT can be pre-set to run the CI-mode suite locally on a port
 # other than 8080.
 TEST_PORT=${TEST_PORT:-8080}
 if [ "${CI:-}" != "true" ]; then
-  TEST_PORT=18080
+  TEST_PORT=${PHP_EXT_HTTP_PORT:-18080}
 fi
 
 if [ "${CI:-}" != "true" ]; then

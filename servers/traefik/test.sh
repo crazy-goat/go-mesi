@@ -5,11 +5,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$SCRIPT_DIR"
 
+HTTP_PORT=${TRAEFIK_HTTP_PORT:-18080}
+
 docker compose up -d
 
 echo "Waiting for services to be ready..."
 for i in $(seq 1 30); do
-    if curl -sf -H "Host: domain.com" http://localhost:18080/ >/dev/null 2>&1; then
+    if curl -sf -H "Host: domain.com" http://localhost:$HTTP_PORT/ >/dev/null 2>&1; then
         echo "Services ready"
         break
     fi
@@ -23,7 +25,7 @@ for i in $(seq 1 30); do
 done
 
 echo "=== Test 1: Traefik starts with mesi plugin ==="
-RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: domain.com" http://localhost:18080/)
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: domain.com" http://localhost:$HTTP_PORT/)
 if [ "$RESPONSE" = "200" ]; then
     echo "PASS: Traefik responds with 200"
 else
@@ -33,7 +35,7 @@ else
 fi
 
 echo "=== Test 2: ESI remove ==="
-RESPONSE=$(curl -s -H "Host: domain.com" http://localhost:18080/)
+RESPONSE=$(curl -s -H "Host: domain.com" http://localhost:$HTTP_PORT/)
 if echo "$RESPONSE" | grep -q "Failed to include ESI"; then
     echo "FAIL: ESI remove content still present"
     echo "Response: $RESPONSE"
@@ -44,7 +46,7 @@ else
 fi
 
 echo "=== Test 3: HTML content served through mesi plugin ==="
-RESPONSE=$(curl -s -H "Host: domain.com" http://localhost:18080/)
+RESPONSE=$(curl -s -H "Host: domain.com" http://localhost:$HTTP_PORT/)
 if echo "$RESPONSE" | grep -q "Welcome to ESI Test"; then
     echo "PASS: HTML content served through mesi plugin"
 else
@@ -55,7 +57,7 @@ else
 fi
 
 echo "=== Test 4: Content-Length correctness ==="
-HEADERS=$(curl -s -D - -H "Host: domain.com" http://localhost:18080/ -o /tmp/mesi-traefik-body.txt 2>/dev/null)
+HEADERS=$(curl -s -D - -H "Host: domain.com" http://localhost:$HTTP_PORT/ -o /tmp/mesi-traefik-body.txt 2>/dev/null)
 ACTUAL_BODY_SIZE=$(wc -c < /tmp/mesi-traefik-body.txt)
 HEADER_CL=$(echo "$HEADERS" | grep -i "Content-Length" | awk '{print $2}' | tr -d '\r')
 if [ -n "$HEADER_CL" ]; then
@@ -74,7 +76,7 @@ fi
 rm -f /tmp/mesi-traefik-body.txt
 
 echo "=== Test 5: ESI raw include tag removed from response ==="
-RESPONSE=$(curl -s -H "Host: domain.com" http://localhost:18080/)
+RESPONSE=$(curl -s -H "Host: domain.com" http://localhost:$HTTP_PORT/)
 if echo "$RESPONSE" | grep -q "<esi:include"; then
     echo "FAIL: Raw <esi:include> tag still present in response"
     echo "Response: $RESPONSE"
@@ -85,7 +87,7 @@ else
 fi
 
 echo "=== Test 6: Non-HTML content passthrough ==="
-HEADERS=$(curl -sI -H "Host: domain.com" http://localhost:18080/esi)
+HEADERS=$(curl -sI -H "Host: domain.com" http://localhost:$HTTP_PORT/esi)
 CT=$(echo "$HEADERS" | grep -i "Content-Type" || true)
 if echo "$CT" | grep -qi "text/html"; then
     echo "PASS: /esi endpoint returns text/html (processed by mesi)"
@@ -94,7 +96,7 @@ else
 fi
 
 echo "=== Test 7: timeout 2s aborts 5s include ==="
-TIME_TOTAL=$(curl -s --max-time 20 -H "Host: timeout2.domain.com" http://localhost:18080/slow/5000 -o /tmp/mesi-traefik-timeout-body.txt -w "%{time_total}")
+TIME_TOTAL=$(curl -s --max-time 20 -H "Host: timeout2.domain.com" http://localhost:$HTTP_PORT/slow/5000 -o /tmp/mesi-traefik-timeout-body.txt -w "%{time_total}")
 if awk -v t="$TIME_TOTAL" 'BEGIN{exit !(t >= 1.5 && t <= 4.0)}'; then
     echo "PASS: include aborted at ${TIME_TOTAL}s (window [1.5, 4.0])"
 else
@@ -122,7 +124,7 @@ else
 fi
 
 echo "=== Test 8: timeout 30s lets 10s include through ==="
-TIME_TOTAL=$(curl -s --max-time 40 -H "Host: timeout30.domain.com" http://localhost:18080/slow/10000 -o /tmp/mesi-traefik-timeout-body.txt -w "%{time_total}")
+TIME_TOTAL=$(curl -s --max-time 40 -H "Host: timeout30.domain.com" http://localhost:$HTTP_PORT/slow/10000 -o /tmp/mesi-traefik-timeout-body.txt -w "%{time_total}")
 if awk -v t="$TIME_TOTAL" 'BEGIN{exit !(t >= 9.5 && t <= 25.0)}'; then
     echo "PASS: 10s backend ran to completion in ${TIME_TOTAL}s (window [9.5, 25.0])"
 else
@@ -140,7 +142,7 @@ else
 fi
 
 echo "=== Test 9: absent timeout keeps the 10s default (11s include aborted) ==="
-TIME_TOTAL=$(curl -s --max-time 55 -H "Host: domain.com" http://localhost:18080/slow/11000 -o /tmp/mesi-traefik-timeout-body.txt -w "%{time_total}")
+TIME_TOTAL=$(curl -s --max-time 55 -H "Host: domain.com" http://localhost:$HTTP_PORT/slow/11000 -o /tmp/mesi-traefik-timeout-body.txt -w "%{time_total}")
 if awk -v t="$TIME_TOTAL" 'BEGIN{exit !(t >= 9.5 && t <= 14.0)}'; then
     echo "PASS: default budget aborted the 11s include at ${TIME_TOTAL}s (window [9.5, 14.0])"
 else
@@ -176,7 +178,7 @@ rm -f /tmp/mesi-traefik-timeout-body.txt
 # body was delivered, not just the marker).
 
 echo "=== Test 10: maxResponseSize 100 — 200-byte include rejected (#210) ==="
-RESPONSE=$(curl -s --max-time 15 -H "Host: maxrs100.domain.com" http://localhost:18080/bytespage/200)
+RESPONSE=$(curl -s --max-time 15 -H "Host: maxrs100.domain.com" http://localhost:$HTTP_PORT/bytespage/200)
 if echo "$RESPONSE" | grep -q "MesiBytesPayload" \
     || ! echo "$RESPONSE" | grep -q "BYTES-PAGE" \
     || ! echo "$RESPONSE" | grep -q "After bytes include" \
@@ -190,7 +192,7 @@ echo "PASS: 200-byte include rejected by maxResponseSize 100 (marker absent, tag
 # Control: the SAME page served through the default middleware
 # (maxResponseSize absent) must deliver the payload — proves the
 # rejection above comes from the option, not a broken fixture.
-CONTROL=$(curl -s --max-time 15 -H "Host: domain.com" http://localhost:18080/bytespage/200)
+CONTROL=$(curl -s --max-time 15 -H "Host: domain.com" http://localhost:$HTTP_PORT/bytespage/200)
 if echo "$CONTROL" | grep -q "MesiBytesPayload 200" \
     && echo "$CONTROL" | grep -q "After bytes include" \
     && ! echo "$CONTROL" | grep -q '<esi:include'; then
@@ -203,7 +205,7 @@ else
 fi
 
 echo "=== Test 11: maxResponseSize 1048576 — 500 KB include delivered (#210) ==="
-curl -s --max-time 60 -o /tmp/mesi-traefik-maxrs-accept.txt -H "Host: maxrs1m.domain.com" http://localhost:18080/bytespage/500000
+curl -s --max-time 60 -o /tmp/mesi-traefik-maxrs-accept.txt -H "Host: maxrs1m.domain.com" http://localhost:$HTTP_PORT/bytespage/500000
 SIZE=$(wc -c < /tmp/mesi-traefik-maxrs-accept.txt | tr -d ' ')
 if [ "$SIZE" -gt 500000 ] \
     && grep -q "MesiBytesPayload 500000" /tmp/mesi-traefik-maxrs-accept.txt \
@@ -225,7 +227,7 @@ echo "=== Test 12: absent maxResponseSize — unlimited, 10 MB + 1 include deliv
 # mesi/fetch.go). The body is 10 MB + 1 byte: the issue's proposed
 # implicit 10 MB default would reject it, so a passing test pins
 # "absent → unlimited" byte-identical to pre-#210 behaviour.
-curl -s --max-time 60 -o /tmp/mesi-traefik-maxrs-absent.txt -H "Host: domain.com" http://localhost:18080/bytespage/10485761
+curl -s --max-time 60 -o /tmp/mesi-traefik-maxrs-absent.txt -H "Host: domain.com" http://localhost:$HTTP_PORT/bytespage/10485761
 SIZE=$(wc -c < /tmp/mesi-traefik-maxrs-absent.txt | tr -d ' ')
 if [ "$SIZE" -gt 10485761 ] \
     && grep -q "MesiBytesPayload 10485761" /tmp/mesi-traefik-maxrs-absent.txt \
@@ -267,9 +269,9 @@ rm -f /tmp/mesi-traefik-maxrs-absent.txt
 # invariant, mesi/fetch.go:148-154).
 
 echo "=== Test 13: maxConcurrentRequests 3 — 20 includes funneled through 3 slots (#215) ==="
-curl -s -H "Host: domain.com" http://localhost:18080/track/reset > /dev/null
-curl -s --max-time 60 -H "Host: mcr3.domain.com" http://localhost:18080/holdpage/20/500 -o /tmp/mesi-traefik-mcr-cap.txt
-PEAK=$(curl -s -H "Host: domain.com" http://localhost:18080/track/max)
+curl -s -H "Host: domain.com" http://localhost:$HTTP_PORT/track/reset > /dev/null
+curl -s --max-time 60 -H "Host: mcr3.domain.com" http://localhost:$HTTP_PORT/holdpage/20/500 -o /tmp/mesi-traefik-mcr-cap.txt
+PEAK=$(curl -s -H "Host: domain.com" http://localhost:$HTTP_PORT/track/max)
 FRAGMENTS=$(grep -o "Held 500" /tmp/mesi-traefik-mcr-cap.txt | wc -l | tr -d ' ')
 if [ "$PEAK" -ge 2 ] && [ "$PEAK" -le 3 ] \
     && [ "$FRAGMENTS" -eq 20 ] \
@@ -291,9 +293,9 @@ echo "=== Test 14: maxConcurrentRequests 0 — explicit unlimited, fan-out unthr
 # "unlimited" (no admission semaphore — the core only installs it when
 # the value is > 0, mesi/parser.go:78). Peak >= 4 distinguishes this
 # from the cap-3 middleware; the fan-out bound above explains the floor.
-curl -s -H "Host: domain.com" http://localhost:18080/track/reset > /dev/null
-curl -s --max-time 60 -H "Host: mcr0.domain.com" http://localhost:18080/holdpage/20/500 -o /tmp/mesi-traefik-mcr-zero.txt
-PEAK=$(curl -s -H "Host: domain.com" http://localhost:18080/track/max)
+curl -s -H "Host: domain.com" http://localhost:$HTTP_PORT/track/reset > /dev/null
+curl -s --max-time 60 -H "Host: mcr0.domain.com" http://localhost:$HTTP_PORT/holdpage/20/500 -o /tmp/mesi-traefik-mcr-zero.txt
+PEAK=$(curl -s -H "Host: domain.com" http://localhost:$HTTP_PORT/track/max)
 FRAGMENTS=$(grep -o "Held 500" /tmp/mesi-traefik-mcr-zero.txt | wc -l | tr -d ' ')
 if [ "$PEAK" -ge 4 ] \
     && [ "$FRAGMENTS" -eq 20 ] \
@@ -315,9 +317,9 @@ echo "=== Test 15: absent maxConcurrentRequests — backward compat, fan-out unt
 # ServeHTTP's EsiParserConfig literal forwards the resolved 0
 # (unlimited), byte-identical to pre-#215 behaviour. Peak >= 4 pins
 # that absence never throttles.
-curl -s -H "Host: domain.com" http://localhost:18080/track/reset > /dev/null
-curl -s --max-time 60 -H "Host: domain.com" http://localhost:18080/holdpage/20/500 -o /tmp/mesi-traefik-mcr-absent.txt
-PEAK=$(curl -s -H "Host: domain.com" http://localhost:18080/track/max)
+curl -s -H "Host: domain.com" http://localhost:$HTTP_PORT/track/reset > /dev/null
+curl -s --max-time 60 -H "Host: domain.com" http://localhost:$HTTP_PORT/holdpage/20/500 -o /tmp/mesi-traefik-mcr-absent.txt
+PEAK=$(curl -s -H "Host: domain.com" http://localhost:$HTTP_PORT/track/max)
 FRAGMENTS=$(grep -o "Held 500" /tmp/mesi-traefik-mcr-absent.txt | wc -l | tr -d ' ')
 if [ "$PEAK" -ge 4 ] \
     && [ "$FRAGMENTS" -eq 20 ] \
@@ -342,9 +344,9 @@ rm -f /tmp/mesi-traefik-mcr-absent.txt
 # pool; maxConcurrentRequests (#215) is the separate fetch-admission limit.
 # The absent case uses the core's runtime.NumCPU()*4 library default.
 echo "=== Test 16: maxWorkers 2 — deep nesting drains completely (#220) ==="
-curl -s --max-time 60 -H "Host: maxworkers2.domain.com" http://localhost:18080/deeppage/4/4 -o /tmp/mesi-traefik-maxworkers-2.txt
+curl -s --max-time 60 -H "Host: maxworkers2.domain.com" http://localhost:$HTTP_PORT/deeppage/4/4 -o /tmp/mesi-traefik-maxworkers-2.txt
 echo "=== Test 17: maxWorkers 100 — deep nesting matches cap 2 (#220) ==="
-curl -s --max-time 60 -H "Host: maxworkers100.domain.com" http://localhost:18080/deeppage/4/100 -o /tmp/mesi-traefik-maxworkers-100.txt
+curl -s --max-time 60 -H "Host: maxworkers100.domain.com" http://localhost:$HTTP_PORT/deeppage/4/100 -o /tmp/mesi-traefik-maxworkers-100.txt
 if grep -q "AFTER-DEEP" /tmp/mesi-traefik-maxworkers-2.txt \
     && grep -q "AFTER-DEEP" /tmp/mesi-traefik-maxworkers-100.txt \
     && ! grep -q '<esi:include' /tmp/mesi-traefik-maxworkers-2.txt \
@@ -381,7 +383,7 @@ fi
 rm -f /tmp/mesi-traefik-maxworkers-2.txt /tmp/mesi-traefik-maxworkers-100.txt
 
 echo "=== Test 18: maxWorkers absent — library default remains in effect (#220) ==="
-curl -s --max-time 60 -H "Host: domain.com" http://localhost:18080/deeppage/4/4 -o /tmp/mesi-traefik-maxworkers-absent.txt
+curl -s --max-time 60 -H "Host: domain.com" http://localhost:$HTTP_PORT/deeppage/4/4 -o /tmp/mesi-traefik-maxworkers-absent.txt
 if grep -q "AFTER-DEEP" /tmp/mesi-traefik-maxworkers-absent.txt \
     && ! grep -q '<esi:include' /tmp/mesi-traefik-maxworkers-absent.txt; then
     for LEVEL in 4 3 2 1; do

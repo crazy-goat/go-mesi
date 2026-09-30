@@ -7,7 +7,7 @@ services:
       - ./Caddyfile.ci:/etc/caddy/Caddyfile
       - ./tests:/app
     ports:
-      - 18080:8080
+      - "${FRANKENPHP_HTTP_PORT:-18080}:8080"
     depends_on:
       test-server:
         condition: service_started
