@@ -5,7 +5,7 @@ services:
       context: ../..
       dockerfile: servers/nginx/Dockerfile
     ports:
-      - "18080:8080"
+      - "${NGINX_HTTP_PORT:-18080}:8080"
     depends_on:
       backend:
         condition: service_started

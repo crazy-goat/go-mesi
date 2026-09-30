@@ -5,28 +5,28 @@ services:
       context: ../..
       dockerfile: servers/apache/Dockerfile
     ports:
-      - "18080:80"
-      - "8081:8081"
-      - "8082:8082"
-      - "8083:8083"
-      - "8084:8084"
-      - "8085:8085"
-      - "8086:8086"
+      - "${APACHE_HTTP_PORT:-18080}:80"
+      - "${APACHE_PORT_8081:-8081}:8081"
+      - "${APACHE_PORT_8082:-8082}:8082"
+      - "${APACHE_PORT_8083:-8083}:8083"
+      - "${APACHE_PORT_8084:-8084}:8084"
+      - "${APACHE_PORT_8085:-8085}:8085"
+      - "${APACHE_PORT_8086:-8086}:8086"
       # 8087 = MesiTimeout 2, 8088 = MesiTimeout 30 (#167).
-      - "8087:8087"
-      - "8088:8088"
+      - "${APACHE_PORT_8087:-8087}:8087"
+      - "${APACHE_PORT_8088:-8088}:8088"
       # 8089 = MesiMaxResponseSize 100, 8090 = MesiMaxResponseSize
       # 1048576, 8091 = MesiMaxResponseSize 0 (#169).
-      - "8089:8089"
-      - "8090:8090"
-      - "8091:8091"
+      - "${APACHE_PORT_8089:-8089}:8089"
+      - "${APACHE_PORT_8090:-8090}:8090"
+      - "${APACHE_PORT_8091:-8091}:8091"
       # 8092 = MesiMaxConcurrentRequests 3, 8093 =
       # MesiMaxConcurrentRequests 0 (#170).
-      - "8092:8092"
-      - "8093:8093"
+      - "${APACHE_PORT_8092:-8092}:8092"
+      - "${APACHE_PORT_8093:-8093}:8093"
       # 8094 = MesiMaxWorkers 2, 8095 = MesiMaxWorkers 0 (#171).
-      - "8094:8094"
-      - "8095:8095"
+      - "${APACHE_PORT_8094:-8094}:8094"
+      - "${APACHE_PORT_8095:-8095}:8095"
     environment:
       - MESI_FORCE_FLATTEN_ERROR=${MESI_FORCE_FLATTEN_ERROR:-}
     volumes:

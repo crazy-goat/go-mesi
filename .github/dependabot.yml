@@ -1,0 +1,82 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "chore(deps)"
+  - package-ecosystem: gomod
+    directory: "/cli"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "chore(deps)"
+  - package-ecosystem: gomod
+    directory: "/servers/caddy"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "chore(deps)"
+  - package-ecosystem: gomod
+    directory: "/servers/proxy"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "chore(deps)"
+  - package-ecosystem: gomod
+    directory: "/servers/roadrunner"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "chore(deps)"
+  - package-ecosystem: gomod
+    directory: "/servers/test-server"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "chore(deps)"
+  - package-ecosystem: gomod
+    directory: "/servers/traefik"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "chore(deps)"
+  - package-ecosystem: gomod
+    directory: "/servers/traefik/yaegi-check"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "chore(deps)"
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "ci(deps)"

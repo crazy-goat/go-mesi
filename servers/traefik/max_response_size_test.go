@@ -12,8 +12,8 @@ import (
 
 // Boundary classes for the `maxResponseSize` option: every accepted
 // edge (0, min, typical, accepted max) and every documented reject
-// class gets its own subtest — see docs/workflow.md Rules
-// ("Boundary classes ... each get a subtest").
+// class gets its own subtest — see AGENTS.md Conventions
+// ("Boundary classes ... each get their own subtest").
 
 func TestNewMaxResponseSizeAcceptedValues(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
