@@ -3,7 +3,15 @@
 ## [Unreleased]
 
 ### Changed
-- Process, docs and CI aligned with the crazy-goat standard: `docs/workflow.md` and `docs/release-workflow.md` follow the shared templates, `AGENTS.md` holds the project commands, `bin/` has the issue and worktree helper scripts, the CI aggregate job is now `ci-ok` and heavy jobs are skipped for documentation-only changes, Dependabot is enabled, issue and PR templates follow the standard, release notes come from the CHANGELOG section of the tag, and the Docker test suites publish host ports through overridable variables (for example `APACHE_HTTP_PORT`, default `18080`)
+- `docs/workflow.md` and `docs/release-workflow.md` follow the shared crazy-goat templates; project commands live in the new `AGENTS.md`
+- `bin/` has the shared issue and worktree helper scripts, plus `worktree-setup.sh` and `worktree-teardown.sh`
+- CI: the aggregate job is now `ci-ok`, heavy jobs are skipped for documentation-only changes, and workflows run on pushes to `main`
+- Dependabot is enabled for the Go modules and GitHub Actions
+- Issue and pull request templates follow the standard
+- GitHub release notes come from the `CHANGELOG.md` section of the tag, shortened when they exceed the GitHub size limit
+- Docker test suites publish host ports through overridable variables (for example `APACHE_HTTP_PORT`, default `18080`)
+- `tests/Makefile` `build-server` now builds `tests/test-server`, the binary `run-test.sh` starts
+- Apache tests read the error log with `docker compose exec` instead of a hard-coded container name
 
 ## [0.11.0] - 2026-09-30
 
