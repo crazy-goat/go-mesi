@@ -71,7 +71,7 @@ Docker suites publish host ports from compose variables (`APACHE_HTTP_PORT`,
 keep the old ports (18080 and 8081-8095). `bin/worktree.sh` writes free ports to
 `.env.worktree`; load it with `set -a && . ./.env.worktree && set +a`.
 All suites of one worktree share one `COMPOSE_PROJECT_NAME`, so run one Docker suite
-at a time per worktree. `bin/worktree-teardown.sh` stops every stack.
+at a time per worktree. `bin/worktree-teardown.sh` stops every stack of the worktree (it loads `.env.worktree` and refuses to run without a project name).
 
 `libgomesi.so`, `libgomesi.a`, `*.test`, `coverage.*` and
 `servers/test-server/test-server` are generated and must never be committed.
