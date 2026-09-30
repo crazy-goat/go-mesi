@@ -385,12 +385,12 @@ if [ "$OCCURRENCES" -ne 2 ]; then
     exit 1
 fi
 # Apache writes our ap_log_rerror messages to error.log (not stderr),
-# so use docker exec to read them. Confirms InitCache was driven.
-INIT_LOG=$(docker exec apache-apache-1 grep -c "mesi: cache initialized" /var/log/apache2/error.log 2>/dev/null || echo 0)
+# so use docker compose exec to read them. Confirms InitCache was driven.
+INIT_LOG=$(docker compose exec -T apache grep -c "mesi: cache initialized" /var/log/apache2/error.log 2>/dev/null || true)
 if [ "$INIT_LOG" -gt 0 ]; then
     echo "PASS: InitCache called by libgomesi ($INIT_LOG cache-init log lines in apache error.log)"
     # Print one matched entry for diagnostics.
-    docker exec apache-apache-1 grep "mesi: cache initialized" /var/log/apache2/error.log | head -1
+    docker compose exec -T apache grep "mesi: cache initialized" /var/log/apache2/error.log | head -1
 else
     echo "FAIL: No 'mesi: cache initialized' log line found in apache error.log — InitCache wiring broken"
     docker compose down
@@ -428,10 +428,10 @@ if [ "$OCCURRENCES" -ne 2 ]; then
     exit 1
 fi
 # The NOTICE log proves libgomesi InitHTTPClient was wired in child_init.
-INIT_LOG=$(docker exec apache-apache-1 grep -c "mesi: shared HTTP client initialized" /var/log/apache2/error.log 2>/dev/null || echo 0)
+INIT_LOG=$(docker compose exec -T apache grep -c "mesi: shared HTTP client initialized" /var/log/apache2/error.log 2>/dev/null || true)
 if [ "$INIT_LOG" -gt 0 ]; then
     echo "PASS: Shared HTTP client initialized by libgomesi ($INIT_LOG log line(s) in apache error.log)"
-    docker exec apache-apache-1 grep "mesi: shared HTTP client initialized" /var/log/apache2/error.log | head -1
+    docker compose exec -T apache grep "mesi: shared HTTP client initialized" /var/log/apache2/error.log | head -1
 else
     echo "FAIL: No 'mesi: shared HTTP client initialized' log line found — MesiSharedHTTPClient wiring broken"
     docker compose down
