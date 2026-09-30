@@ -79,3 +79,8 @@ servers/apache/*.la
 servers/apache/*.lo
 servers/apache/*.slo
 servers/apache/tests/test.txt
+
+# Worktree scratch files (see docs/workflow.md)
+/findings.md
+/review.md
+/.env.worktree
