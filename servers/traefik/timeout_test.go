@@ -11,7 +11,7 @@ import (
 
 // Boundary classes for the `timeout` option: every accepted edge (min,
 // max) and every documented reject class gets its own subtest — see
-// docs/workflow.md Rules ("Boundary classes ... each get a subtest").
+// AGENTS.md Conventions ("Boundary classes ... each get their own subtest").
 
 func TestNewTimeoutAcceptedValues(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})

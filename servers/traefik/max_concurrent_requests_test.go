@@ -14,8 +14,8 @@ import (
 
 // Boundary classes for the `maxConcurrentRequests` option: every
 // accepted edge (0, min, typical, accepted max) and every documented
-// reject class gets its own subtest — see docs/workflow.md Rules
-// ("Boundary classes ... each get a subtest").
+// reject class gets its own subtest — see AGENTS.md Conventions
+// ("Boundary classes ... each get their own subtest").
 
 func TestNewMaxConcurrentRequestsAcceptedValues(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
