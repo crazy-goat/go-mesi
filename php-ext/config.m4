@@ -6,7 +6,7 @@ if test "$PHP_GOMESI" != "no"; then
   if test -r "$PHP_GOMESI/libgomesi.so"; then
     MESI_LIBDIR="$PHP_GOMESI"
   else
-    # Ewentualne przeszukanie innych ścieżek.
+    # Optionally search other paths.
     SEARCH_PATH="/usr/local /usr"
     SEARCH_FOR="libgomesi.so"
 
