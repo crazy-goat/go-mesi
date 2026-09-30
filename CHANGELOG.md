@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Process, docs and CI aligned with the crazy-goat standard: `docs/workflow.md` and `docs/release-workflow.md` follow the shared templates, `AGENTS.md` holds the project commands, `bin/` has the issue and worktree helper scripts, the CI aggregate job is now `ci-ok` and heavy jobs are skipped for documentation-only changes, Dependabot is enabled, issue and PR templates follow the standard, release notes come from the CHANGELOG section of the tag, and the Docker test suites publish host ports through overridable variables (for example `APACHE_HTTP_PORT`, default `18080`)
+
 ## [0.11.0] - 2026-09-30
 
 ### Added
