@@ -65,19 +65,21 @@ git push origin refs/tags/vX.Y.Z
 ```
 
 The tag is a Go module version of the root module `github.com/crazy-goat/go-mesi`.
-The nested modules (`cli`, `servers/*`) use `replace` directives and are not tagged
-separately. If a nested module ever gets its own release, its tag needs the directory
-prefix (for example `cli/vX.Y.Z`).
+Nested modules are not tagged separately.
 
 ## 5. GitHub Release
 
 Pushing the tag starts `.github/workflows/release.yaml`. It creates the GitHub Release
 with the notes from the matching `CHANGELOG.md` section, and fails when the section
-is missing. Tags with a `-` (for example `v1.0.0-rc.1`) become pre-releases.
+is missing. The workflow reads `CHANGELOG.md` from the tagged commit, so the release PR
+with the `## [X.Y.Z]` section must be **merged before** you tag. Tags with a `-`
+(for example `v1.0.0-rc.1`) become pre-releases.
 
 GitHub rejects release notes longer than 125000 characters, and go-mesi changelog entries
 are long. The workflow cuts the notes below 120000 characters at a line boundary and adds a
-link to `CHANGELOG.md` at the tag. Keep entries short so that the cut is not needed: put
+link to `CHANGELOG.md` at the tag. This is an intentional difference from the shared
+`release.yml` in `crazy-goat/.github`, which has no truncation. Keep the local workflow
+until the shared one gets it. Keep entries short so that the cut is not needed: put
 the detail in the issue or in `docs/`, and link it from the entry.
 
 ```bash

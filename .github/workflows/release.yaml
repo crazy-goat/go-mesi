@@ -15,10 +15,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Extract release notes from CHANGELOG.md
+        # Reads CHANGELOG.md from the tagged commit: merge the `## [X.Y.Z]` section before tagging.
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
