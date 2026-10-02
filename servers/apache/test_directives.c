@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <assert.h>
 #include <apr_general.h>
 #include <apr_pools.h>
@@ -60,6 +61,8 @@ typedef struct {
      * -1 = unset (libgomesi leaves 0 = unlimited). 0 IS a storable
      * configured value — "unlimited" — so the sentinel must stay -1. */
     apr_off_t max_response_size;
+    apr_off_t max_body_size;
+    int on_oversize;
     /* Concurrent-fetch cap per page render (#170).
      * -1 = unset (libgomesi leaves 0 = unlimited). 0 IS a storable
      * configured value — "unlimited" — so the sentinel must stay -1. */
@@ -650,6 +653,28 @@ static const char *set_cache_memcached_servers(mesi_config *conf, const char *ar
     return NULL;
 }
 
+static const char *set_max_body_size(mesi_config *conf, const char *arg) {
+    apr_off_t v = 0;
+    const char *err = parse_nonneg_off(pool, arg, "MesiMaxBodySize",
+                                       0, MESI_MAX_MAX_RESPONSE_SIZE, &v);
+    if (err) {
+        return err;
+    }
+    conf->max_body_size = v;
+    return NULL;
+}
+
+static const char *set_on_oversize(mesi_config *conf, const char *arg) {
+    if (strcasecmp(arg, "pass") == 0) {
+        conf->on_oversize = 0;
+    } else if (strcasecmp(arg, "error") == 0) {
+        conf->on_oversize = 1;
+    } else {
+        return apr_psprintf(pool, "MesiOnOversize must be 'pass' or 'error' (got: %s)", arg);
+    }
+    return NULL;
+}
+
 static void init_config(mesi_config *conf) {
     memset(conf, 0, sizeof(*conf));
     conf->allowed_hosts = apr_array_make(pool, 4, sizeof(const char *));
@@ -667,11 +692,15 @@ static void init_config(mesi_config *conf) {
     conf->max_depth = -1;
     conf->timeout_seconds = -1;
     conf->max_response_size = -1;
+    conf->max_body_size = -1;
+    conf->on_oversize = -1;
     conf->max_concurrent_requests = -1;
     conf->max_workers = -1;
 }
 
 static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merged) {
+    merged->max_body_size = (add->max_body_size != -1) ? add->max_body_size : base->max_body_size;
+    merged->on_oversize = (add->on_oversize != -1) ? add->on_oversize : base->on_oversize;
     merged->enable_mesi = (add->enable_mesi != 0) ? add->enable_mesi : base->enable_mesi;
     merged->allowed_hosts = (add->allowed_hosts->nelts > 0) ? add->allowed_hosts : base->allowed_hosts;
     merged->block_private_ips = (add->block_private_ips != -1) ? add->block_private_ips : base->block_private_ips;
@@ -2417,6 +2446,61 @@ TEST(merge_timeout_both_unset) {
     ASSERT_EQ(merged.timeout_seconds, -1);
 }
 
+/* --- MesiMaxBodySize / MesiOnOversize --- */
+
+TEST(mbs_default_unset) {
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_EQ(conf.max_body_size, (apr_off_t)-1);
+    ASSERT_EQ(conf.on_oversize, -1);
+}
+
+TEST(mbs_valid_and_zero) {
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_max_body_size(&conf, "1048576"));
+    ASSERT_EQ(conf.max_body_size, (apr_off_t)1048576);
+    ASSERT_NULL(set_max_body_size(&conf, "0"));
+    ASSERT_EQ(conf.max_body_size, (apr_off_t)0);
+}
+
+TEST(mbs_invalid_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_max_body_size(&conf, "-1");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiMaxBodySize");
+    ASSERT_NOT_NULL(set_max_body_size(&conf, "10abc"));
+    ASSERT_NOT_NULL(set_max_body_size(&conf, ""));
+    ASSERT_EQ(conf.max_body_size, (apr_off_t)-1);
+}
+
+TEST(oversize_modes) {
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_on_oversize(&conf, "error"));
+    ASSERT_EQ(conf.on_oversize, 1);
+    ASSERT_NULL(set_on_oversize(&conf, "PASS"));
+    ASSERT_EQ(conf.on_oversize, 0);
+    const char *err = set_on_oversize(&conf, "drop");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiOnOversize");
+    ASSERT_EQ(conf.on_oversize, 0);
+}
+
+TEST(merge_mbs_child_zero_overrides) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.max_body_size = 1000;
+    base.on_oversize = 1;
+    add.max_body_size = 0;
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.max_body_size, (apr_off_t)0);
+    ASSERT_EQ(merged.on_oversize, 1);
+}
+
 /* --- MesiMaxResponseSize directive tests (#169) --- */
 
 TEST(mrs_default_unset) {
@@ -3282,6 +3366,13 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_mw_child_inherits);
     RUN_TEST(merge_mw_child_zero_overrides);
     RUN_TEST(merge_mw_both_unset);
+
+    printf("\nTesting MesiMaxBodySize / MesiOnOversize:\n");
+    RUN_TEST(mbs_default_unset);
+    RUN_TEST(mbs_valid_and_zero);
+    RUN_TEST(mbs_invalid_rejected);
+    RUN_TEST(oversize_modes);
+    RUN_TEST(merge_mbs_child_zero_overrides);
 
     apr_pool_destroy(pool);
 
