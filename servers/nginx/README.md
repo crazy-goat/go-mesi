@@ -650,7 +650,7 @@ The module buffers the whole parent HTML response before it processes `<esi:incl
 - **Syntax:** `mesi_max_body_size <bytes>`
 - **Default:** `0` (unlimited, the behaviour before #537)
 - **Context:** `location`
-- **Range:** `[0, MESI_MAX_MAX_BODY_SIZE]`, the same cap as `mesi_max_response_size`. The value is plain bytes, digits only (`10m` is rejected).
+- **Range:** `[0, 9223372036854775806]`, the same cap as `mesi_max_response_size`. The value is plain bytes, digits only (`10m` is rejected).
 
 #### `mesi_on_oversize`
 

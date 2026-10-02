@@ -2260,7 +2260,7 @@ else
 fi
 
 echo "=== Test 74: parent body under mesi_max_body_size is processed (#537) ==="
-RESPONSE=$(curl -s --max-time 10 http://localhost:"$HTTP_PORT"/body-pass/ok/index.html) || true
+RESPONSE=$(curl -s --max-time 10 http://localhost:"$HTTP_PORT"/body-pass/under/index.html) || true
 if echo "$RESPONSE" | grep -q "After include" \
     && echo "$RESPONSE" | grep -q "included content from backend" \
     && ! echo "$RESPONSE" | grep -q '<esi:include'; then
@@ -2383,7 +2383,7 @@ for GOOD in 'mesi_max_body_size 0;' 'mesi_max_body_size 1048576;' 'mesi_on_overs
         exit 1
     fi
 done
-for BAD in 'mesi_max_body_size -1;' 'mesi_max_body_size 10m;' 'mesi_max_body_size abc;' 'mesi_max_body_size "";' 'mesi_max_body_size 9223372036854775807;' 'mesi_on_oversize drop;'; do
+for BAD in 'mesi_max_body_size -1;' 'mesi_max_body_size 10m;' 'mesi_max_body_size abc;' 'mesi_max_body_size "";' 'mesi_max_body_size 9223372036854775807;' 'mesi_on_oversize drop;' 'mesi_max_body_size 1; mesi_max_body_size 2;' 'mesi_on_oversize pass; mesi_on_oversize error;'; do
     if nginx_conf_check "$BAD" | grep -q 'syntax is ok'; then
         echo "FAIL: nginx accepted invalid '$BAD'"
         exit 1
@@ -2392,6 +2392,22 @@ for BAD in 'mesi_max_body_size -1;' 'mesi_max_body_size 10m;' 'mesi_max_body_siz
     fi
 done
 rm -f /tmp/nginx-mesi-body.conf
+
+echo "=== Test 81: mesi_on_oversize pass — body arrives in several reads, buffered part is sent first (#537) ==="
+# 5 pieces of 600 bytes (a..e), limit 1000: the limit is crossed in the
+# second read, so the first piece is already buffered when we switch.
+EXPECTED_SHA=$(python3 -c "import sys; sys.stdout.write(''.join(c*600 for c in 'abcde'))" | shasum -a 256 | cut -d' ' -f1)
+SLOW_OUT=$(curl -s --max-time 20 -o /tmp/mesi-body-slow.html \
+    -w '%{http_code} %{size_download}' \
+    http://localhost:"$HTTP_PORT"/body-pass/slow/slow-nolen/5) || true
+SLOW_SHA=$(shasum -a 256 < /tmp/mesi-body-slow.html | cut -d' ' -f1)
+rm -f /tmp/mesi-body-slow.html
+if [ "$SLOW_OUT" = "200 3000" ] && [ "$SLOW_SHA" = "$EXPECTED_SHA" ]; then
+    echo "PASS: body delivered byte for byte after switching to pass-through ($SLOW_OUT)"
+else
+    echo "FAIL: pass mode changed the body (got '$SLOW_OUT' sha $SLOW_SHA, expected '200 3000' sha $EXPECTED_SHA)"
+    exit 1
+fi
 
 docker compose down
 

@@ -567,6 +567,12 @@ static ngx_int_t ngx_http_html_mesi_body_filter(ngx_http_request_t *r,
           new_cap *= 2;
         }
 
+        // The size check above guarantees new_len fits the limit, so do
+        // not let doubling overshoot it (up to 2x the limit otherwise).
+        if (lcf->max_body_size > 0 && (off_t)new_cap > lcf->max_body_size) {
+          new_cap = (size_t)lcf->max_body_size;
+        }
+
         u_char *new_data = ngx_palloc(r->pool, new_cap);
         if (new_data == NULL) {
           return NGX_ERROR;
