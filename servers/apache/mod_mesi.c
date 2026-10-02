@@ -751,9 +751,73 @@ static const char *set_enable_mesi(cmd_parms *cmd, void *cfg, int flag) {
     return NULL;
 }
 
+// mesi_unicode_space returns the width in bytes of the UTF-8 rune starting
+// at p when it is a Unicode whitespace rune that libgomesi's strings.Fields
+// treats as a separator (Go's unicode.IsSpace), 0 otherwise. Covers every
+// non-ASCII whitespace rune: U+0085, U+00A0, U+1680, U+2000..U+200A, U+2028,
+// U+2029, U+202F, U+205F and U+3000. Any other byte — including truncated or
+// invalid UTF-8, which Go decodes as U+FFFD (not a space) — forms a hostname
+// token, so it is not whitespace here. Mirrors ngx_http_mesi_unicode_space
+// in the nginx module (#354).
+static apr_size_t mesi_unicode_space(const unsigned char *p, apr_size_t len) {
+    if (len >= 2 && p[0] == 0xc2 && (p[1] == 0x85 || p[1] == 0xa0)) {
+        return 2; // U+0085 NEL, U+00A0 no-break space
+    }
+    if (len >= 3 && p[0] == 0xe1 && p[1] == 0x9a && p[2] == 0x80) {
+        return 3; // U+1680 ogham space mark
+    }
+    if (len >= 3 && p[0] == 0xe2 && p[1] == 0x80 &&
+        ((p[2] >= 0x80 && p[2] <= 0x8a) // U+2000..U+200A
+         || p[2] == 0xa8                // U+2028 line separator
+         || p[2] == 0xa9                // U+2029 paragraph separator
+         || p[2] == 0xaf))              // U+202F narrow no-break space
+    {
+        return 3;
+    }
+    if (len >= 3 && p[0] == 0xe2 && p[1] == 0x81 && p[2] == 0x9f) {
+        return 3; // U+205F medium mathematical space
+    }
+    if (len >= 3 && p[0] == 0xe3 && p[1] == 0x80 && p[2] == 0x80) {
+        return 3; // U+3000 ideographic space
+    }
+    return 0;
+}
+
+// mesi_has_hostname_token reports whether s contains at least one token
+// under Go's strings.Fields tokenization, which libgomesi applies to the
+// joined allowlist: ASCII whitespace (space, tab, CR, LF, VT, FF) and every
+// Unicode whitespace rune are separators, any other byte (including invalid
+// UTF-8) is part of a token.
+static int mesi_has_hostname_token(const char *s) {
+    const unsigned char *p = (const unsigned char *)s;
+    apr_size_t len = strlen(s);
+    apr_size_t i = 0;
+    while (i < len) {
+        unsigned char c = p[i];
+        apr_size_t ws_width;
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f') {
+            i++;
+            continue;
+        }
+        ws_width = mesi_unicode_space(p + i, len - i);
+        if (ws_width == 0) {
+            return 1; // a non-whitespace rune: the value has a hostname token
+        }
+        i += ws_width;
+    }
+    return 0;
+}
+
 static const char *set_allowed_hosts(cmd_parms *cmd, void *cfg, const char *arg) {
     mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     const char *host;
+    // Reject values without any hostname (#358): an empty or
+    // whitespace-only value (ASCII or Unicode, e.g. U+00A0) would
+    // tokenize to an empty allowlist in libgomesi and silently disable
+    // the restriction the operator intended (fail-open).
+    if (!arg || !mesi_has_hostname_token(arg)) {
+        return "MesiAllowedHosts must contain at least one hostname";
+    }
     while (*arg) {
         // Skip whitespace (space, tab)
         while (*arg && (*arg == ' ' || *arg == '\t')) arg++;

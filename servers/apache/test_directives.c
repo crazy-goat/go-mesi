@@ -104,8 +104,68 @@ typedef struct {
 #define MESI_MAX_MAX_WORKERS 999999999
 
 /* Directive parsing functions (copied from mod_mesi.c for testing) */
+// mesi_unicode_space returns the width in bytes of the UTF-8 rune starting
+// at p when it is a Unicode whitespace rune that libgomesi's strings.Fields
+// treats as a separator (Go's unicode.IsSpace), 0 otherwise. Covers every
+// non-ASCII whitespace rune: U+0085, U+00A0, U+1680, U+2000..U+200A, U+2028,
+// U+2029, U+202F, U+205F and U+3000. Any other byte — including truncated or
+// invalid UTF-8, which Go decodes as U+FFFD (not a space) — forms a hostname
+// token, so it is not whitespace here. Mirrors ngx_http_mesi_unicode_space
+// in the nginx module (#354).
+static apr_size_t mesi_unicode_space(const unsigned char *p, apr_size_t len) {
+    if (len >= 2 && p[0] == 0xc2 && (p[1] == 0x85 || p[1] == 0xa0)) {
+        return 2; // U+0085 NEL, U+00A0 no-break space
+    }
+    if (len >= 3 && p[0] == 0xe1 && p[1] == 0x9a && p[2] == 0x80) {
+        return 3; // U+1680 ogham space mark
+    }
+    if (len >= 3 && p[0] == 0xe2 && p[1] == 0x80 &&
+        ((p[2] >= 0x80 && p[2] <= 0x8a) // U+2000..U+200A
+         || p[2] == 0xa8                // U+2028 line separator
+         || p[2] == 0xa9                // U+2029 paragraph separator
+         || p[2] == 0xaf))              // U+202F narrow no-break space
+    {
+        return 3;
+    }
+    if (len >= 3 && p[0] == 0xe2 && p[1] == 0x81 && p[2] == 0x9f) {
+        return 3; // U+205F medium mathematical space
+    }
+    if (len >= 3 && p[0] == 0xe3 && p[1] == 0x80 && p[2] == 0x80) {
+        return 3; // U+3000 ideographic space
+    }
+    return 0;
+}
+
+// mesi_has_hostname_token reports whether s contains at least one token
+// under Go's strings.Fields tokenization, which libgomesi applies to the
+// joined allowlist: ASCII whitespace (space, tab, CR, LF, VT, FF) and every
+// Unicode whitespace rune are separators, any other byte (including invalid
+// UTF-8) is part of a token.
+static int mesi_has_hostname_token(const char *s) {
+    const unsigned char *p = (const unsigned char *)s;
+    apr_size_t len = strlen(s);
+    apr_size_t i = 0;
+    while (i < len) {
+        unsigned char c = p[i];
+        apr_size_t ws_width;
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f') {
+            i++;
+            continue;
+        }
+        ws_width = mesi_unicode_space(p + i, len - i);
+        if (ws_width == 0) {
+            return 1; // a non-whitespace rune: the value has a hostname token
+        }
+        i += ws_width;
+    }
+    return 0;
+}
+
 static const char *parse_allowed_hosts(mesi_config *conf, const char *arg) {
     const char *host;
+    if (!arg || !mesi_has_hostname_token(arg)) {
+        return "MesiAllowedHosts must contain at least one hostname";
+    }
     while (*arg) {
         while (*arg && (*arg == ' ' || *arg == '\t')) arg++;
         host = arg;
@@ -689,7 +749,8 @@ TEST(empty_string) {
 
     const char *err = parse_allowed_hosts(&conf, "");
 
-    ASSERT_NULL(err);
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "at least one hostname");
     ASSERT_EQ(conf.allowed_hosts->nelts, 0);
 }
 
@@ -699,8 +760,85 @@ TEST(whitespace_only) {
 
     const char *err = parse_allowed_hosts(&conf, "   \t  ");
 
-    ASSERT_NULL(err);
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "at least one hostname");
     ASSERT_EQ(conf.allowed_hosts->nelts, 0);
+}
+
+/* #358: the full ASCII whitespace set of strings.Fields is rejected,
+ * not only space and tab. */
+TEST(whitespace_only_ascii_control) {
+    const char *values[] = {"\r", "\n", "\v", "\f", " \r\n\v\f\t "};
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+        mesi_config conf;
+        init_config(&conf);
+
+        const char *err = parse_allowed_hosts(&conf, values[i]);
+
+        ASSERT_NOT_NULL(err);
+        ASSERT_EQ(conf.allowed_hosts->nelts, 0);
+    }
+}
+
+/* #358: Unicode-whitespace-only values tokenize to zero hosts in
+ * libgomesi (strings.Fields), so they are rejected too. Covers every
+ * non-ASCII rune of Go's unicode.IsSpace. */
+TEST(whitespace_only_unicode) {
+    const char *values[] = {
+        "\xc2\x85",                 /* U+0085 */
+        "\xc2\xa0",                 /* U+00A0 */
+        "\xe1\x9a\x80",             /* U+1680 */
+        "\xe2\x80\x80",             /* U+2000 */
+        "\xe2\x80\x8a",             /* U+200A */
+        "\xe2\x80\xa8",             /* U+2028 */
+        "\xe2\x80\xa9",             /* U+2029 */
+        "\xe2\x80\xaf",             /* U+202F */
+        "\xe2\x81\x9f",             /* U+205F */
+        "\xe3\x80\x80",             /* U+3000 */
+        " \xc2\xa0\t\xe3\x80\x80 ", /* mixed ASCII and Unicode */
+    };
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+        mesi_config conf;
+        init_config(&conf);
+
+        const char *err = parse_allowed_hosts(&conf, values[i]);
+
+        ASSERT_NOT_NULL(err);
+        ASSERT_EQ(conf.allowed_hosts->nelts, 0);
+    }
+}
+
+/* A rune next to the whitespace range (U+200B zero width space) is not
+ * whitespace, and invalid or truncated UTF-8 is a token, exactly like
+ * strings.Fields. */
+TEST(non_whitespace_runes_are_tokens) {
+    const char *values[] = {
+        "\xe2\x80\x8b", /* U+200B zero width space: not unicode.IsSpace */
+        "\xc2",         /* truncated UTF-8 */
+        "\xe2\x80",     /* truncated 3-byte sequence */
+        "\xff",         /* invalid byte */
+    };
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+        mesi_config conf;
+        init_config(&conf);
+
+        const char *err = parse_allowed_hosts(&conf, values[i]);
+
+        ASSERT_NULL(err);
+        ASSERT_EQ(conf.allowed_hosts->nelts, 1);
+    }
+}
+
+/* A real hostname surrounded by Unicode whitespace is accepted. */
+TEST(hostname_with_unicode_whitespace) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = parse_allowed_hosts(&conf, "\xc2\xa0 backend \xe3\x80\x80");
+
+    ASSERT_NULL(err);
+    ASSERT_EQ(conf.allowed_hosts->nelts, 3);
+    ASSERT_STR_EQ(((const char **)conf.allowed_hosts->elts)[1], "backend");
 }
 
 TEST(block_private_on) {
@@ -2852,6 +2990,10 @@ int main(int argc, char *argv[]) {
     RUN_TEST(mixed_whitespace);
     RUN_TEST(empty_string);
     RUN_TEST(whitespace_only);
+    RUN_TEST(whitespace_only_ascii_control);
+    RUN_TEST(whitespace_only_unicode);
+    RUN_TEST(non_whitespace_runes_are_tokens);
+    RUN_TEST(hostname_with_unicode_whitespace);
 
     printf("\nTesting set_block_private_ips():\n");
     RUN_TEST(block_private_on);
