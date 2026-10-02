@@ -89,14 +89,15 @@ func TestSingleFetchUrlRelativeUrl(t *testing.T) {
 
 func TestSingleFetchUrlWithServer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/ok" {
+		switch r.URL.Path {
+		case "/ok":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("OK"))
-		} else if r.URL.Path == "/esi" {
+		case "/esi":
 			w.Header().Set("Edge-control", "dca=esi")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ESI_CONTENT"))
-		} else {
+		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte("NOT_FOUND"))
 		}
@@ -436,10 +437,11 @@ func TestMESIParseContextCancellationMidParse(t *testing.T) {
 
 func TestFetchConcurrentBothSucceed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/primary" {
+		switch r.URL.Path {
+		case "/primary":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("PRIMARY"))
-		} else if r.URL.Path == "/alt" {
+		case "/alt":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ALT"))
 		}
@@ -463,10 +465,11 @@ func TestFetchConcurrentBothSucceed(t *testing.T) {
 
 func TestFetchConcurrentPrimaryFailsAltSucceeds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/primary" {
+		switch r.URL.Path {
+		case "/primary":
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte("NOT_FOUND"))
-		} else if r.URL.Path == "/alt" {
+		case "/alt":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ALT_RESPONSE"))
 		}
@@ -490,10 +493,11 @@ func TestFetchConcurrentPrimaryFailsAltSucceeds(t *testing.T) {
 
 func TestFetchConcurrentPrimaryFailsImmediatelyAltSucceeds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/primary" {
+		switch r.URL.Path {
+		case "/primary":
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte("PRIMARY_ERROR"))
-		} else if r.URL.Path == "/alt" {
+		case "/alt":
 			time.Sleep(50 * time.Millisecond)
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ALT_RESPONSE"))
