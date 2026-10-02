@@ -23,7 +23,7 @@ start_proxy() {
 	local extra_flags="$1"
 	[ -n "$PROXY_PID" ] && kill "$PROXY_PID" 2>/dev/null || true
 	sleep 2
-	"$PROXY_BINARY" --listen ":$PROXY_PORT" --backend "http://localhost:$TEST_SERVER_PORT" $extra_flags &
+	"$PROXY_BINARY" --listen ":$PROXY_PORT" --backend "http://localhost:$TEST_SERVER_PORT" "$extra_flags" &
 	PROXY_PID=$!
 	sleep 1
 }

@@ -23,7 +23,7 @@ mkdir -p "$SRC_DIR"
 tar -xzf "$NGINX_TAR" -C "$BUILD_DIR"
 mv "$BUILD_DIR/nginx-${NGINX_VERSION}" "$SRC_DIR"
 
-cd "$SRC_DIR"
+cd "$SRC_DIR" || exit
 ./configure --add-dynamic-module=../mesi
 make -j8
 

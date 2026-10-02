@@ -25,7 +25,7 @@ APACHE_PORT_8095=${APACHE_PORT_8095:-8095}
 docker compose up -d --wait
 
 echo "=== Test 1: Simple ESI include ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/index.html)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/index.html)
 if echo "$RESPONSE" | grep -q "After include"; then
     echo "PASS: ESI include processed"
 else
@@ -35,7 +35,7 @@ else
 fi
 
 echo "=== Test 2: Surrogate-Capability header ==="
-HEADERS=$(curl -sI http://localhost:$HTTP_PORT/index.html)
+HEADERS=$(curl -sI http://localhost:"$HTTP_PORT"/index.html)
 if echo "$HEADERS" | grep -q "Surrogate-Capability"; then
     echo "PASS: Surrogate-Capability header present"
 else
@@ -45,7 +45,7 @@ else
 fi
 
 echo "=== Test 3: Non-HTML content (text/plain) ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/noesi.txt)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/noesi.txt)
 if echo "$RESPONSE" | grep -q "esi:include"; then
     echo "PASS: Plain text content bypassed ESI filter (tags preserved verbatim)"
 else
@@ -55,7 +55,7 @@ else
 fi
 
 echo "=== Test 4: Content-Type check ==="
-CT=$(curl -sI http://localhost:$HTTP_PORT/index.html | grep -i "Content-Type")
+CT=$(curl -sI http://localhost:"$HTTP_PORT"/index.html | grep -i "Content-Type")
 if echo "$CT" | grep -q "text/html"; then
     echo "PASS: Content-Type is text/html"
 else
@@ -65,7 +65,7 @@ else
 fi
 
 echo "=== Test 5: AllowedHosts - allowed host (backend) ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/ssrf-allowed.html)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/ssrf-allowed.html)
 if echo "$RESPONSE" | grep -q "allowed content"; then
     echo "PASS: Include from allowed host (backend) succeeded"
 else
@@ -75,7 +75,7 @@ else
 fi
 
 echo "=== Test 6: AllowedHosts - blocked host (evil.com) ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/ssrf-blocked.html)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/ssrf-blocked.html)
 if echo "$RESPONSE" | grep -q "blocked.txt"; then
     echo "FAIL: Include from non-allowed host was NOT blocked"
     echo "Response: $RESPONSE"
@@ -85,7 +85,7 @@ else
 fi
 
 echo "=== Test 6b: AllowPrivateIPsForAllowedHosts On - allowed private host succeeds (#168) ==="
-RESPONSE=$(curl -s http://localhost:$APACHE_PORT_8081/ssrf-allow-private-on.html)
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8081"/ssrf-allow-private-on.html)
 if echo "$RESPONSE" | grep -q "allowed content from backend"; then
     echo "PASS: Include from allowed private host (backend) succeeded with bypass On"
 else
@@ -102,7 +102,7 @@ else
 fi
 
 echo "=== Test 6c: AllowPrivateIPsForAllowedHosts Off (default) - allowed private host blocked (#168) ==="
-RESPONSE=$(curl -s http://localhost:$APACHE_PORT_8082/ssrf-allow-private-off.html)
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8082"/ssrf-allow-private-off.html)
 if echo "$RESPONSE" | grep -q "allowed content from backend"; then
     echo "FAIL: Include from private host succeeded despite bypass Off"
     echo "Response: $RESPONSE"
@@ -112,7 +112,7 @@ else
 fi
 
 echo "=== Test 6d: AllowPrivateIPsForAllowedHosts On but host NOT in AllowedHosts - still blocked (#168) ==="
-RESPONSE=$(curl -s http://localhost:$APACHE_PORT_8081/ssrf-allow-private-notallowed.html)
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8081"/ssrf-allow-private-notallowed.html)
 if echo "$RESPONSE" | grep -q "allowed content from backend"; then
     echo "FAIL: Include from private host outside AllowedHosts succeeded"
     echo "Response: $RESPONSE"
@@ -122,25 +122,27 @@ else
 fi
 
 echo "=== Test 7: Large response (multi-brigade) - direct ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/large.html)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/large.html)
 if echo "$RESPONSE" | grep -q "After include"; then
     PASS_LARGE=1
     echo "PASS: Large response ESI include processed (direct)"
 else
     PASS_LARGE=0
     echo "FAIL: Large response ESI include not processed (direct)"
+    # shellcheck disable=SC2000 # byte count including the trailing newline is intended
     echo "Response length: $(echo "$RESPONSE" | wc -c)"
     echo "Response (first 500 chars): $(echo "$RESPONSE" | head -c 500)"
 fi
 
 echo "=== Test 8: Large response (multi-brigade) - via ProxyPass ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/backend/large.html)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/backend/large.html)
 if echo "$RESPONSE" | grep -q "allowed content"; then
     PASS_PROXY=1
     echo "PASS: Large response ESI include processed (proxied)"
 else
     PASS_PROXY=0
     echo "FAIL: Large response ESI include not processed (proxied)"
+    # shellcheck disable=SC2000 # byte count including the trailing newline is intended
     echo "Response length: $(echo "$RESPONSE" | wc -c)"
     echo "Response (first 500 chars): $(echo "$RESPONSE" | head -c 500)"
 fi
@@ -149,18 +151,18 @@ if [ "$PASS_LARGE" -eq 0 ]; then exit 1; fi
 if [ "$PASS_PROXY" -eq 0 ]; then exit 1; fi
 
 echo "=== Test 9: Content-Type preserved after ESI processing ==="
-CT=$(curl -s -D - http://localhost:$HTTP_PORT/large.html -o /dev/null 2>/dev/null | grep -i "Content-Type" || true)
+CT=$(curl -s -D - http://localhost:"$HTTP_PORT"/large.html -o /dev/null 2>/dev/null | grep -i "Content-Type" || true)
 if echo "$CT" | grep -q "text/html"; then
     echo "PASS: Content-Type is text/html"
 else
     echo "FAIL: Content-Type missing or wrong"
     echo "Headers:"
-    curl -s -D - http://localhost:$HTTP_PORT/large.html -o /dev/null
+    curl -s -D - http://localhost:"$HTTP_PORT"/large.html -o /dev/null
     exit 1
 fi
 
 echo "=== Test 10: Large response body size matches (no truncation) ==="
-BODY_SIZE=$(curl -s http://localhost:$HTTP_PORT/large.html | wc -c)
+BODY_SIZE=$(curl -s http://localhost:"$HTTP_PORT"/large.html | wc -c)
 if [ "$BODY_SIZE" -gt 102000 ]; then
     echo "PASS: Large response body is $BODY_SIZE bytes (expected > 102000)"
 else
@@ -169,7 +171,7 @@ else
 fi
 
 echo "=== Test 11: JSON content (application/json) not processed ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/noesi.json)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/noesi.json)
 if echo "$RESPONSE" | grep -q "esi:include"; then
     echo "PASS: JSON content not processed (raw esi:include preserved)"
 else
@@ -177,7 +179,7 @@ else
     echo "Response: $RESPONSE"
     exit 1
 fi
-CT=$(curl -sI http://localhost:$HTTP_PORT/noesi.json | grep -i "Content-Type")
+CT=$(curl -sI http://localhost:"$HTTP_PORT"/noesi.json | grep -i "Content-Type")
 if echo "$CT" | grep -qi "application/json"; then
     echo "PASS: JSON Content-Type is application/json"
 else
@@ -186,7 +188,7 @@ else
 fi
 
 echo "=== Test 12: CSS content (text/css) not processed ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/noesi.css)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/noesi.css)
 if echo "$RESPONSE" | grep -q "esi:include"; then
     echo "PASS: CSS content not processed (raw esi:include preserved)"
 else
@@ -194,7 +196,7 @@ else
     echo "Response: $RESPONSE"
     exit 1
 fi
-CT=$(curl -sI http://localhost:$HTTP_PORT/noesi.css | grep -i "Content-Type")
+CT=$(curl -sI http://localhost:"$HTTP_PORT"/noesi.css | grep -i "Content-Type")
 if echo "$CT" | grep -qi "text/css"; then
     echo "PASS: CSS Content-Type is text/css"
 else
@@ -205,7 +207,7 @@ fi
 echo "=== Test 13: Flatten error fallback (synthetic MESI_FORCE_FLATTEN_ERROR) ==="
 docker compose down
 MESI_FORCE_FLATTEN_ERROR=1 docker compose up -d --wait
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/index.html)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/index.html)
 if echo "$RESPONSE" | grep -q "esi:include"; then
     echo "PASS: Flatten error fallback - ESI tags preserved verbatim (no processing)"
 else
@@ -227,7 +229,7 @@ docker compose down
 docker compose up -d --wait
 
 echo "=== Test 14: Nested ESI includes ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/nested.html)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/nested.html)
 if echo "$RESPONSE" | grep -q "included content from backend"; then
     echo "PASS: Nested ESI include resolved correctly"
 else
@@ -238,7 +240,7 @@ else
 fi
 
 echo "=== Test 15: Local backend include (replacing GitHub raw URLs) ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/index.html)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/index.html)
 if echo "$RESPONSE" | grep -q "included content from backend"; then
     echo "PASS: Local backend include works (no GitHub dependency)"
 else
@@ -249,7 +251,7 @@ else
 fi
 
 echo "=== Test 16: ESI comment unwrapping ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/comment.html)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/comment.html)
 if echo "$RESPONSE" | grep -q "ESI comment unwrapped content"; then
     echo "PASS: ESI comment unwrapped correctly"
 else
@@ -260,7 +262,7 @@ else
 fi
 
 echo "=== Test 17: ESI remove ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/remove.html)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/remove.html)
 if echo "$RESPONSE" | grep -q "After remove"; then
     if echo "$RESPONSE" | grep -q "This should be removed"; then
         echo "FAIL: ESI remove content still present"
@@ -277,7 +279,7 @@ else
 fi
 
 echo "=== Test 18: ESI include with fallback ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/fallback.html)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/fallback.html)
 if echo "$RESPONSE" | grep -q "fallback content rendered"; then
     echo "PASS: ESI fallback content used"
 else
@@ -288,7 +290,7 @@ else
 fi
 
 echo "=== Test 19: HTTP error passthrough (status >= 400) ==="
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$HTTP_PORT/nonexistent.html)
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:"$HTTP_PORT"/nonexistent.html)
 if [ "$STATUS" = "404" ]; then
     echo "PASS: HTTP 404 returned for nonexistent page"
 else
@@ -298,7 +300,7 @@ else
 fi
 
 echo "=== Test 20: Content-Length correctness ==="
-HEADERS=$(curl -s -D - http://localhost:$HTTP_PORT/index.html -o /tmp/mesi-response-body.txt 2>/dev/null)
+HEADERS=$(curl -s -D - http://localhost:"$HTTP_PORT"/index.html -o /tmp/mesi-response-body.txt 2>/dev/null)
 ACTUAL_BODY_SIZE=$(wc -c < /tmp/mesi-response-body.txt)
 HEADER_CL=$(echo "$HEADERS" | grep -i "Content-Length" | awk '{print $2}' | tr -d '\r')
 if [ -n "$HEADER_CL" ]; then
@@ -316,18 +318,18 @@ rm -f /tmp/mesi-response-body.txt
 
 echo "=== Test 21: Concurrent requests (thread safety) ==="
 for i in $(seq 1 20); do
-    curl -s http://localhost:$HTTP_PORT/index.html -o /tmp/mesi-concurrent-$i.html &
+    curl -s http://localhost:"$HTTP_PORT"/index.html -o /tmp/mesi-concurrent-"$i".html &
 done
 wait
 ALL_PASSED=1
 for i in $(seq 1 5); do
-    if grep -q "After include" /tmp/mesi-concurrent-$i.html 2>/dev/null; then
+    if grep -q "After include" /tmp/mesi-concurrent-"$i".html 2>/dev/null; then
         echo "PASS: Concurrent request $i succeeded"
     else
         echo "FAIL: Concurrent request $i failed"
         ALL_PASSED=0
     fi
-    rm -f /tmp/mesi-concurrent-$i.html
+    rm -f /tmp/mesi-concurrent-"$i".html
 done
 if [ "$ALL_PASSED" -eq 0 ]; then
     docker compose down
@@ -335,8 +337,8 @@ if [ "$ALL_PASSED" -eq 0 ]; then
 fi
 
 echo "=== Test 22: HTTP error passthrough - ESI not applied to error page ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/nonexistent.html)
-if [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$HTTP_PORT/nonexistent.html)" = "404" ] && [ -n "$RESPONSE" ]; then
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/nonexistent.html)
+if [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:"$HTTP_PORT"/nonexistent.html)" = "404" ] && [ -n "$RESPONSE" ]; then
     echo "PASS: ESI not applied to 404 error page (status=404, body non-empty)"
 else
     echo "FAIL: Unexpected response for 404 page"
@@ -346,7 +348,7 @@ else
 fi
 
 echo "=== Test 23: Surrogate-Capability header on non-HTML content ==="
-HEADERS=$(curl -sI http://localhost:$HTTP_PORT/noesi.txt)
+HEADERS=$(curl -sI http://localhost:"$HTTP_PORT"/noesi.txt)
 if echo "$HEADERS" | grep -q "Surrogate-Capability"; then
     echo "PASS: Surrogate-Capability header present on non-HTML content"
 else
@@ -376,7 +378,7 @@ fi
 #      correctness of the Get/Set paths is covered by mesi/fetch_test.go.
 
 echo "=== Test 24: Memory cache backend wired up (#174) ==="
-RESPONSE=$(curl -s http://localhost:$HTTP_PORT/cache-test.html)
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/cache-test.html)
 OCCURRENCES=$(echo "$RESPONSE" | grep -o "cached fragment from backend" | wc -l | tr -d ' ')
 if [ "$OCCURRENCES" -ne 2 ]; then
     echo "FAIL: Expected exactly 2 fragment occurrences in rendered HTML, got $OCCURRENCES"
@@ -419,7 +421,7 @@ docker compose down
 docker compose up -d --wait
 
 echo "=== Test 25: Shared HTTP client enabled (#178) ==="
-RESPONSE=$(curl -s http://localhost:$APACHE_PORT_8083/shared-http-client.html)
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8083"/shared-http-client.html)
 OCCURRENCES=$(echo "$RESPONSE" | grep -o "shared fragment from backend" | wc -l | tr -d ' ')
 if [ "$OCCURRENCES" -ne 2 ]; then
     echo "FAIL: Expected exactly 2 fragment occurrences with MesiSharedHTTPClient On, got $OCCURRENCES"
@@ -446,7 +448,7 @@ echo "=== Test 26: Cache key template - header isolation (#177) ==="
 # Uses a DEDICATED fixture cache-key-template.html -> cache-key-fragment.txt
 # so the backend counter is not polluted by healthchecks (which hit / -> index.html -> include.txt every 2s).
 # Mirrors Test 24 which counts cached-fragment.txt, not include.txt.
-RESPONSE=$(curl -s -H "Accept-Language: pl" http://localhost:$APACHE_PORT_8084/cache-key-template.html)
+RESPONSE=$(curl -s -H "Accept-Language: pl" http://localhost:"$APACHE_PORT_8084"/cache-key-template.html)
 if echo "$RESPONSE" | grep -q "cache-key dedicated fragment"; then
     echo "PASS: Cache key template (pl) — ESI resolved"
 else
@@ -459,7 +461,7 @@ BASE=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /cache-key-fra
 echo "  (backend GET /cache-key-fragment.txt so far: $BASE)"
 
 echo "=== Test 26a: Same Accept-Language reuses cache (0-1 extra hits) ==="
-curl -s -H "Accept-Language: pl" http://localhost:$APACHE_PORT_8084/cache-key-template.html > /dev/null
+curl -s -H "Accept-Language: pl" http://localhost:"$APACHE_PORT_8084"/cache-key-template.html > /dev/null
 AFTER_SAME=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /cache-key-fragment.txt HTTP/1.1" || true)
 EXTRA_SAME=$((AFTER_SAME - BASE))
 if [ "$EXTRA_SAME" -ge 0 ] && [ "$EXTRA_SAME" -le 1 ]; then
@@ -472,7 +474,7 @@ else
 fi
 
 echo "=== Test 26b: Different Accept-Language misses cache (1 extra hit) ==="
-curl -s -H "Accept-Language: en" http://localhost:$APACHE_PORT_8084/cache-key-template.html > /dev/null
+curl -s -H "Accept-Language: en" http://localhost:"$APACHE_PORT_8084"/cache-key-template.html > /dev/null
 AFTER_DIFF=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /cache-key-fragment.txt HTTP/1.1" || true)
 EXTRA_DIFF=$((AFTER_DIFF - AFTER_SAME))
 if [ "$EXTRA_DIFF" -eq 1 ]; then
@@ -486,7 +488,7 @@ else
 fi
 
 echo "=== Test 26c: No template (8083) — URL-only key is header-agnostic ==="
-RESPONSE_NOTMPL=$(curl -s -H "Accept-Language: pl" http://localhost:$APACHE_PORT_8083/shared-http-client.html)
+RESPONSE_NOTMPL=$(curl -s -H "Accept-Language: pl" http://localhost:"$APACHE_PORT_8083"/shared-http-client.html)
 if echo "$RESPONSE_NOTMPL" | grep -q "shared fragment from backend"; then
     echo "PASS: No template (8083) — URL-only DefaultCacheKey still serves ESI (backward compat)"
 else
@@ -503,7 +505,7 @@ echo "=== Test 27: MesiMaxDepth 1 — inner nest not processed (#166) ==="
 # empty IncludeErrorMarker — same contract as Caddy TestMaxDepthExplicit.
 # Chrome must remain; the inner fragment body must not; leftover
 # <esi:include> means the filter never ran.
-RESPONSE=$(curl -s http://localhost:$APACHE_PORT_8085/nested.html)
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8085"/nested.html)
 if echo "$RESPONSE" | grep -q "Nested ESI Test" \
     && ! echo "$RESPONSE" | grep -q "included content from backend" \
     && ! echo "$RESPONSE" | grep -q '<esi:include'; then
@@ -516,7 +518,7 @@ else
 fi
 
 echo "=== Test 28: MesiMaxDepth 5 — both nest levels processed (#166) ==="
-RESPONSE=$(curl -s http://localhost:$APACHE_PORT_8086/nested.html)
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8086"/nested.html)
 if echo "$RESPONSE" | grep -q "included content from backend"; then
     echo "PASS: MesiMaxDepth 5 processed both nest levels"
 else
@@ -538,7 +540,7 @@ echo "=== Test 29: MesiTimeout 2 — 5s include aborted at ~2s (#167) ==="
 # setup (wrong host, dead backend) must NOT pass; the ceiling (4.0s)
 # proves the budget fired before the 5s sleep completed. The fragment
 # must be absent (empty IncludeErrorMarker) and no raw tag may remain.
-TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 20 http://localhost:$APACHE_PORT_8087/timeout-2s.html)
+TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 20 http://localhost:"$APACHE_PORT_8087"/timeout-2s.html)
 RESPONSE=$(cat /tmp/mesi-timeout-body.txt)
 rm -f /tmp/mesi-timeout-body.txt
 if awk -v t="$TIME_TOTAL" 'BEGIN {exit !(t >= 1.5 && t <= 4.0)}' \
@@ -557,7 +559,7 @@ echo "=== Test 30: MesiTimeout 30 — 10s include succeeds (#167) ==="
 # Backend sleeps 10s; the 30s budget must let it through with the full
 # fragment. Floor 9.5s proves the complete backend sleep happened
 # (cold URL — never fetched before, failures are never cached).
-TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 40 http://localhost:$APACHE_PORT_8088/timeout-30s.html)
+TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 40 http://localhost:"$APACHE_PORT_8088"/timeout-30s.html)
 RESPONSE=$(cat /tmp/mesi-timeout-body.txt)
 rm -f /tmp/mesi-timeout-body.txt
 if awk -v t="$TIME_TOTAL" 'BEGIN {exit !(t >= 9.5 && t <= 25.0)}' \
@@ -579,7 +581,7 @@ echo "=== Test 31: MesiTimeout unset — default 30s aborts a 31s include (#167)
 # issue's proposed "0 = no timeout" would render it at ~31s, and an
 # unlimited default would too, so the content check pins the default to
 # a finite 30s budget.
-TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 55 http://localhost:$HTTP_PORT/timeout-default.html)
+TIME_TOTAL=$(curl -s -o /tmp/mesi-timeout-body.txt -w "%{time_total}" --max-time 55 http://localhost:"$HTTP_PORT"/timeout-default.html)
 RESPONSE=$(cat /tmp/mesi-timeout-body.txt)
 rm -f /tmp/mesi-timeout-body.txt
 if awk -v t="$TIME_TOTAL" 'BEGIN {exit !(t >= 28.0 && t <= 40.0)}' \
@@ -601,7 +603,7 @@ fi
 # wc -c (the whole body was delivered, not just the marker).
 
 echo "=== Test 32: MesiMaxResponseSize 100 — 200-byte include rejected (#169) ==="
-RESPONSE=$(curl -s http://localhost:$APACHE_PORT_8089/max-response-reject.html)
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8089"/max-response-reject.html)
 if echo "$RESPONSE" | grep -q "After reject include" \
     && ! echo "$RESPONSE" | grep -q "MesiBytesPayload" \
     && ! echo "$RESPONSE" | grep -q '<esi:include'; then
@@ -609,7 +611,7 @@ if echo "$RESPONSE" | grep -q "After reject include" \
     # Control: the SAME page on the unset default vhost (no directive)
     # must deliver the payload — proves the rejection above comes from
     # the directive, not a broken endpoint or vhost template.
-    CONTROL=$(curl -s http://localhost:$HTTP_PORT/max-response-reject.html)
+    CONTROL=$(curl -s http://localhost:"$HTTP_PORT"/max-response-reject.html)
     if echo "$CONTROL" | grep -q "MesiBytesPayload 200" \
         && echo "$CONTROL" | grep -q "After reject include" \
         && ! echo "$CONTROL" | grep -q '<esi:include'; then
@@ -628,7 +630,7 @@ else
 fi
 
 echo "=== Test 33: MesiMaxResponseSize 1048576 — 500 KB include succeeds (#169) ==="
-curl -s -o /tmp/mesi-mrs-accept.html http://localhost:$APACHE_PORT_8090/max-response-accept.html
+curl -s -o /tmp/mesi-mrs-accept.html http://localhost:"$APACHE_PORT_8090"/max-response-accept.html
 SIZE=$(wc -c < /tmp/mesi-mrs-accept.html | tr -d ' ')
 if [ "$SIZE" -gt 512000 ] \
     && grep -q "MesiBytesPayload 512000" /tmp/mesi-mrs-accept.html \
@@ -645,7 +647,7 @@ fi
 rm -f /tmp/mesi-mrs-accept.html
 
 echo "=== Test 34: MesiMaxResponseSize 0 — unlimited, 50 MB include succeeds (#169) ==="
-curl -s --max-time 120 -o /tmp/mesi-mrs-unlimited.html http://localhost:$APACHE_PORT_8091/max-response-unlimited.html
+curl -s --max-time 120 -o /tmp/mesi-mrs-unlimited.html http://localhost:"$APACHE_PORT_8091"/max-response-unlimited.html
 SIZE=$(wc -c < /tmp/mesi-mrs-unlimited.html | tr -d ' ')
 if [ "$SIZE" -gt 52428800 ] \
     && grep -q "MesiBytesPayload 52428800" /tmp/mesi-mrs-unlimited.html \
@@ -666,7 +668,7 @@ echo "=== Test 35: MesiMaxResponseSize unset — backward compat, 10 MB + 1 incl
 # byte: the issue's proposed implicit 10 MB default would reject it, so
 # a passing test pins "unset → unlimited" (byte-identical to pre-#169
 # behaviour) at the functional level.
-curl -s --max-time 120 -o /tmp/mesi-mrs-unset.html http://localhost:$HTTP_PORT/max-response-unset.html
+curl -s --max-time 120 -o /tmp/mesi-mrs-unset.html http://localhost:"$HTTP_PORT"/max-response-unset.html
 SIZE=$(wc -c < /tmp/mesi-mrs-unset.html | tr -d ' ')
 if [ "$SIZE" -gt 10485761 ] \
     && grep -q "MesiBytesPayload 10485761" /tmp/mesi-mrs-unset.html \
@@ -709,9 +711,9 @@ echo "=== Test 36: MesiMaxConcurrentRequests 3 — 20 includes funneled through 
 # overlap — scheduling-dependent, deliberately not asserted). All 20
 # fragments must arrive: includes beyond the cap are QUEUED, not
 # dropped.
-curl -s http://localhost:$HTTP_PORT/backend/track/reset > /dev/null
-curl -s --max-time 60 -o /tmp/mesi-mcr-capped.html http://localhost:$APACHE_PORT_8092/concurrent-capped.html
-PEAK=$(curl -s http://localhost:$HTTP_PORT/backend/track/max)
+curl -s http://localhost:"$HTTP_PORT"/backend/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mcr-capped.html http://localhost:"$APACHE_PORT_8092"/concurrent-capped.html
+PEAK=$(curl -s http://localhost:"$HTTP_PORT"/backend/track/max)
 FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mcr-capped.html | wc -l | tr -d ' ')
 if [ "$PEAK" -ge 2 ] && [ "$PEAK" -le 3 ] \
     && [ "$FRAGMENTS" -eq 20 ] \
@@ -733,9 +735,9 @@ echo "=== Test 37: MesiMaxConcurrentRequests 0 — explicit unlimited, fan-out u
 # rejected Go-side would make ParseJson return NULL and the request
 # would fail closed with 500). Peak >= 4 distinguishes this from the
 # cap-3 vhost; the fan-out bound above explains the floor.
-curl -s http://localhost:$HTTP_PORT/backend/track/reset > /dev/null
-curl -s --max-time 60 -o /tmp/mesi-mcr-zero.html http://localhost:$APACHE_PORT_8093/concurrent-unlimited.html
-PEAK=$(curl -s http://localhost:$HTTP_PORT/backend/track/max)
+curl -s http://localhost:"$HTTP_PORT"/backend/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mcr-zero.html http://localhost:"$APACHE_PORT_8093"/concurrent-unlimited.html
+PEAK=$(curl -s http://localhost:"$HTTP_PORT"/backend/track/max)
 FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mcr-zero.html | wc -l | tr -d ' ')
 if [ "$PEAK" -ge 4 ] \
     && [ "$FRAGMENTS" -eq 20 ] \
@@ -756,9 +758,9 @@ echo "=== Test 38: MesiMaxConcurrentRequests unset — backward compat, fan-out 
 # path (no ParseJson key rendered) with MaxConcurrentRequests left at
 # 0 = unlimited, byte-identical to pre-#170 behaviour. Peak >= 4 pins
 # that unset never throttles.
-curl -s http://localhost:$HTTP_PORT/backend/track/reset > /dev/null
-curl -s --max-time 60 -o /tmp/mesi-mcr-unset.html http://localhost:$HTTP_PORT/concurrent-unset.html
-PEAK=$(curl -s http://localhost:$HTTP_PORT/backend/track/max)
+curl -s http://localhost:"$HTTP_PORT"/backend/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mcr-unset.html http://localhost:"$HTTP_PORT"/concurrent-unset.html
+PEAK=$(curl -s http://localhost:"$HTTP_PORT"/backend/track/max)
 FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mcr-unset.html | wc -l | tr -d ' ')
 if [ "$PEAK" -ge 4 ] \
     && [ "$FRAGMENTS" -eq 20 ] \
@@ -799,7 +801,7 @@ echo "=== Test 39: MesiMaxWorkers 2 — deep-nesting stress completes correctly 
 # nesting order after flattening newlines) proves
 # every level was fetched AND re-parsed; a raw tag left behind would
 # fail the tag check.
-curl -s --max-time 60 -o /tmp/mesi-mw-deep.html http://localhost:$APACHE_PORT_8094/max-workers-deep.html
+curl -s --max-time 60 -o /tmp/mesi-mw-deep.html http://localhost:"$APACHE_PORT_8094"/max-workers-deep.html
 tr -d '\n' < /tmp/mesi-mw-deep.html > /tmp/mesi-mw-deep.flat
 if grep -q "MW-LVL-1-START.*MW-LVL-2-START.*MW-LVL-3-START.*MW-LVL-4-BODY.*MW-LVL-3-END.*MW-LVL-2-END.*MW-LVL-1-END" /tmp/mesi-mw-deep.flat \
     && grep -q "After deep include" /tmp/mesi-mw-deep.html \
@@ -826,9 +828,9 @@ echo "=== Test 40: MesiMaxWorkers 2 — 20 includes drain through a 2-goroutine 
 # grab their first buffered job within microseconds while each
 # backend hold lasts 1500 ms). All 20 fragments must arrive: includes
 # beyond the pool are queued in the jobs channel, not dropped.
-curl -s http://localhost:$HTTP_PORT/backend/track/reset > /dev/null
-curl -s --max-time 60 -o /tmp/mesi-mw-pool.html http://localhost:$APACHE_PORT_8094/max-workers-pool.html
-PEAK=$(curl -s http://localhost:$HTTP_PORT/backend/track/max)
+curl -s http://localhost:"$HTTP_PORT"/backend/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mw-pool.html http://localhost:"$APACHE_PORT_8094"/max-workers-pool.html
+PEAK=$(curl -s http://localhost:"$HTTP_PORT"/backend/track/max)
 FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mw-pool.html | wc -l | tr -d ' ')
 if [ "$PEAK" -eq 2 ] \
     && [ "$FRAGMENTS" -eq 20 ] \
@@ -851,9 +853,9 @@ echo "=== Test 41: MesiMaxWorkers 0 — explicit library default, pool unthrottl
 # would fail closed with 500). Peak >= 4 (pool min(NumCPU*4, 20))
 # distinguishes this from the pool-2 vhost; the fan-out floor above
 # explains the bound.
-curl -s http://localhost:$HTTP_PORT/backend/track/reset > /dev/null
-curl -s --max-time 60 -o /tmp/mesi-mw-zero.html http://localhost:$APACHE_PORT_8095/max-workers-zero.html
-PEAK=$(curl -s http://localhost:$HTTP_PORT/backend/track/max)
+curl -s http://localhost:"$HTTP_PORT"/backend/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mw-zero.html http://localhost:"$APACHE_PORT_8095"/max-workers-zero.html
+PEAK=$(curl -s http://localhost:"$HTTP_PORT"/backend/track/max)
 FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mw-zero.html | wc -l | tr -d ' ')
 if [ "$PEAK" -ge 4 ] \
     && [ "$FRAGMENTS" -eq 20 ] \
@@ -874,9 +876,9 @@ echo "=== Test 42: MesiMaxWorkers unset — backward compat, pool unthrottled (#
 # path (no ParseJson key rendered) with MaxWorkers left at 0 →
 # library default NumCPU*4, byte-identical to pre-#171 behaviour.
 # Peak >= 4 pins that unset never throttles the pool.
-curl -s http://localhost:$HTTP_PORT/backend/track/reset > /dev/null
-curl -s --max-time 60 -o /tmp/mesi-mw-unset.html http://localhost:$HTTP_PORT/max-workers-unset.html
-PEAK=$(curl -s http://localhost:$HTTP_PORT/backend/track/max)
+curl -s http://localhost:"$HTTP_PORT"/backend/track/reset > /dev/null
+curl -s --max-time 60 -o /tmp/mesi-mw-unset.html http://localhost:"$HTTP_PORT"/max-workers-unset.html
+PEAK=$(curl -s http://localhost:"$HTTP_PORT"/backend/track/max)
 FRAGMENTS=$(grep -o "Held 1500" /tmp/mesi-mw-unset.html | wc -l | tr -d ' ')
 if [ "$PEAK" -ge 4 ] \
     && [ "$FRAGMENTS" -eq 20 ] \
