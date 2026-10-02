@@ -1921,6 +1921,12 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
                 break;
             }
         }
+        // The data is held across filter calls, so transient buckets (the
+        // proxy reuses their memory after passing the brigade) must be
+        // copied to the request pool first.
+        if (!APR_BUCKET_IS_METADATA(b)) {
+            apr_bucket_setaside(b, f->r->pool);
+        }
         APR_BUCKET_REMOVE(b);
         APR_BRIGADE_INSERT_TAIL(ctx->bb, b);
     }
