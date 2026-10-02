@@ -298,6 +298,24 @@ func trackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// statusHandler answers /status/{code} with that HTTP status and a
+// text/plain body, so suites can check that non-HTML responses keep the
+// upstream status (#491). {code} must be in [200, 599]; anything else is
+// a 400.
+func statusHandler(w http.ResponseWriter, r *http.Request) {
+	code, err := strconv.Atoi(r.PathValue("code"))
+	if err != nil || code < 200 || code > 599 {
+		http.Error(w, "invalid status code", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	if code >= 300 && code < 400 {
+		w.Header().Set("Location", "/plain")
+	}
+	w.WriteHeader(code)
+	_, _ = w.Write([]byte("status " + strconv.Itoa(code)))
+}
+
 func main() {
 	port := os.Getenv("MESI_TEST_SERVER_PORT")
 	if port == "" {
@@ -326,6 +344,7 @@ func main() {
 	http.HandleFunc("/deep/{level}/{cap}", deepHandler)
 	http.HandleFunc("/marker/{level}/{marker}", deepMarkerHandler)
 	http.HandleFunc("/track/{action}", trackHandler)
+	http.HandleFunc("/status/{code}", statusHandler)
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }

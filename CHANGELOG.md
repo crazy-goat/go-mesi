@@ -23,6 +23,9 @@
 - `tests/Makefile` `build-server` now builds `tests/test-server`, the binary `run-test.sh` starts
 - Apache tests read the error log with `docker compose exec` instead of a hard-coded container name
 
+### Fixed
+- Traefik: non-HTML responses passed through the `mesi` middleware keep the upstream status. Before, the passthrough branch wrote the buffered body without `WriteHeader`, so every non-`text/html` response (JSON 404s, plain-text 502s, 3xx redirects) reached the client as HTTP 200. The HTML branch already forwarded the status. Unit tests cover 404/502/302/301/201/204 and a followed redirect; `servers/traefik/test.sh` checks 404/502/302 end to end through a new `/status/{code}` route of the shared test server (#491)
+
 ## [0.11.0] - 2026-09-30
 
 ### Added

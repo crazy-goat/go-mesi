@@ -95,6 +95,26 @@ else
     echo "INFO: /esi Content-Type: $CT"
 fi
 
+echo "=== Test 6b: Non-HTML responses keep the upstream status (#491) ==="
+for CODE in 404 502 302; do
+    STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: domain.com" http://localhost:"$HTTP_PORT"/status/"$CODE")
+    if [ "$STATUS" = "$CODE" ]; then
+        echo "PASS: text/plain $CODE passed through with status $STATUS"
+    else
+        echo "FAIL: text/plain $CODE was served with status $STATUS"
+        docker compose down
+        exit 1
+    fi
+done
+LOCATION=$(curl -s -o /dev/null -w "%{redirect_url}" -H "Host: domain.com" http://localhost:"$HTTP_PORT"/status/302)
+if echo "$LOCATION" | grep -q "/plain$"; then
+    echo "PASS: 302 keeps its Location header ($LOCATION)"
+else
+    echo "FAIL: 302 lost its Location header (got '$LOCATION')"
+    docker compose down
+    exit 1
+fi
+
 echo "=== Test 7: timeout 2s aborts 5s include ==="
 TIME_TOTAL=$(curl -s --max-time 20 -H "Host: timeout2.domain.com" http://localhost:"$HTTP_PORT"/slow/5000 -o /tmp/mesi-traefik-timeout-body.txt -w "%{time_total}")
 if awk -v t="$TIME_TOTAL" 'BEGIN{exit !(t >= 1.5 && t <= 4.0)}'; then
