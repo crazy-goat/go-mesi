@@ -1,7 +1,7 @@
 #!/bin/bash
-VERSION=${1:-"v2024.3.5"}
+VERSION=${1:-"v2025.1.7"}
 
-go install github.com/roadrunner-server/velox/v2024/cmd/vx@$VERSION
+go install github.com/roadrunner-server/velox/v2025/cmd/vx@$VERSION
 rm velox.toml
 wget "https://raw.githubusercontent.com/roadrunner-server/velox/refs/tags/$VERSION/velox.toml"
 sed -i 's/level = "info"/level = "debug"/g' velox.toml

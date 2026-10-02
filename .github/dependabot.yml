@@ -72,6 +72,16 @@ updates:
       - go
     commit-message:
       prefix: "chore(deps)"
+  # The RoadRunner worker is a PHP package. Without this entry its advisories
+  # are reported on the security page but no PR is ever opened for them.
+  - package-ecosystem: composer
+    directory: "/servers/roadrunner/worker"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(deps)"
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

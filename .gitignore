@@ -50,7 +50,8 @@ tests/tests
 /tests/test-server
 /servers/roadrunner/rr
 /servers/roadrunner/worker/vendor/
-/servers/roadrunner/worker/composer.lock
+# composer.lock is tracked on purpose: dependabot's composer ecosystem needs it
+# to open security-update PRs for the worker.
 /servers/caddy/caddy
 /obj-x86_64-linux-gnu/
 /debian/.debhelper/
