@@ -638,3 +638,42 @@ With this configuration `curl -H "Accept-Language: pl" …` and `curl -H "Accept
 - `mesi.BuildCacheKey` uses the **first** value of a repeated header/cookie.
 
 [Here](nginx.conf) you can find full example configuration
+
+## Max Body Size
+
+The module buffers the whole parent HTML response before it processes `<esi:include>` tags. `mesi_max_body_size` bounds that buffer, so a very large upstream page cannot use unlimited memory (#537). Do not confuse it with `mesi_max_response_size`, which limits each fetched include.
+
+### Directives
+
+#### `mesi_max_body_size`
+
+- **Syntax:** `mesi_max_body_size <bytes>`
+- **Default:** `0` (unlimited, the behaviour before #537)
+- **Context:** `location`
+- **Range:** `[0, 9223372036854775806]`, the same cap as `mesi_max_response_size`. The value is plain bytes, digits only (`10m` is rejected).
+
+#### `mesi_on_oversize`
+
+- **Syntax:** `mesi_on_oversize pass | error`
+- **Default:** `pass`
+- **Context:** `location`
+
+What happens when the parent body is larger than `mesi_max_body_size`:
+
+| Mode | `Content-Length` known | No `Content-Length` (streamed) |
+|---|---|---|
+| `pass` | Body is sent unchanged, no ESI processing. A warning is logged. | The bytes buffered so far and the rest are sent unchanged. A warning is logged. |
+| `error` | `502 Bad Gateway` is returned and an error is logged. | The headers are already sent, so the connection is aborted and an error is logged. The client sees a truncated response. |
+
+Validation is strict and happens at config load (`nginx -t` fails): negatives, signs, units, non-digits, empty values, values above the cap, a repeated directive in the same scope and unknown `mesi_on_oversize` values are rejected. Nested locations inherit unset values from the enclosing location.
+
+### Example
+
+```nginx
+location /pages/ {
+    enable_mesi on;
+    mesi_max_body_size 1048576;   # 1 MiB
+    mesi_on_oversize pass;        # send bigger pages without ESI processing
+    proxy_pass http://backend;
+}
+```

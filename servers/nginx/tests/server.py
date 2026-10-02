@@ -65,6 +65,51 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 return
 
+        if self.path.startswith('/slow-nolen/'):
+            # /slow-nolen/<chunks> (#537): <chunks> pieces of 600 bytes,
+            # each flushed with a pause, no Content-Length. nginx sees the
+            # body in several reads, so the part buffered before a limit
+            # is crossed is not empty. Piece i is the letter 'a'+i%26.
+            parts = self.path.split('?', 1)[0].split('/')
+            try:
+                chunks = int(parts[2]) if len(parts) >= 3 else -1
+            except ValueError:
+                chunks = -1
+            if 0 <= chunks <= 100:
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                self.end_headers()
+                try:
+                    for i in range(chunks):
+                        self.wfile.write(bytes([97 + i % 26]) * 600)
+                        self.wfile.flush()
+                        time.sleep(0.2)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+
+        if self.path.startswith('/bytes-nolen/'):
+            # /bytes-nolen/<size> (#537): like /bytes/<size>, but the
+            # response has no Content-Length (HTTP/1.0, ended by closing
+            # the connection), so nginx sees a body of unknown length
+            # and can only check its size while it accumulates.
+            parts = self.path.split('?', 1)[0].split('/')
+            try:
+                size = int(parts[2]) if len(parts) >= 3 else -1
+            except ValueError:
+                size = -1
+            if 0 <= size <= MAX_GENERATED_BYTES:
+                marker = ('MesiBytesPayload ' + parts[2] + '\n').encode()
+                body = marker + b'x' * max(0, size - len(marker))
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+
         if self.path.startswith('/bytes/'):
             # /bytes/<size> (#208): exactly <size> bytes, prefixed with
             # a "MesiBytesPayload <size>" marker line when the size

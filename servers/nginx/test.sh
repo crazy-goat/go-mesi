@@ -2259,6 +2259,156 @@ else
     exit 1
 fi
 
+echo "=== Test 74: parent body under mesi_max_body_size is processed (#537) ==="
+RESPONSE=$(curl -s --max-time 10 http://localhost:"$HTTP_PORT"/body-pass/under/index.html) || true
+if echo "$RESPONSE" | grep -q "After include" \
+    && echo "$RESPONSE" | grep -q "included content from backend" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: ESI processed under the body limit"
+else
+    echo "FAIL: ESI not processed under the body limit"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 75: mesi_on_oversize pass — known length, body sent unchanged (#537) ==="
+RESPONSE=$(curl -s --max-time 10 -w '\n%{http_code}' http://localhost:"$HTTP_PORT"/body-pass/static/index.html) || true
+if echo "$RESPONSE" | grep -q '<esi:include' \
+    && echo "$RESPONSE" | grep -q "After include" \
+    && echo "$RESPONSE" | tail -n 1 | grep -q '^200$'; then
+    echo "PASS: oversize body passed through unchanged (ESI tag still present)"
+else
+    echo "FAIL: oversize body was not passed through unchanged"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+if docker compose logs nginx 2>&1 | grep -q 'over mesi_max_body_size 100; sending it unchanged'; then
+    echo "PASS: pass mode logged a warning"
+else
+    echo "FAIL: pass mode did not log a warning"
+    exit 1
+fi
+
+echo "=== Test 76: mesi_on_oversize pass — unknown length, whole body sent unchanged (#537) ==="
+PROXY_OUT=$(curl -s --max-time 20 -o /tmp/mesi-body-pass.html \
+    -w '%{http_code} %{size_download}' \
+    http://localhost:"$HTTP_PORT"/body-pass/proxy/bytes-nolen/5000) || true
+if [ "$PROXY_OUT" = "200 5000" ] \
+    && grep -q "MesiBytesPayload 5000" /tmp/mesi-body-pass.html; then
+    echo "PASS: 5000-byte body without Content-Length delivered in full ($PROXY_OUT)"
+else
+    echo "FAIL: pass mode lost or changed the body (got '$PROXY_OUT', expected '200 5000')"
+    rm -f /tmp/mesi-body-pass.html
+    exit 1
+fi
+rm -f /tmp/mesi-body-pass.html
+
+echo "=== Test 77: mesi_on_oversize pass — known length via proxy (#537) ==="
+PROXY_OUT=$(curl -s --max-time 20 -o /dev/null \
+    -w '%{http_code} %{size_download}' \
+    http://localhost:"$HTTP_PORT"/body-pass/proxy/bytes/5000) || true
+if [ "$PROXY_OUT" = "200 5000" ]; then
+    echo "PASS: 5000-byte body with Content-Length delivered in full ($PROXY_OUT)"
+else
+    echo "FAIL: pass mode lost the body (got '$PROXY_OUT', expected '200 5000')"
+    exit 1
+fi
+
+echo "=== Test 78: mesi_on_oversize error — known length answers 502 (#537) ==="
+CODE=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' \
+    http://localhost:"$HTTP_PORT"/body-error/static/index.html) || true
+if [ "$CODE" = "502" ]; then
+    echo "PASS: oversize body answered 502"
+else
+    echo "FAIL: oversize body answered '$CODE', expected 502"
+    exit 1
+fi
+CODE=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' \
+    http://localhost:"$HTTP_PORT"/body-error/proxy/bytes/5000) || true
+if [ "$CODE" = "502" ]; then
+    echo "PASS: oversize proxied body answered 502"
+else
+    echo "FAIL: oversize proxied body answered '$CODE', expected 502"
+    exit 1
+fi
+
+echo "=== Test 79: mesi_on_oversize error — unknown length aborts the response (#537) ==="
+# The headers are already sent when the size is known to be too big, so
+# nginx logs an error and drops the connection: the client gets a
+# truncated body and a curl error.
+set +e
+curl -s --max-time 20 -o /tmp/mesi-body-error.html \
+    -w '%{size_download}' http://localhost:"$HTTP_PORT"/body-error/proxy/bytes-nolen/5000 > /tmp/mesi-body-error.size
+CURL_RC=$?
+set -e
+SIZE=$(cat /tmp/mesi-body-error.size)
+rm -f /tmp/mesi-body-error.html /tmp/mesi-body-error.size
+if [ "$CURL_RC" -ne 0 ] && [ "$SIZE" -lt 5000 ]; then
+    echo "PASS: oversize body without Content-Length aborted (curl exit $CURL_RC, $SIZE bytes)"
+else
+    echo "FAIL: oversize body without Content-Length was not aborted (curl exit $CURL_RC, $SIZE bytes)"
+    exit 1
+fi
+if docker compose logs nginx 2>&1 | grep -q 'aborting the response (mesi_on_oversize error)'; then
+    echo "PASS: error mode logged an error"
+else
+    echo "FAIL: error mode did not log an error"
+    exit 1
+fi
+
+echo "=== Test 80: Config validation — mesi_max_body_size and mesi_on_oversize (#537) ==="
+nginx_conf_check() {
+    # $1 = directive line; prints nginx -t output
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      $1" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-body.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-body.conf' < /tmp/nginx-mesi-body.conf
+    docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-body.conf 2>&1 || true
+}
+for GOOD in 'mesi_max_body_size 0;' 'mesi_max_body_size 1048576;' 'mesi_on_oversize pass;' 'mesi_on_oversize error;'; do
+    if nginx_conf_check "$GOOD" | grep -q 'syntax is ok'; then
+        echo "PASS: '$GOOD' accepted by nginx -t"
+    else
+        echo "FAIL: nginx rejected valid '$GOOD'"
+        exit 1
+    fi
+done
+for BAD in 'mesi_max_body_size -1;' 'mesi_max_body_size 10m;' 'mesi_max_body_size abc;' 'mesi_max_body_size "";' 'mesi_max_body_size 9223372036854775807;' 'mesi_on_oversize drop;' 'mesi_max_body_size 1; mesi_max_body_size 2;' 'mesi_on_oversize pass; mesi_on_oversize error;'; do
+    if nginx_conf_check "$BAD" | grep -q 'syntax is ok'; then
+        echo "FAIL: nginx accepted invalid '$BAD'"
+        exit 1
+    else
+        echo "PASS: invalid '$BAD' rejected by nginx -t"
+    fi
+done
+rm -f /tmp/nginx-mesi-body.conf
+
+echo "=== Test 81: mesi_on_oversize pass — body arrives in several reads, buffered part is sent first (#537) ==="
+# 5 pieces of 600 bytes (a..e), limit 1000: the limit is crossed in the
+# second read, so the first piece is already buffered when we switch.
+EXPECTED_SHA=$(python3 -c "import sys; sys.stdout.write(''.join(c*600 for c in 'abcde'))" | shasum -a 256 | cut -d' ' -f1)
+SLOW_OUT=$(curl -s --max-time 20 -o /tmp/mesi-body-slow.html \
+    -w '%{http_code} %{size_download}' \
+    http://localhost:"$HTTP_PORT"/body-pass/slow/slow-nolen/5) || true
+SLOW_SHA=$(shasum -a 256 < /tmp/mesi-body-slow.html | cut -d' ' -f1)
+rm -f /tmp/mesi-body-slow.html
+if [ "$SLOW_OUT" = "200 3000" ] && [ "$SLOW_SHA" = "$EXPECTED_SHA" ]; then
+    echo "PASS: body delivered byte for byte after switching to pass-through ($SLOW_OUT)"
+else
+    echo "FAIL: pass mode changed the body (got '$SLOW_OUT' sha $SLOW_SHA, expected '200 3000' sha $EXPECTED_SHA)"
+    exit 1
+fi
+
 docker compose down
 
 echo ""
