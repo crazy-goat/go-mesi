@@ -333,8 +333,14 @@ MesiCacheTTL 60
 - `MesiCacheMemcachedServers host:port [host:port …]` — Space-separated
   Memcached server list used when `MesiCacheBackend memcached`. Each
   entry must be `host:port` (port in `[1, 65535]`); whitespace, control
-  chars, and JSON-meta chars are rejected so the rendered JSON config
-  is safe to pass to libgomesi. At most 64 entries per directive; calling
+  chars, quote characters (`"` and `'`) and JSON-meta chars are
+  rejected so the rendered JSON config is safe to pass to libgomesi.
+  The directive is `AP_INIT_RAW_ARGS`, so Apache does **not** unquote
+  it: write the entries unquoted, separated by spaces. A quote is
+  rejected at config load with a message saying so — before that,
+  `'mc':11211` stored the host `'mc'`, which can never resolve, and
+  `"mc:11211"` failed with a misleading generic character error. At
+  most 64 entries per directive; calling
   the directive multiple times appends. Configuring the backend
   without this directive (or with an empty value) makes libgomesi
   reject the server list with `servers required` (a deterministic
