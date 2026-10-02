@@ -30,7 +30,10 @@ They record decisions, for example that errors are never silent defaults.
 
 ## Commands
 
-Go version: 1.23 (CI). `servers/traefik` and `servers/caddy` declare newer versions in their own `go.mod`.
+Go version: 1.25 (CI). This is the highest `go` directive declared by any module in the
+repo (`servers/caddy`); CI must never be older than that, or builds fail with
+`go.mod requires go >= X` once a toolchain pins `GOTOOLCHAIN=local`. Keep this line and
+the `go-version` values in `.github/workflows/tests.yaml` in sync.
 
 ```bash
 # Guard: no generated artifacts may be tracked
