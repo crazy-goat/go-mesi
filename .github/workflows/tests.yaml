@@ -33,7 +33,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          # servers/caddy needs go 1.26; lint downloads every module.
+          go-version: '1.26'
           cache: true
 
       - name: Setup PHP
