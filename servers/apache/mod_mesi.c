@@ -58,7 +58,6 @@ typedef struct {
     apr_bucket_brigade *bb;
     apr_off_t total; // bytes accumulated so far (for MesiMaxBodySize)
     int passthrough; // 1 = oversize in pass mode: forward everything untouched
-    int failed;      // 1 = oversize in error mode: 502 sent, drop the rest
 } response_filter_ctx;
 
 // MesiOnOversize values.
@@ -1878,18 +1877,22 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     if (ctx->passthrough) {
         return ap_pass_brigade(f->next, bb);
     }
-    if (ctx->failed) {
-        apr_brigade_cleanup(bb);
-        return APR_SUCCESS;
-    }
 
     apr_off_t limit = (conf->max_body_size > 0) ? conf->max_body_size : 0;
     int oversize = 0;
     // Declared Content-Length over the limit: decide before buffering.
     // Bodiless responses (HEAD, 204, 304) are never limited.
     int bodiless = f->r->header_only || f->r->status == HTTP_NO_CONTENT || f->r->status == HTTP_NOT_MODIFIED;
-    if (limit > 0 && !bodiless && f->r->clength > limit) {
-        oversize = 1;
+    if (limit > 0 && !bodiless) {
+        apr_off_t declared = f->r->clength;
+        const char *cl = apr_table_get(f->r->headers_out, "Content-Length");
+        apr_off_t hdr = 0;
+        if (cl && apr_strtoff(&hdr, cl, NULL, 10) == APR_SUCCESS && hdr > declared) {
+            declared = hdr;
+        }
+        if (declared > limit) {
+            oversize = 1;
+        }
     }
 
     // Move all buckets from the incoming brigade to our accumulation brigade.
@@ -1927,7 +1930,6 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r,
                           "mesi: response body exceeds MesiMaxBodySize (%" APR_OFF_T_FMT " bytes), returning 502",
                           limit);
-            ctx->failed = 1;
             apr_brigade_cleanup(ctx->bb);
             apr_brigade_cleanup(bb);
             // Nothing has been sent yet (everything is buffered here), so

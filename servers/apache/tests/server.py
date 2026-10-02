@@ -119,6 +119,31 @@ class Handler(SimpleHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
             return
+        if len(parts) >= 3 and parts[1] == 'nolen-html':
+            # /nolen-html/<size>: an HTML page of about <size> bytes sent
+            # in 500-byte writes WITHOUT Content-Length (HTTP/1.0, closed
+            # by the server), so the Apache body limit has to count the
+            # streamed brigades. Starts with an include tag and ends with
+            # a marker. Used by the MesiMaxBodySize tests.
+            try:
+                size = int(parts[2])
+            except ValueError:
+                size = -1
+            if 0 <= size <= 1000000:
+                try:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html')
+                    self.end_headers()
+                    self.wfile.write(b'<esi:include src="http://backend:8000/include.txt" />\n')
+                    sent = 0
+                    while sent < size:
+                        self.wfile.write(b'x' * 500)
+                        self.wfile.flush()
+                        sent += 500
+                    self.wfile.write(b'\n<p>nolen-end-marker</p>\n')
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
         if len(parts) >= 3 and parts[1] == 'bytes':
             # /bytes/<size> (#169): exactly <size> bytes, prefixed with a
             # "MesiBytesPayload <size>" marker line when the size leaves
