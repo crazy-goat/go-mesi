@@ -38,7 +38,7 @@ func (p *Proxy) SetBodyLimit(maxBody int64, mode string) error {
 	}
 	m, err := middleware.ParseOnOversize(mode)
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid on-oversize %q: must be %q or %q", mode, middleware.OversizePass, middleware.OversizeError)
 	}
 	p.maxBodySize = maxBody
 	p.onOversize = m
