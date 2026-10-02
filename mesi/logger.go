@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -39,19 +40,29 @@ func (l DefaultLogger) Warn(msg string, keyvals ...interface{}) {
 
 func (l DefaultLogger) log(level, msg string, keyvals ...interface{}) {
 	now := time.Now().Format(time.RFC3339)
-	fmt.Fprintf(l.w, "%s %s %s", now, level, msg)
+	// Log lines are built in memory and written with a single call, so an
+	// unwritable stream yields one short write instead of a partial line and
+	// the report cannot be interleaved with concurrent writers.
+	var b strings.Builder
+	b.WriteString(now)
+	b.WriteByte(' ')
+	b.WriteString(level)
+	b.WriteByte(' ')
+	b.WriteString(msg)
 	if len(keyvals) > 0 {
-		fmt.Fprint(l.w, " ")
+		b.WriteByte(' ')
 		for i := 0; i < len(keyvals); i += 2 {
-			if i+1 < len(keyvals) {
-				fmt.Fprintf(l.w, "%v=%v", keyvals[i], keyvals[i+1])
-			} else {
-				fmt.Fprintf(l.w, "%v=MISSING", keyvals[i])
+			if i > 0 {
+				b.WriteByte(' ')
 			}
-			if i+2 < len(keyvals) {
-				fmt.Fprint(l.w, " ")
+			fmt.Fprintf(&b, "%v=", keyvals[i])
+			if i+1 < len(keyvals) {
+				fmt.Fprintf(&b, "%v", keyvals[i+1])
+			} else {
+				b.WriteString("MISSING")
 			}
 		}
 	}
-	fmt.Fprintln(l.w)
+	b.WriteByte('\n')
+	_, _ = l.w.Write([]byte(b.String()))
 }

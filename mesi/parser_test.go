@@ -1725,7 +1725,7 @@ func TestMESIParseMaxDepthRejectsInvalidInput(t *testing.T) {
 	outerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		outerHits.Add(1)
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "outer: [<esi:include src=%q />]", innerSrv.URL+"/inner")
+		_, _ = fmt.Fprintf(w, "outer: [<esi:include src=%q />]", innerSrv.URL+"/inner")
 	}))
 	defer outerSrv.Close()
 

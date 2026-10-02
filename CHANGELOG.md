@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- `mesi.DefaultLogger` builds each line in memory and writes it with a single `Write`, instead of up to 16 partially-checked `fmt.Fprint*` calls. Output is byte-identical (including the `MISSING` marker for an odd `keyvals` count), but an unwritable stream now yields one short write rather than a partial line, and concurrent writers cannot interleave into the middle of a line
 - `docs/workflow.md` and `docs/release-workflow.md` follow the shared crazy-goat templates; project commands live in the new `AGENTS.md`
 - `bin/` has the shared issue and worktree helper scripts, plus `worktree-setup.sh` and `worktree-teardown.sh`
 - CI: the aggregate job is now `ci-ok`, heavy jobs are skipped for documentation-only changes, and workflows run on pushes to `main`
