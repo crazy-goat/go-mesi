@@ -222,38 +222,41 @@ fi
 echo ""
 echo "--- Error Handling ---"
 
-echo "Test 16: Missing argument produces error message"
-set +e
-RESULT=$("$CLI_BINARY" 2>&1)
-CODE=$?
-set -e
-if [ "$CODE" -eq 1 ] && echo "$RESULT" | grep -qi "error\|missing\|usage"; then
-	pass "Missing argument error reported"
-else
-	fail "Missing argument" "exit=$CODE output: $RESULT"
-fi
+# Tests 16-18 also pin WHERE the message goes: stdout carries the parsed
+# page, so `mesi-cli <input> > out.html` must produce an empty out.html on
+# failure (#540). The unit tests in mesi-cli_test.go cover every branch; these
+# three prove the missing-argument, file-read and URL-fetch paths end to end
+# through the real binary. The pattern is the branch's own message, not a loose
+# "error", so a run that reached a different branch fails instead of passing.
+check_error_on_stderr() {
+	local label="$1" want="$2"
+	shift 2
+	local out err code
+	set +e
+	out=$("$CLI_BINARY" "$@" 2>"$TEST_DIR/stderr.txt")
+	code=$?
+	set -e
+	err=$(cat "$TEST_DIR/stderr.txt")
+	rm -f "$TEST_DIR/stderr.txt"
+	if [ "$code" -ne 1 ]; then
+		fail "$label" "exit=$code (expected 1) for: $*"
+	elif [ -n "$out" ]; then
+		fail "$label" "stdout not empty on an error path: $out"
+	elif ! echo "$err" | grep -q "$want"; then
+		fail "$label" "expected /$want/ on stderr for: $*, got: $err"
+	else
+		pass "$label reported on stderr with empty stdout"
+	fi
+}
 
-echo "Test 17: Nonexistent file produces error message"
-set +e
-RESULT=$("$CLI_BINARY" "/nonexistent/file.html" 2>&1)
-CODE=$?
-set -e
-if [ "$CODE" -eq 1 ] && echo "$RESULT" | grep -qi "error"; then
-	pass "Nonexistent file error reported"
-else
-	fail "Nonexistent file" "exit=$CODE output: $RESULT"
-fi
+echo "Test 16: Missing argument produces error message on stderr"
+check_error_on_stderr "Missing argument" "Missing file|url path argument"
 
-echo "Test 18: Bad URL produces error message"
-set +e
-RESULT=$("$CLI_BINARY" "http://127.0.0.1:99999/" 2>&1)
-CODE=$?
-set -e
-if [ "$CODE" -eq 1 ] && echo "$RESULT" | grep -qi "error\|refused\|timeout\|connection"; then
-	pass "Bad URL error reported"
-else
-	fail "Bad URL" "exit=$CODE output: $RESULT"
-fi
+echo "Test 17: Nonexistent file produces error message on stderr"
+check_error_on_stderr "Nonexistent file" "Error reading file" "/nonexistent/file.html"
+
+echo "Test 18: Bad URL produces error message on stderr"
+check_error_on_stderr "Bad URL" "Error fetching url" "http://127.0.0.1:99999/"
 
 echo ""
 echo "--- Allowed Hosts Tests ---"

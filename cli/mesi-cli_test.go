@@ -137,11 +137,19 @@ func TestCLI_fileMode_emptyFile(t *testing.T) {
 	}
 }
 
+// TestCLI_error_missingArgument pins the usage text on stderr: stdout
+// carries the parsed page, so a script doing `mesi-cli url > out.html`
+// must not get "Missing file|url path argument" mixed into out.html.
 func TestCLI_error_missingArgument(t *testing.T) {
 	stdout, stderr, exitCode := runCLI(t)
-	output := stdout + stderr
-	if !strings.Contains(output, "Error") && !strings.Contains(output, "Usage") {
-		t.Errorf("expected error message in output, got stdout=%q stderr=%q", stdout, stderr)
+	if !strings.Contains(stderr, "Error: Missing file|url path argument.") {
+		t.Errorf("expected the missing-argument error on stderr, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "Usage:") {
+		t.Errorf("expected the usage line on stderr, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("expected empty stdout when no argument is given, got %q", stdout)
 	}
 	if exitCode != 1 {
 		t.Errorf("expected exit code 1, got %d", exitCode)
@@ -150,9 +158,11 @@ func TestCLI_error_missingArgument(t *testing.T) {
 
 func TestCLI_error_nonexistentFile(t *testing.T) {
 	stdout, stderr, exitCode := runCLI(t, "/nonexistent/file/path.html")
-	output := stdout + stderr
-	if !strings.Contains(output, "Error") {
-		t.Errorf("expected error message, got stdout=%q stderr=%q", stdout, stderr)
+	if !strings.Contains(stderr, "Error reading file") {
+		t.Errorf("expected %q on stderr, got stdout=%q stderr=%q", "Error reading file", stdout, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("expected empty stdout on an error path, got %q", stdout)
 	}
 	if exitCode != 1 {
 		t.Errorf("expected exit code 1, got %d", exitCode)
@@ -172,23 +182,41 @@ func TestCLI_error_urlModeFailures(t *testing.T) {
 		_, _ = w.Write([]byte("plain"))
 	}))
 	defer plain.Close()
+	// Declares more bytes than it writes: the connection is closed
+	// mid-body, so the client's io.ReadAll fails with unexpected EOF and
+	// the "Error reading response" branch is the one under test.
+	truncated := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		_, _ = w.Write([]byte("short"))
+	}))
+	defer truncated.Close()
 
 	tests := []struct {
 		name    string
 		args    []string
 		wantMsg string
 	}{
+		{"unparsable URL", []string{"http://[::1"}, "Error parsing URL"},
 		{"connection refused", []string{"http://127.0.0.1:1/"}, "Error fetching url"},
 		{"invalid port", []string{"http://127.0.0.1:99999/"}, "Error fetching url"},
 		{"status 404", []string{notFound.URL}, "Invalid status code: 404"},
 		{"status 500", []string{serverError.URL}, "Invalid status code: 500"},
 		{"missing Edge-control header", []string{"-parse-on-header", plain.URL}, "Error response missing Edge-control header"},
+		{"truncated body", []string{truncated.URL}, "Error reading response"},
+		// Both go through log.Fatal, whose default output is already
+		// stderr; pinned here so the "all errors on stderr" contract
+		// covers the config paths too.
+		{"unknown cache backend", []string{"-cache-backend=unknown", plain.URL}, "unknown cache backend"},
+		{"memcached without servers", []string{"-cache-backend=memcached", plain.URL}, "cache-memcached-servers required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stdout, stderr, exitCode := runCLI(t, tt.args...)
-			if !strings.Contains(stdout+stderr, tt.wantMsg) {
-				t.Errorf("expected %q in output, got stdout=%q stderr=%q", tt.wantMsg, stdout, stderr)
+			if !strings.Contains(stderr, tt.wantMsg) {
+				t.Errorf("expected %q on stderr, got stdout=%q stderr=%q", tt.wantMsg, stdout, stderr)
+			}
+			if stdout != "" {
+				t.Errorf("expected empty stdout on an error path, got %q", stdout)
 			}
 			if exitCode != 1 {
 				t.Errorf("expected exit code 1, got %d", exitCode)

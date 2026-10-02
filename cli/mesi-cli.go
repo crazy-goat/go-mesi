@@ -202,8 +202,12 @@ func main() {
 	}
 	args := flag.Args()
 	if len(args) < 1 {
-		fmt.Println("Error: Missing file|url path argument.")
-		fmt.Println("Usage: go run main.go [flags] <file_path|url>")
+		// Usage and every runtime error below go to stderr, never stdout:
+		// stdout carries the parsed page, and a script redirecting it to a
+		// file must not get error text mixed in (#540). flag.PrintDefaults
+		// already writes to stderr (flag.CommandLine's default output).
+		fmt.Fprintln(os.Stderr, "Error: Missing file|url path argument.")
+		fmt.Fprintln(os.Stderr, "Usage: go run main.go [flags] <file_path|url>")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
@@ -283,7 +287,7 @@ func main() {
 	if isURL(pathOrUrl) {
 		parsedURL, err := url.Parse(pathOrUrl)
 		if err != nil {
-			fmt.Println("Error parsing URL:", err)
+			fmt.Fprintf(os.Stderr, "Error parsing URL: %v\n", err)
 			os.Exit(1)
 		}
 
@@ -294,30 +298,30 @@ func main() {
 		}
 		req, err := http.NewRequest("GET", pathOrUrl, nil)
 		if err != nil {
-			fmt.Println("Error creating request:", err)
+			fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
 			os.Exit(1)
 		}
 		req.Header.Set("Surrogate-Capability", "ESI/1.0")
 
 		content, err := client.Do(req)
 		if err != nil {
-			fmt.Println("Error fetching url:", err)
+			fmt.Fprintf(os.Stderr, "Error fetching url: %v\n", err)
 			os.Exit(1)
 		}
 
 		if !mesi.IsEsiResponse(content) && config.ParseOnHeader {
-			fmt.Println("Error response missing Edge-control header:")
+			fmt.Fprintln(os.Stderr, "Error response missing Edge-control header:")
 			os.Exit(1)
 		}
 
 		body, err := io.ReadAll(content.Body)
 		if err != nil {
-			fmt.Println("Error reading response:", err)
+			fmt.Fprintf(os.Stderr, "Error reading response: %v\n", err)
 			os.Exit(1)
 		}
 
 		if content.StatusCode >= 400 {
-			fmt.Println("Invalid status code:", content.StatusCode)
+			fmt.Fprintf(os.Stderr, "Invalid status code: %d\n", content.StatusCode)
 			os.Exit(1)
 		}
 
@@ -325,7 +329,7 @@ func main() {
 	} else {
 		fileContent, err := os.ReadFile(pathOrUrl)
 		if err != nil {
-			fmt.Println("Error reading file:", err)
+			fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
 			os.Exit(1)
 		}
 
