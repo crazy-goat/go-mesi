@@ -9,8 +9,11 @@ import (
 
 type ResponseWriter struct {
 	// ResponseWriter wraps an http.ResponseWriter to capture the response body.
-	// Note: Write() buffers data internally, so Flush() only works for HTTP/2
-	// compatibility but not for true streaming (SSE, chunked transfer).
+	// Note: Write() buffers data internally and the integration writes the
+	// final response itself, so Flush() is accepted but does nothing: there
+	// is no true streaming (SSE, chunked transfer). Forwarding it would make
+	// net/http send the headers with an implicit 200 before the buffered
+	// status is written (#535).
 	// For streaming responses, consider bypassing this wrapper or using a
 	// different architecture that writes directly to the underlying writer.
 	http.ResponseWriter
@@ -42,11 +45,12 @@ func (rw *ResponseWriter) Body() *bytes.Buffer {
 	return rw.body
 }
 
-func (rw *ResponseWriter) Flush() {
-	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
+// Flush is a no-op. The response is held back until the integration has
+// decided what to send, so the real writer must not see a flush (which
+// commits the headers with an implicit 200) before that. The method stays
+// so ResponseWriter keeps implementing http.Flusher, which handlers such as
+// httputil.ReverseProxy look for.
+func (rw *ResponseWriter) Flush() {}
 
 func (rw *ResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
