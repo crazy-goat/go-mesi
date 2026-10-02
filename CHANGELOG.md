@@ -7,6 +7,7 @@
 - `docs/workflow.md` and `docs/release-workflow.md` follow the shared crazy-goat templates; project commands live in the new `AGENTS.md`
 - `bin/` has the shared issue and worktree helper scripts, plus `worktree-setup.sh` and `worktree-teardown.sh`
 - CI: the aggregate job is now `ci-ok`, heavy jobs are skipped for documentation-only changes, and workflows run on pushes to `main`
+- CI: `golangci/golangci-lint-action` is now v9, so the linter resolves to v2.x instead of the v1.64.8 that v6 pinned. v1.64.8 is built with a pre-1.24 Go and cannot typecheck a module declaring `go 1.24`, which surfaced as a bogus `undefined: <pkg> (typecheck)` on valid code
 - CI builds with Go 1.25, matching the highest `go` directive declared by any module (`servers/caddy`); Go 1.23 could not build `servers/traefik` (1.24) once a toolchain pinned `GOTOOLCHAIN=local`
 - Dependabot is enabled for the Go modules and GitHub Actions
 - Issue and pull request templates follow the standard
