@@ -27,6 +27,9 @@ services:
       # 8094 = MesiMaxWorkers 2, 8095 = MesiMaxWorkers 0 (#171).
       - "${APACHE_PORT_8094:-8094}:8094"
       - "${APACHE_PORT_8095:-8095}:8095"
+      # 8096 = MesiMaxBodySize 2000 (pass), 8097 = + MesiOnOversize error.
+      - "${APACHE_PORT_8096:-8096}:8096"
+      - "${APACHE_PORT_8097:-8097}:8097"
     environment:
       - MESI_FORCE_FLATTEN_ERROR=${MESI_FORCE_FLATTEN_ERROR:-}
     volumes:

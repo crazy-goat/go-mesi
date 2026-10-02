@@ -56,7 +56,14 @@ static int force_flatten_error = 0;
 
 typedef struct {
     apr_bucket_brigade *bb;
+    apr_off_t total; // bytes accumulated so far (for MesiMaxBodySize)
+    int passthrough; // 1 = oversize in pass mode: forward everything untouched
+    int failed;      // 1 = oversize in error mode: 502 sent, drop the rest
 } response_filter_ctx;
+
+// MesiOnOversize values.
+#define MESI_ON_OVERSIZE_PASS 0
+#define MESI_ON_OVERSIZE_ERROR 1
 
 module AP_MODULE_DECLARE_DATA mesi_module;
 
@@ -129,6 +136,12 @@ typedef struct {
     // -1 for 0 to survive the merge below. Range [0,
     // MESI_MAX_MAX_RESPONSE_SIZE].
     apr_off_t max_response_size; // -1=unset, >=0 = configured (bytes)
+    // Cap on the parent (origin) response body that is buffered for ESI
+    // processing, in bytes. -1 = unset and 0 = unlimited (no limit,
+    // pre-change behaviour). Over the limit the response is handled per
+    // on_oversize.
+    apr_off_t max_body_size; // -1=unset, >=0 = configured (bytes)
+    int on_oversize;         // -1=unset, MESI_ON_OVERSIZE_PASS (default) or _ERROR
     // Cap on concurrent <esi:include> HTTP fetches within one page
     // render (one MESIParse call — per Apache worker thread under
     // MPM worker/event, not process-wide) (#170). -1 = unset: the
@@ -251,6 +264,8 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     conf->max_depth = -1;               // -1 = unset, default 5 applied in filter
     conf->timeout_seconds = -1;         // -1 = unset: legacy parse path, libgomesi applies its 30s Go-side (macro documents it only)
     conf->max_response_size = -1;       // -1 = unset: legacy parse path, libgomesi leaves 0 = unlimited (pre-#169 behaviour)
+    conf->max_body_size = -1;           // -1 = unset: no limit (0 is unlimited too)
+    conf->on_oversize = -1;             // -1 = unset: pass
     conf->max_concurrent_requests = -1; // -1 = unset: legacy parse path, libgomesi leaves 0 = unlimited (pre-#170 behaviour)
     conf->max_workers = -1;             // -1 = unset: legacy parse path, libgomesi leaves 0 = library default NumCPU*4 (pre-#171 behaviour)
     return conf;
@@ -302,6 +317,8 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     // so the sentinel stays unambiguous and a vhost's explicit 0
     // overrides a global limit.
     conf->max_response_size = (add->max_response_size != -1) ? add->max_response_size : base->max_response_size;
+    conf->max_body_size = (add->max_body_size != -1) ? add->max_body_size : base->max_body_size;
+    conf->on_oversize = (add->on_oversize != -1) ? add->on_oversize : base->on_oversize;
     // Max concurrent requests: child wins when explicitly set; -1
     // sentinel inherits. Unlike timeout, 0 IS storable (explicit
     // "unlimited"), and -1 can never be stored
@@ -1024,6 +1041,35 @@ static const char *set_max_response_size(cmd_parms *cmd, void *cfg, const char *
         return err;
     }
     conf->max_response_size = v;
+    return NULL;
+}
+
+// MesiMaxBodySize — cap on the parent response body buffered for ESI
+// processing, in bytes. 0 = unlimited. Same strict parser as
+// MesiMaxResponseSize.
+static const char *set_max_body_size(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
+    apr_off_t v = 0;
+    const char *err = parse_nonneg_off(cmd->pool, arg, "MesiMaxBodySize",
+                                       0, MESI_MAX_MAX_RESPONSE_SIZE, &v);
+    if (err) {
+        return err;
+    }
+    conf->max_body_size = v;
+    return NULL;
+}
+
+// MesiOnOversize — what to do when the body exceeds MesiMaxBodySize:
+// "pass" (default) sends it unprocessed, "error" answers 502.
+static const char *set_on_oversize(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
+    if (strcasecmp(arg, "pass") == 0) {
+        conf->on_oversize = MESI_ON_OVERSIZE_PASS;
+    } else if (strcasecmp(arg, "error") == 0) {
+        conf->on_oversize = MESI_ON_OVERSIZE_ERROR;
+    } else {
+        return apr_psprintf(cmd->pool, "MesiOnOversize must be 'pass' or 'error' (got: %s)", arg);
+    }
     return NULL;
 }
 
@@ -1829,18 +1875,76 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         f->ctx = ctx;
     }
 
+    if (ctx->passthrough) {
+        return ap_pass_brigade(f->next, bb);
+    }
+    if (ctx->failed) {
+        apr_brigade_cleanup(bb);
+        return APR_SUCCESS;
+    }
+
+    apr_off_t limit = (conf->max_body_size > 0) ? conf->max_body_size : 0;
+    int oversize = 0;
+    // Declared Content-Length over the limit: decide before buffering.
+    // Bodiless responses (HEAD, 204, 304) are never limited.
+    int bodiless = f->r->header_only || f->r->status == HTTP_NO_CONTENT || f->r->status == HTTP_NOT_MODIFIED;
+    if (limit > 0 && !bodiless && f->r->clength > limit) {
+        oversize = 1;
+    }
+
     // Move all buckets from the incoming brigade to our accumulation brigade.
     // Track whether we've seen the end-of-stream (EOS) marker.
     int seen_eos = 0;
     apr_bucket *b;
-    while ((b = APR_BRIGADE_FIRST(bb)) != APR_BRIGADE_SENTINEL(bb)) {
+    while (!oversize && (b = APR_BRIGADE_FIRST(bb)) != APR_BRIGADE_SENTINEL(bb)) {
         if (APR_BUCKET_IS_EOS(b)) {
             seen_eos = 1;
             apr_bucket_delete(b);
             continue;
         }
+        if (limit > 0 && !bodiless && !APR_BUCKET_IS_METADATA(b)) {
+            apr_size_t blen = b->length;
+            if (b->length == (apr_size_t)-1) {
+                // Unknown length (pipe, socket): reading splits the bucket
+                // and gives the real size.
+                const char *data;
+                if (apr_bucket_read(b, &data, &blen, APR_BLOCK_READ) != APR_SUCCESS) {
+                    blen = 0;
+                }
+            }
+            ctx->total += (apr_off_t)blen;
+            if (ctx->total > limit) {
+                oversize = 1;
+                break;
+            }
+        }
         APR_BUCKET_REMOVE(b);
         APR_BRIGADE_INSERT_TAIL(ctx->bb, b);
+    }
+
+    if (oversize) {
+        if (conf->on_oversize == MESI_ON_OVERSIZE_ERROR) {
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r,
+                          "mesi: response body exceeds MesiMaxBodySize (%" APR_OFF_T_FMT " bytes), returning 502",
+                          limit);
+            ctx->failed = 1;
+            apr_brigade_cleanup(ctx->bb);
+            apr_brigade_cleanup(bb);
+            // Nothing has been sent yet (everything is buffered here), so
+            // an error bucket turns the response into a 502.
+            apr_bucket_brigade *eb = apr_brigade_create(f->r->pool, f->c->bucket_alloc);
+            APR_BRIGADE_INSERT_TAIL(eb, ap_bucket_error_create(HTTP_BAD_GATEWAY, NULL, f->r->pool, f->c->bucket_alloc));
+            APR_BRIGADE_INSERT_TAIL(eb, apr_bucket_eos_create(f->c->bucket_alloc));
+            ap_remove_output_filter(f);
+            return ap_pass_brigade(f->next, eb);
+        }
+        ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+                      "mesi: response body exceeds MesiMaxBodySize (%" APR_OFF_T_FMT " bytes), skipping ESI processing",
+                      limit);
+        // Send what we buffered, then the rest, untouched.
+        ctx->passthrough = 1;
+        APR_BRIGADE_CONCAT(ctx->bb, bb);
+        return ap_pass_brigade(f->next, ctx->bb);
     }
 
     if (!seen_eos) {
@@ -2049,6 +2153,8 @@ static const command_rec mesi_directives[] = {
     AP_INIT_TAKE1("MesiMaxDepth", set_max_depth, NULL, RSRC_CONF, "Maximum ESI nesting depth (0..10000). Unset=5. 0=passthrough"),
     AP_INIT_TAKE1("MesiTimeout", set_timeout, NULL, RSRC_CONF, "ESI processing timeout per include in seconds (1..86400). Unset=30"),
     AP_INIT_TAKE1("MesiMaxResponseSize", set_max_response_size, NULL, RSRC_CONF, "Maximum ESI include response body size in bytes (0=unlimited). Unset=unlimited"),
+    AP_INIT_TAKE1("MesiMaxBodySize", set_max_body_size, NULL, RSRC_CONF, "Maximum parent response body size in bytes buffered for ESI processing (0=unlimited). Unset=unlimited"),
+    AP_INIT_TAKE1("MesiOnOversize", set_on_oversize, NULL, RSRC_CONF, "Action when the body exceeds MesiMaxBodySize: pass (send unprocessed, default) or error (502)"),
     AP_INIT_TAKE1("MesiMaxConcurrentRequests", set_max_concurrent_requests, NULL, RSRC_CONF, "Maximum concurrent ESI include fetches per page render (0=unlimited). Unset=0 (unlimited)"),
     AP_INIT_TAKE1("MesiMaxWorkers", set_max_workers, NULL, RSRC_CONF, "Maximum token-processing goroutines per parse level (0=NumCPU*4 library default). Unset=0 (library default)"),
     AP_INIT_RAW_ARGS("MesiAllowedHosts", set_allowed_hosts, NULL, RSRC_CONF, "Space-separated list of allowed hostnames for ESI includes"),

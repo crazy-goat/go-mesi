@@ -156,6 +156,24 @@ MesiCacheTTL 60
   EnableMesi On
   MesiMaxResponseSize 10485760
   ```
+- `MesiMaxBodySize N` — Caps the size, in **bytes**, of the parent HTML
+  body that the filter buffers for ESI processing (`RSRC_CONF`; example:
+  `MesiMaxBodySize 1048576`). Unset or `0` is unlimited (old behaviour).
+  A known `Content-Length` over the limit is decided before anything is
+  buffered; otherwise the size is counted while the body is collected.
+  `HEAD`, `204` and `304` are never limited. Same strict parser and range
+  as `MesiMaxResponseSize`; a vhost value (also `0`) overrides the global
+  one. Not to be confused with `MesiMaxResponseSize`, which limits each
+  `<esi:include>` fetch.
+- `MesiOnOversize pass|error` — What to do when the body exceeds
+  `MesiMaxBodySize`. `pass` (default) sends the body unchanged and logs a
+  warning; `error` logs an error and answers `502 Bad Gateway`. Any other
+  value is rejected at config load.
+
+  ```apache
+  MesiMaxBodySize 5242880
+  MesiOnOversize error
+  ```
 - `MesiMaxConcurrentRequests N` — Caps the number of concurrent
   `<esi:include>` HTTP fetches within one page render (`RSRC_CONF`,
   server context; example: `MesiMaxConcurrentRequests 5` next to
