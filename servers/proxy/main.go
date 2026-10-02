@@ -29,6 +29,8 @@ var (
 	parseOnHeader = flag.Bool("parse-on-header", false, "Only parse when Edge-control: dca=esi header is present")
 	blockPrivate  = flag.Bool("block-private-ips", true, "Block private IP addresses")
 	debug         = flag.Bool("debug", false, "Enable debug logging")
+	maxBodySize   = flag.Int64("max-body-size", 0, "Max size in bytes of the parent HTML body buffered for ESI processing (0 = unlimited)")
+	onOversize    = flag.String("on-oversize", "pass", "When the parent body is over --max-body-size: pass (send it unchanged, log a warning) or error (log an error, answer 502)")
 
 	// Cache backend flags
 	cacheBackend          = flag.String("cache-backend", "", "Cache backend: memory, redis, memcached (default: off)")
@@ -189,6 +191,11 @@ func main() {
 	proxy, err := NewProxy(*backend, config)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating proxy: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := proxy.SetBodyLimit(*maxBodySize, *onOversize); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 

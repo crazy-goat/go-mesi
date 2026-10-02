@@ -382,3 +382,24 @@ func TestResponseWriter_BodyLimit_NoBodyStatusesAreNotCounted(t *testing.T) {
 		}
 	}
 }
+
+func TestResponseWriter_BodyLimit_LimitOnlyIf(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rw := htmlWriter(rec)
+	rw.SetBodyLimit(3, OversizeError, nil)
+	rw.LimitOnlyIf(func(h http.Header) bool { return h.Get("Edge-control") == "dca=esi" })
+	_, _ = rw.Write([]byte("0123456789"))
+	if rw.HandleOversize() || rw.Body().Len() != 10 {
+		t.Error("a response the filter rejects must not be limited")
+	}
+
+	rec = httptest.NewRecorder()
+	rec.Header().Set("Edge-control", "dca=esi")
+	rw = htmlWriter(rec)
+	rw.SetBodyLimit(3, OversizeError, nil)
+	rw.LimitOnlyIf(func(h http.Header) bool { return h.Get("Edge-control") == "dca=esi" })
+	_, _ = rw.Write([]byte("0123456789"))
+	if !rw.HandleOversize() {
+		t.Error("a response the filter accepts must be limited")
+	}
+}
