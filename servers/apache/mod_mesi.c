@@ -818,6 +818,15 @@ static const char *set_allowed_hosts(cmd_parms *cmd, void *cfg, const char *arg)
     if (!arg || !mesi_has_hostname_token(arg)) {
         return "MesiAllowedHosts must contain at least one hostname";
     }
+    // Reject quote characters (#532): the directive is AP_INIT_RAW_ARGS, so
+    // Apache does not unquote the line and `"backend other"` would store
+    // the hosts `"backend` and `other"`, which never match and silently
+    // block every include. Fail at config load instead; hosts are written
+    // unquoted, separated by spaces.
+    if (strchr(arg, '"') || strchr(arg, '\'')) {
+        return "MesiAllowedHosts: quote characters are not allowed in host names; "
+               "write the hosts unquoted, separated by spaces";
+    }
     while (*arg) {
         // Skip whitespace (space, tab)
         while (*arg && (*arg == ' ' || *arg == '\t')) arg++;
