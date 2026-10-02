@@ -87,13 +87,25 @@ else
 fi
 
 echo "=== Test 6: Non-HTML content passthrough ==="
-HEADERS=$(curl -sI -H "Host: domain.com" http://localhost:"$HTTP_PORT"/esi)
-CT=$(echo "$HEADERS" | grep -i "Content-Type" || true)
-if echo "$CT" | grep -qi "text/html"; then
-    echo "PASS: /esi endpoint returns text/html (processed by mesi)"
-else
-    echo "INFO: /esi Content-Type: $CT"
+# /plain is text/plain and contains a literal <esi:include> tag: a passthrough
+# leaves the body and the Content-Type untouched, a wrongly processed response
+# would replace the tag with the included page.
+PLAIN_HEADERS=$(curl -s -D - -o /tmp/mesi-traefik-plain-body.txt -H "Host: domain.com" http://localhost:"$HTTP_PORT"/plain)
+PLAIN_BODY=$(cat /tmp/mesi-traefik-plain-body.txt)
+rm -f /tmp/mesi-traefik-plain-body.txt
+PLAIN_CT=$(echo "$PLAIN_HEADERS" | grep -i "^Content-Type:" | tr -d '\r' || true)
+if ! echo "$PLAIN_CT" | grep -qi "text/plain"; then
+    echo "FAIL: /plain Content-Type is not text/plain (got '$PLAIN_CT')"
+    docker compose down
+    exit 1
 fi
+if [ "$PLAIN_BODY" != 'plain text with <esi:include src="http://test-server/esi" /> tags' ]; then
+    echo "FAIL: /plain body was not passed through unchanged"
+    echo "Body: $PLAIN_BODY"
+    docker compose down
+    exit 1
+fi
+echo "PASS: text/plain body and Content-Type passed through unchanged (tag not processed)"
 
 echo "=== Test 6b: Non-HTML responses keep the upstream status (#491) ==="
 for CODE in 404 502 302; do
