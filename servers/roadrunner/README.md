@@ -44,6 +44,8 @@ http:
 | `allow_private_ips_for_allowed_hosts` | bool | `false` | When `true`, hosts listed in `allowed_hosts` may resolve to private/reserved IPs (the dial-time block is bypassed for them). Only effective when `block_private_ips` is `true` AND `allowed_hosts` is non-empty; no effect under `shared_http_client` (the shared transport bakes `block_private_ips` at startup). **Trusts DNS** — a compromised entry in `allowed_hosts` can reach internal/private addresses. |
 | `timeout` | string | `"10s"` | Per-include ESI fetch time budget (Go duration format), from 1s through 24h. Omit to use the historical 10s default; explicit invalid, zero, or negative values fail plugin initialization. |
 | `max_response_size` | int64 | `0` (unlimited) | Maximum response-body bytes for each individual ESI include. Over-limit includes fail closed and render fallback/error-marker content; negative values and values above `9223372036854775806` are rejected. |
+| `max_body_size` | int64 | `0` (unlimited) | Maximum size in bytes of the parent HTML body that is buffered for ESI processing (#538). Negative values are rejected. |
+| `on_oversize` | string | `"pass"` | What happens when the parent body is over `max_body_size`: `"pass"` sends it unchanged without ESI processing and logs a warning, `"error"` logs an error and answers `502 Bad Gateway`. Other values are rejected. |
 | `max_concurrent_requests` | int | `0` (unlimited) | Maximum concurrent ESI include HTTP fetches within one page render. Includes beyond the cap wait for a slot and are not dropped; negative values and values above `999999999` are rejected. |
 | `max_workers` | int | `0` (`runtime.NumCPU()*4`) | Maximum token-processing drain-pool workers per `MESIParse` call. Each nested parse creates its own pool and inherits the cap; negative values and values above `999999999` are rejected. |
 | `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
@@ -94,6 +96,20 @@ http:
   middleware:
     mesi:
       max_response_size: 1048576 # 1 MiB per include
+```
+
+#### Maximum parent body size
+
+`max_body_size` limits the **parent** HTML page that the plugin buffers before it runs ESI on it, in bytes. Without it a very large upstream response is held completely in memory. It is separate from `max_response_size`, which caps each include. The default `0` is unlimited. Only `text/html` responses are counted and `HEAD` requests are never limited.
+
+`on_oversize` chooses what happens when the page is over the limit. With `pass` (default) the page is sent to the client unchanged, without ESI processing, and a warning is logged. With `error` an error is logged and the client gets `502 Bad Gateway`; the rest of the upstream body is read and dropped, not buffered. If the upstream `Content-Length` is known and over the limit, the decision is made before anything is buffered; otherwise when the buffered size crosses the limit.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      max_body_size: 1048576 # 1 MiB parent page
+      on_oversize: pass      # or: error
 ```
 
 #### Maximum concurrent include requests
