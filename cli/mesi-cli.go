@@ -205,7 +205,7 @@ func main() {
 		fmt.Println("Error: Missing file|url path argument.")
 		fmt.Println("Usage: go run main.go [flags] <file_path|url>")
 		flag.PrintDefaults()
-		return
+		os.Exit(1)
 	}
 
 	config := mesi.CreateDefaultConfig()
@@ -284,7 +284,7 @@ func main() {
 		parsedURL, err := url.Parse(pathOrUrl)
 		if err != nil {
 			fmt.Println("Error parsing URL:", err)
-			return
+			os.Exit(1)
 		}
 
 		config.DefaultUrl = parsedURL.String()
@@ -302,23 +302,23 @@ func main() {
 		content, err := client.Do(req)
 		if err != nil {
 			fmt.Println("Error fetching url:", err)
-			return
+			os.Exit(1)
 		}
 
 		if !mesi.IsEsiResponse(content) && config.ParseOnHeader {
 			fmt.Println("Error response missing Edge-control header:")
-			return
+			os.Exit(1)
 		}
 
 		body, err := io.ReadAll(content.Body)
 		if err != nil {
 			fmt.Println("Error reading response:", err)
-			return
+			os.Exit(1)
 		}
 
 		if content.StatusCode >= 400 {
 			fmt.Println("Invalid status code:", content.StatusCode)
-			return
+			os.Exit(1)
 		}
 
 		data = string(body)
@@ -326,7 +326,7 @@ func main() {
 		fileContent, err := os.ReadFile(pathOrUrl)
 		if err != nil {
 			fmt.Println("Error reading file:", err)
-			return
+			os.Exit(1)
 		}
 
 		data = string(fileContent)
