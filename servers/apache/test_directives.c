@@ -543,12 +543,7 @@ static const char *set_cache_redis_db(mesi_config *conf, const char *arg) {
     return NULL;
 }
 
-/* MesiCacheMemcachedServers — space-separated "host:port" entries
- * (#176). Mirrors set_cache_memcached_servers in mod_mesi.c.
- * Each entry must contain a ':'+port_in_[1,65535]. Tokens with
- * embedded control chars, quote chars or JSON-meta characters
- * are rejected.
- */
+/* MesiCacheKeyTemplate — cache key template, e.g. "mesi:${url}". */
 static const char *set_cache_key_template(mesi_config *conf, const char *arg) {
     if (!arg) return "MesiCacheKeyTemplate requires an argument";
     if (arg[0] == '\0') {
@@ -592,6 +587,12 @@ static const char *set_cache_key_template(mesi_config *conf, const char *arg) {
     return NULL;
 }
 
+/* MesiCacheMemcachedServers — space-separated "host:port" entries
+ * (#176). Mirrors set_cache_memcached_servers in mod_mesi.c.
+ * Each entry must contain a ':'+port_in_[1,65535]. Tokens with
+ * embedded control chars, quote chars or JSON-meta characters
+ * are rejected.
+ */
 static const char *set_cache_memcached_servers(mesi_config *conf, const char *arg) {
     if (!arg) {
         return "MesiCacheMemcachedServers requires space-separated host:port entries";
