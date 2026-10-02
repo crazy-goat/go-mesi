@@ -546,7 +546,8 @@ static const char *set_cache_redis_db(mesi_config *conf, const char *arg) {
 /* MesiCacheMemcachedServers — space-separated "host:port" entries
  * (#176). Mirrors set_cache_memcached_servers in mod_mesi.c.
  * Each entry must contain a ':'+port_in_[1,65535]. Tokens with
- * embedded control chars or JSON-meta characters are rejected.
+ * embedded control chars, quote chars or JSON-meta characters
+ * are rejected.
  */
 static const char *set_cache_key_template(mesi_config *conf, const char *arg) {
     if (!arg) return "MesiCacheKeyTemplate requires an argument";
@@ -604,13 +605,24 @@ static const char *set_cache_memcached_servers(mesi_config *conf, const char *ar
         if (tok == arg) {
             continue;
         }
+        int has_quote = 0;
         int has_invalid = 0;
         for (const char *p = tok; p < arg; p++) {
             unsigned char c = (unsigned char)*p;
-            if (c == '"' || c == '\\' || c < 0x20) {
+            if (c == '"' || c == '\'') {
+                has_quote = 1;
+                break;
+            }
+            if (c == '\\' || c < 0x20) {
                 has_invalid = 1;
                 break;
             }
+        }
+        if (has_quote) {
+            return apr_psprintf(pool,
+                                "MesiCacheMemcachedServers: quote characters are not allowed in entries; "
+                                "write the host:port entries unquoted, separated by spaces (got: %.*s)",
+                                (int)(arg - tok), tok);
         }
         if (has_invalid) {
             return apr_psprintf(pool,
@@ -1905,15 +1917,61 @@ TEST(memcached_servers_alpha_port_rejected) {
     ASSERT_NOT_NULL(err);
 }
 
-TEST(memcached_servers_internal_whitespace_rejected) {
-    /* Tokens were extracted on whitespace boundaries, so internal
-     * whitespace is impossible at this layer. Verify quote/control
-     * chars instead — those would corrupt the rendered JSON config. */
+/* #542: the directive is RAW_ARGS, so Apache does not unquote the line
+ * and never strips a quote. MesiAllowedHosts got the same treatment in
+ * #532; without it 'mc':11211 stores the host 'mc', which can never
+ * resolve, and the operator sees no error at config load. */
+TEST(memcached_servers_single_quote_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "'mc':11211");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "quote characters are not allowed");
+}
+
+/* Renamed from memcached_servers_internal_whitespace_rejected: tokens are
+ * extracted on whitespace boundaries, so internal whitespace is impossible
+ * at this layer, and since #542 the double quote no longer reaches the
+ * generic invalid-character check. */
+TEST(memcached_servers_double_quote_rejected) {
     mesi_config conf;
     init_config(&conf);
     const char *err = set_cache_memcached_servers(&conf, "10.0.0.1\" :11211");
     ASSERT_NOT_NULL(err);
-    ASSERT_STR_CONTAINS(err, "invalid character");
+    ASSERT_STR_CONTAINS(err, "quote characters are not allowed");
+}
+
+TEST(memcached_servers_quoted_entry_rejected) {
+    /* The usual quoted forms. These failed before #542 too, but with a
+     * misleading message: a double-quoted entry tripped the generic
+     * invalid-character check, and a single-quoted one reached the port
+     * parser and complained about the port. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_STR_CONTAINS(set_cache_memcached_servers(&conf, "'10.0.0.1:11211'"),
+                        "quote characters are not allowed");
+    init_config(&conf);
+    ASSERT_STR_CONTAINS(set_cache_memcached_servers(&conf, "\"10.0.0.1:11211\""),
+                        "quote characters are not allowed");
+}
+
+TEST(memcached_servers_quote_in_later_entry_rejected) {
+    /* The scan is per entry, so a quote in the second entry is caught
+     * even though the first one is valid. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "10.0.0.1:11211 '10.0.0.2:11211'");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "quote characters are not allowed");
+    ASSERT_STR_CONTAINS(err, "'10.0.0.2:11211'");
+}
+
+TEST(memcached_servers_unquoted_still_accepted) {
+    /* The rejection must not narrow the accepted set. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_cache_memcached_servers(&conf, "10.0.0.1:11211 10.0.0.2:11211 [::1]:11211"));
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, 3);
 }
 
 TEST(memcached_servers_backslash_rejected) {
@@ -3241,7 +3299,11 @@ int main(int argc, char *argv[]) {
     RUN_TEST(memcached_servers_negative_port_rejected);
     RUN_TEST(memcached_servers_decimal_port_rejected);
     RUN_TEST(memcached_servers_alpha_port_rejected);
-    RUN_TEST(memcached_servers_internal_whitespace_rejected);
+    RUN_TEST(memcached_servers_single_quote_rejected);
+    RUN_TEST(memcached_servers_double_quote_rejected);
+    RUN_TEST(memcached_servers_quoted_entry_rejected);
+    RUN_TEST(memcached_servers_quote_in_later_entry_rejected);
+    RUN_TEST(memcached_servers_unquoted_still_accepted);
     RUN_TEST(memcached_servers_backslash_rejected);
     RUN_TEST(memcached_servers_control_char_rejected);
     RUN_TEST(memcached_servers_max_count_accepted);

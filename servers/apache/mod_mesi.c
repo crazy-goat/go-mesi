@@ -1336,13 +1336,13 @@ static const char *set_cache_redis_db(cmd_parms *cmd, void *cfg, const char *arg
 // set_cache_memcached_servers accepts a space-separated list of
 // "host:port" entries used when MesiCacheBackend is memcached (#176).
 // Each token must contain a colon followed by a port in [1, 65535];
-// hostnames/ports with embedded whitespace, control chars, or JSON
-// meta characters are rejected so the rendered JSON config is safe to
-// pass to libgomesi. No silent fallback to localhost:11211 — if the
-// directive is omitted, the empty server list is logged as a missing-
-// config error at runtime and ESI runs without cache. AP_INIT_RAW_ARGS
-// gives us the full line, so parsing is line-based (splitting on
-// space/tab) just like set_allowed_hosts.
+// hostnames/ports with embedded whitespace, control chars, quote
+// characters or JSON meta characters are rejected so the rendered
+// JSON config is safe to pass to libgomesi. No silent fallback to
+// localhost:11211 — if the directive is omitted, the empty server list
+// is logged as a missing-config error at runtime and ESI runs without
+// cache. AP_INIT_RAW_ARGS gives us the full line, so parsing is
+// line-based (splitting on space/tab) just like set_allowed_hosts.
 static const char *set_cache_memcached_servers(cmd_parms *cmd, void *cfg, const char *arg) {
     mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     if (!arg) {
@@ -1364,13 +1364,29 @@ static const char *set_cache_memcached_servers(cmd_parms *cmd, void *cfg, const 
         // (The token was extracted by stopping on space/tab, so
         // whitespace inside the token is impossible; but we recheck
         // for control chars and JSON-meta to be safe.)
+        // Quote characters get their own message (#542): the directive
+        // is AP_INIT_RAW_ARGS, so Apache does not unquote the line and
+        // 'mc':11211 stores the host 'mc', which can never resolve. Say
+        // so instead of the generic "invalid character", the same way
+        // MesiAllowedHosts does after #532.
+        int has_quote = 0;
         int has_invalid = 0;
         for (const char *p = tok; p < arg; p++) {
             unsigned char c = (unsigned char)*p;
-            if (c == '"' || c == '\\' || c < 0x20) {
+            if (c == '"' || c == '\'') {
+                has_quote = 1;
+                break;
+            }
+            if (c == '\\' || c < 0x20) {
                 has_invalid = 1;
                 break;
             }
+        }
+        if (has_quote) {
+            return apr_psprintf(cmd->pool,
+                                "MesiCacheMemcachedServers: quote characters are not allowed in entries; "
+                                "write the host:port entries unquoted, separated by spaces (got: %.*s)",
+                                (int)(arg - tok), tok);
         }
         if (has_invalid) {
             return apr_psprintf(cmd->pool,

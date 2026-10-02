@@ -122,6 +122,39 @@ check_allowed_hosts_config reject "single-quoted host" "'backend'" "quote charac
 check_allowed_hosts_config reject "partly quoted list" 'backend "other"' "quote characters are not allowed"
 check_allowed_hosts_config accept "hostnames with Unicode whitespace" $'\xc2\xa0backend other.example\xe3\x80\x80'
 
+echo "=== Test 6c: MesiCacheMemcachedServers rejects quote characters at config load (#542) ==="
+# The directive is AP_INIT_RAW_ARGS, so Apache never unquotes the line.
+# Before #542 `"mc:11211"` failed with a generic invalid-character error
+# and `'mc':11211'` slipped through the character check entirely and was
+# stored as the host 'mc', which can never resolve. -c applies the
+# directive after the main config, so mod_mesi is already loaded.
+check_memcached_servers_config() {
+    local expect="$1" label="$2" value="$3" msg="${4:-}" out
+    if out=$(docker compose exec -T apache sh -c '. /etc/apache2/envvars && exec apache2 -t -c "MesiCacheMemcachedServers $1"' sh "$value" 2>&1); then
+        if [ "$expect" = "reject" ]; then
+            echo "FAIL: MesiCacheMemcachedServers $label was accepted by apache2 -t"
+            echo "Output: $out"
+            docker compose down
+            exit 1
+        fi
+        echo "PASS: MesiCacheMemcachedServers $label accepted"
+    else
+        if [ "$expect" = "accept" ] || ! echo "$out" | grep -q "$msg"; then
+            echo "FAIL: MesiCacheMemcachedServers $label: unexpected apache2 -t result (expected $expect)"
+            echo "Output: $out"
+            docker compose down
+            exit 1
+        fi
+        echo "PASS: MesiCacheMemcachedServers $label rejected at config load"
+    fi
+}
+check_memcached_servers_config reject "single-quoted host" "'mc':11211" "quote characters are not allowed"
+check_memcached_servers_config reject "double-quoted host" '"mc:11211"' "quote characters are not allowed"
+check_memcached_servers_config reject "single-quoted entry" "'mc:11211'" "quote characters are not allowed"
+check_memcached_servers_config reject "quote in the second entry" "mc:11211 'other:11211'" "quote characters are not allowed"
+check_memcached_servers_config reject "backslashed host" 'mc\:11211' "invalid character"
+check_memcached_servers_config accept "two unquoted entries" "mc:11211 other:11211"
+
 echo "=== Test 6b: AllowPrivateIPsForAllowedHosts On - allowed private host succeeds (#168) ==="
 RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8081"/ssrf-allow-private-on.html)
 if echo "$RESPONSE" | grep -q "allowed content from backend"; then
