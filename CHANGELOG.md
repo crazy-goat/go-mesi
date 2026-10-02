@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Security
+- Caddy: updated to v2.11.6 and its transitive dependencies moved past the open Dependabot advisories — `google.golang.org/grpc` to 1.83.2, the OpenTelemetry log exporters to 0.22.0 and the trace exporters to 1.46.0. These are all `// indirect`, so Dependabot never raises a PR for them: it only updates declared dependencies, and `caddyserver/caddy` did not permit the patched versions while on v2.11.4
 - RoadRunner: `spiral/roadrunner` raised from `^2024.3` to `^2025.1`, fixing the open critical HTTP request/response smuggling advisory (GHSA-g9pc-8g42-g6vq). `servers/roadrunner/build.sh` and the README move off the pinned `v2024.3.5` to `v2025.1.7` (and the velox module path from `v2024` to `v2025`) so the compiled binary is not left on the vulnerable line
 
 ### Changed
