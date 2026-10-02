@@ -81,15 +81,42 @@ func TestResponseWriter_StatusCode_Default(t *testing.T) {
 	}
 }
 
-func TestResponseWriter_Flush_Delegates(t *testing.T) {
+// #535: a flush must not reach the real writer while the response is still
+// buffered, otherwise net/http commits the headers with an implicit 200 and
+// the status written later is ignored.
+func TestResponseWriter_Flush_DoesNotForward(t *testing.T) {
 	var flushed bool
-	mockWriter := &mockFlusher{flushed: &flushed}
+	mockWriter := &mockFlusher{ResponseWriter: httptest.NewRecorder(), flushed: &flushed}
 	rw := NewResponseWriter(mockWriter)
 
+	rw.WriteHeader(http.StatusNotFound)
+	_, _ = rw.Write([]byte("missing"))
 	rw.Flush()
 
-	if !flushed {
-		t.Error("expected Flush() to delegate to underlying ResponseWriter")
+	if flushed {
+		t.Error("Flush() must not be forwarded to the underlying ResponseWriter")
+	}
+	if rw.StatusCode() != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rw.StatusCode())
+	}
+	if rw.Body().String() != "missing" {
+		t.Errorf("body = %q, want it kept in the buffer", rw.Body().String())
+	}
+}
+
+func TestResponseWriter_Flush_KeepsStatusOfUnderlyingWriter(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rw := NewResponseWriter(rec)
+
+	rw.WriteHeader(http.StatusBadGateway)
+	rw.Flush()
+	if rec.Flushed {
+		t.Error("underlying recorder was flushed")
+	}
+
+	rec.WriteHeader(rw.StatusCode())
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
 	}
 }
 

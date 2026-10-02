@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -3275,5 +3277,60 @@ func TestAllowPrivateIPsForAllowedHostsEmptyAllowlistNoBypass(t *testing.T) {
 	// Guard against a vacuous pass: the raw <esi:include> tag must also be gone.
 	if strings.Contains(rec.Body.String(), "esi:include") {
 		t.Errorf("Expected the <esi:include> tag to be processed away, got body: %s", rec.Body.String())
+	}
+}
+
+// TestChunkedUpstreamKeepsStatus pins #535: httputil.ReverseProxy flushes
+// chunked responses, and a Flush forwarded to the real writer used to send
+// the headers with an implicit 200 before the buffered status was written.
+func TestChunkedUpstreamKeepsStatus(t *testing.T) {
+	cases := []struct {
+		name        string
+		status      int
+		contentType string
+		body        string
+	}{
+		{name: "json 404", status: http.StatusNotFound, contentType: "application/json", body: `{"error":"not found"}`},
+		{name: "plain 502", status: http.StatusBadGateway, contentType: "text/plain", body: "Bad Gateway"},
+		{name: "html 404", status: http.StatusNotFound, contentType: "text/html", body: "<html>missing</html>"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+				w.(http.Flusher).Flush() // no Content-Length: the response is chunked
+			}))
+			defer backend.Close()
+
+			backendURL, err := url.Parse(backend.URL)
+			if err != nil {
+				t.Fatalf("parse backend URL: %v", err)
+			}
+			reverse := httputil.NewSingleHostReverseProxy(backendURL)
+
+			m := &MesiMiddleware{}
+			if err := m.Provision(caddy.Context{}); err != nil {
+				t.Fatalf("Provision() returned error: %v", err)
+			}
+			next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+				reverse.ServeHTTP(w, r)
+				return nil
+			})
+
+			rec := httptest.NewRecorder()
+			if err := m.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://example.com/", nil), next); err != nil {
+				t.Fatalf("ServeHTTP returned error: %v", err)
+			}
+
+			if rec.Code != tc.status {
+				t.Errorf("status = %d, want %d", rec.Code, tc.status)
+			}
+			if got := rec.Body.String(); got != tc.body {
+				t.Errorf("body = %q, want %q", got, tc.body)
+			}
+		})
 	}
 }
