@@ -1,6 +1,6 @@
 services:
   php-ext:
-    image: go-mesi-php-ext-test
+    image: ${PHP_EXT_IMAGE:-go-mesi-php-ext-test}
     build:
       context: ..
       dockerfile: php-ext/Dockerfile

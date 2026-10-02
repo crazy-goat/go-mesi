@@ -1,6 +1,6 @@
 services:
   nginx:
-    image: go-mesi-nginx-test
+    image: ${NGINX_IMAGE:-go-mesi-nginx-test}
     build:
       context: ../..
       dockerfile: servers/nginx/Dockerfile

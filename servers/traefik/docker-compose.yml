@@ -1,6 +1,6 @@
 services:
   traefik:
-    image: go-mesi-traefik-test
+    image: ${TRAEFIK_IMAGE:-go-mesi-traefik-test}
     build:
       context: ../..
       dockerfile: servers/traefik/Dockerfile
