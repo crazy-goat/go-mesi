@@ -1,3 +1,5 @@
+//go:build ignore
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -268,7 +270,7 @@ int main(void) {
         // at this point. Subsequent operations that fail to connect
         // are handled by the library, but Init itself must succeed.
         int ret = InitCacheWithConfig("redis", 100, 30,
-            "{\"redisAddr\":\"127.0.0.1:1\",\"redisDB\":2}");
+                                      "{\"redisAddr\":\"127.0.0.1:1\",\"redisDB\":2}");
         if (ret == 0) {
             printf("  PASS: InitCacheWithConfig(redis, valid) returned 0\n");
         } else {
@@ -281,7 +283,7 @@ int main(void) {
     {
         // Memcached client is also lazy — no DIAL at init.
         int ret = InitCacheWithConfig("memcached", 100, 30,
-            "{\"servers\":[\"127.0.0.1:11211\"]}");
+                                      "{\"servers\":[\"127.0.0.1:11211\"]}");
         if (ret == 0) {
             printf("  PASS: InitCacheWithConfig(memcached, valid) returned 0\n");
         } else {

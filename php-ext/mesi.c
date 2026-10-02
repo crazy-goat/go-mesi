@@ -9,16 +9,16 @@
 #include "../libgomesi/libgomesi.h"
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_parse, 0, 0, 3)
-    ZEND_ARG_INFO(0, input)
-    ZEND_ARG_INFO(0, max_depth)
-    ZEND_ARG_INFO(0, default_url)
+ZEND_ARG_INFO(0, input)
+ZEND_ARG_INFO(0, max_depth)
+ZEND_ARG_INFO(0, default_url)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_parse_with_config, 0, 0, 4)
-    ZEND_ARG_INFO(0, input)
-    ZEND_ARG_INFO(0, max_depth)
-    ZEND_ARG_INFO(0, default_url)
-    ZEND_ARG_INFO(0, config)
+ZEND_ARG_INFO(0, input)
+ZEND_ARG_INFO(0, max_depth)
+ZEND_ARG_INFO(0, default_url)
+ZEND_ARG_INFO(0, config)
 ZEND_END_ARG_INFO()
 
 /*
@@ -37,7 +37,7 @@ ZEND_END_ARG_INFO()
  * matches libgomesi semantics where `InitCacheWithConfig("", ..., "")`
  * returns 0 and leaves sharedCache == nil.
  */
-#define MESI_CFG_MAX 4096            /* mirrors Apache MESI_MAX_CACHE_CONFIG_JSON */
+#define MESI_CFG_MAX 4096 /* mirrors Apache MESI_MAX_CACHE_CONFIG_JSON */
 #define MESI_BACKEND_MAX 16
 /* Global ESI nesting depth (#414). Matches mesi.MaxMaxDepth (10,000). */
 #define MESI_MAX_MAX_DEPTH 10000
@@ -84,10 +84,10 @@ ZEND_END_ARG_INFO()
 #define MESI_MAX_MAX_WORKERS 999999999
 
 typedef struct {
-    char    backend[MESI_BACKEND_MAX]; /* "", "memory", "redis", "memcached" */
-    long    size;
-    long    ttl;
-    char    cfg_json[MESI_CFG_MAX];   /* render of build_cache_config_json() */
+    char backend[MESI_BACKEND_MAX]; /* "", "memory", "redis", "memcached" */
+    long size;
+    long ttl;
+    char cfg_json[MESI_CFG_MAX]; /* render of build_cache_config_json() */
 } mesi_cache_state_t;
 
 static mesi_cache_state_t g_cache_state = {"", -1, -1, {0}};
@@ -119,14 +119,9 @@ static int g_http_shared_client = 1;
 static int mesi_cache_state_matches(const char *backend, long size, long ttl,
                                     const char *cfg_json) {
     if (backend[0] == '\0' && g_cache_state.backend[0] == '\0') {
-        return g_cache_state.size == size
-            && g_cache_state.ttl == ttl
-            && strcmp(g_cache_state.cfg_json, cfg_json) == 0;
+        return g_cache_state.size == size && g_cache_state.ttl == ttl && strcmp(g_cache_state.cfg_json, cfg_json) == 0;
     }
-    return strcmp(g_cache_state.backend, backend) == 0
-        && g_cache_state.size == size
-        && g_cache_state.ttl == ttl
-        && strcmp(g_cache_state.cfg_json, cfg_json) == 0;
+    return strcmp(g_cache_state.backend, backend) == 0 && g_cache_state.size == size && g_cache_state.ttl == ttl && strcmp(g_cache_state.cfg_json, cfg_json) == 0;
 }
 
 static void mesi_cache_state_record(const char *backend, long size, long ttl,
@@ -166,18 +161,18 @@ static int mesi_reject_max_depth(const char *fn, zend_long max_depth) {
         return 0;
     }
     php_error_docref(NULL, E_WARNING,
-        "mesi\\%s(): max_depth must be in [0, %d], got " ZEND_LONG_FMT,
-        fn, MESI_MAX_MAX_DEPTH, max_depth);
+                     "mesi\\%s(): max_depth must be in [0, %d], got " ZEND_LONG_FMT,
+                     fn, MESI_MAX_MAX_DEPTH, max_depth);
     return 1;
 }
 
 static int mesi_is_safe_string(const char *s) {
     if (s == NULL) return 1;
     for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        if (*p < 0x20) return 0;                       /* control chars */
-        if (*p == 0x7f) return 0;                      /* DEL */
-        if (*p == ' ' || *p == '\t') return 0;         /* OWS, see RFC 7230 */
-        if (*p == '"' || *p == '\\') return 0;        /* JSON meta */
+        if (*p < 0x20) return 0;               /* control chars */
+        if (*p == 0x7f) return 0;              /* DEL */
+        if (*p == ' ' || *p == '\t') return 0; /* OWS, see RFC 7230 */
+        if (*p == '"' || *p == '\\') return 0; /* JSON meta */
     }
     return 1;
 }
@@ -188,11 +183,11 @@ static int mesi_is_safe_string(const char *s) {
  * feed us post-trim PHP strings. */
 static int mesi_parse_uint_bounded(const char *arg, long min, long max, long *out) {
     if (!arg || !*arg) return 0;
-    if (*arg < '0' || *arg > '9') return 0;  /* first byte must be a digit */
+    if (*arg < '0' || *arg > '9') return 0; /* first byte must be a digit */
     long v = 0;
     for (const char *p = arg; *p; p++) {
-        if (*p < '0' || *p > '9') return 0;  /* reject mid-string alpha/decimals */
-        if (v > (LONG_MAX / 10) - 10) return 0;  /* overflow guard */
+        if (*p < '0' || *p > '9') return 0;     /* reject mid-string alpha/decimals */
+        if (v > (LONG_MAX / 10) - 10) return 0; /* overflow guard */
         v = v * 10 + (*p - '0');
         if (v > max) return 0;
     }
@@ -347,34 +342,26 @@ static char *build_parse_json_blob(zend_long depth, const char *default_url,
     int has_tmpl = (tmpl != NULL && tmpl[0] != '\0');
     int has_ctx = (has_tmpl && ctx_json != NULL && ctx_json[0] != '\0');
     /* Worst case 6 output bytes per input byte (\\u00XX) + fixed keys. */
-    size_t cap = 360
-        + strlen(default_url) * 6
-        + strlen(allowed_hosts) * 6
-        + (has_tmpl ? strlen(tmpl) * 6 : 0)
-        + (has_ctx ? strlen(ctx_json) : 0);
+    size_t cap = 360 + strlen(default_url) * 6 + strlen(allowed_hosts) * 6 + (has_tmpl ? strlen(tmpl) * 6 : 0) + (has_ctx ? strlen(ctx_json) : 0);
     char *out = (char *)malloc(cap);
     if (out == NULL) return NULL;
     size_t pos = 0;
     if (!mesi_appendf(out, cap, &pos,
-            "{\"maxDepth\":" ZEND_LONG_FMT ",\"defaultUrl\":", depth)) goto fail;
+                      "{\"maxDepth\":" ZEND_LONG_FMT ",\"defaultUrl\":", depth)) goto fail;
     if (!mesi_json_append_str(out, cap, &pos, default_url)) goto fail;
     if (!mesi_appendf(out, cap, &pos, ",\"allowedHosts\":")) goto fail;
     if (!mesi_json_append_str(out, cap, &pos, allowed_hosts)) goto fail;
     if (!mesi_appendf(out, cap, &pos,
-            ",\"blockPrivateIPs\":%s,\"allowPrivateIPsForAllowedHosts\":%s",
-            block_private ? "true" : "false",
-            allow_private_for_allowed ? "true" : "false")) goto fail;
-    if (timeout_set
-        && !mesi_appendf(out, cap, &pos, ",\"timeoutSeconds\":%ld", timeout_seconds))
+                      ",\"blockPrivateIPs\":%s,\"allowPrivateIPsForAllowedHosts\":%s",
+                      block_private ? "true" : "false",
+                      allow_private_for_allowed ? "true" : "false")) goto fail;
+    if (timeout_set && !mesi_appendf(out, cap, &pos, ",\"timeoutSeconds\":%ld", timeout_seconds))
         goto fail;
-    if (max_response_size_set
-        && !mesi_appendf(out, cap, &pos, ",\"maxResponseSize\":%ld", max_response_size))
+    if (max_response_size_set && !mesi_appendf(out, cap, &pos, ",\"maxResponseSize\":%ld", max_response_size))
         goto fail;
-    if (max_concurrent_requests_set
-        && !mesi_appendf(out, cap, &pos, ",\"maxConcurrentRequests\":%ld", max_concurrent_requests))
+    if (max_concurrent_requests_set && !mesi_appendf(out, cap, &pos, ",\"maxConcurrentRequests\":%ld", max_concurrent_requests))
         goto fail;
-    if (max_workers_set
-        && !mesi_appendf(out, cap, &pos, ",\"maxWorkers\":%ld", max_workers))
+    if (max_workers_set && !mesi_appendf(out, cap, &pos, ",\"maxWorkers\":%ld", max_workers))
         goto fail;
     if (has_tmpl) {
         if (!mesi_appendf(out, cap, &pos, ",\"cacheKeyTemplate\":")) goto fail;
@@ -481,18 +468,22 @@ static int build_cache_config_json(const char *backend,
     out[0] = '\0';
     if (backend[0] == '\0' || strcmp(backend, "memory") == 0) {
         if (cap < 3) return -1;
-        out[0] = '{'; out[1] = '}'; out[2] = '\0';
+        out[0] = '{';
+        out[1] = '}';
+        out[2] = '\0';
         return 0;
     }
     if (strcmp(backend, "redis") == 0) {
         /* redisAddr: required non-empty (already validated host:port) */
         if (cap < 32) return -1;
-        memcpy(out + pos, "{\"redisAddr\":", 13); pos += 13;
+        memcpy(out + pos, "{\"redisAddr\":", 13);
+        pos += 13;
         if (!mesi_json_append_str(out, cap, &pos, cache_redis_addr)) return -1;
         /* redisPassword: optional. Empty/missing -> "" */
-        memcpy(out + pos, ",\"redisPassword\":", 17); pos += 17;
+        memcpy(out + pos, ",\"redisPassword\":", 17);
+        pos += 17;
         if (!mesi_json_append_str(out, cap, &pos,
-                cache_redis_password ? cache_redis_password : "")) return -1;
+                                  cache_redis_password ? cache_redis_password : "")) return -1;
         /* redisDB: omit when unset; emit as int when explicitly set. */
         if (cache_redis_db_set) {
             int n = snprintf(out + pos, cap - pos, ",\"redisDB\":%ld", cache_redis_db);
@@ -510,7 +501,8 @@ static int build_cache_config_json(const char *backend,
             return -1;
         }
         if (cap < 16) return -1;
-        memcpy(out + pos, "{\"servers\":[", 12); pos += 12;
+        memcpy(out + pos, "{\"servers\":[", 12);
+        pos += 12;
         HashTable *ht = Z_ARRVAL_P(cache_memcached_servers);
         zval *val;
         int first = 1;
@@ -525,7 +517,8 @@ static int build_cache_config_json(const char *backend,
             }
             if (!mesi_json_append_str(out, cap, &pos, Z_STRVAL_P(val))) return -1;
             first = 0;
-        } ZEND_HASH_FOREACH_END();
+        }
+        ZEND_HASH_FOREACH_END();
         if (pos + 2 >= cap) return -1;
         out[pos++] = ']';
         out[pos++] = '}';
@@ -558,14 +551,13 @@ static int parse_host_port(const char *s) {
  * by a NUL terminator; reads never go past it (a truncated sequence
  * simply reports 0). */
 static int mesi_unicode_ws_len(const unsigned char *p) {
-    if (p[0] == 0xC2 && (p[1] == 0x85 || p[1] == 0xA0)) return 2;  /* U+0085, U+00A0 */
-    if (p[0] == 0xE1 && p[1] == 0x9A && p[2] == 0x80) return 3;     /* U+1680 */
+    if (p[0] == 0xC2 && (p[1] == 0x85 || p[1] == 0xA0)) return 2; /* U+0085, U+00A0 */
+    if (p[0] == 0xE1 && p[1] == 0x9A && p[2] == 0x80) return 3;   /* U+1680 */
     if (p[0] == 0xE2 && p[1] == 0x80) {
-        if ((p[2] >= 0x80 && p[2] <= 0x8A) || p[2] == 0xA8
-            || p[2] == 0xA9 || p[2] == 0xAF) return 3;              /* U+2000-U+200A, U+2028, U+2029, U+202F */
+        if ((p[2] >= 0x80 && p[2] <= 0x8A) || p[2] == 0xA8 || p[2] == 0xA9 || p[2] == 0xAF) return 3; /* U+2000-U+200A, U+2028, U+2029, U+202F */
     }
-    if (p[0] == 0xE2 && p[1] == 0x81 && p[2] == 0x9F) return 3;     /* U+205F */
-    if (p[0] == 0xE3 && p[1] == 0x80 && p[2] == 0x80) return 3;     /* U+3000 */
+    if (p[0] == 0xE2 && p[1] == 0x81 && p[2] == 0x9F) return 3; /* U+205F */
+    if (p[0] == 0xE3 && p[1] == 0x80 && p[2] == 0x80) return 3; /* U+3000 */
     return 0;
 }
 
@@ -578,10 +570,16 @@ static int mesi_unicode_ws_len(const unsigned char *p) {
 static int mesi_allowed_hosts_has_token(const char *s) {
     const unsigned char *p = (const unsigned char *)s;
     while (*p) {
-        if (*p == ' ') { p++; continue; }
+        if (*p == ' ') {
+            p++;
+            continue;
+        }
         if (p[0] == 0xC2 || p[0] == 0xE1 || p[0] == 0xE2 || p[0] == 0xE3) {
             int n = mesi_unicode_ws_len(p);
-            if (n > 0) { p += n; continue; }
+            if (n > 0) {
+                p += n;
+                continue;
+            }
         }
         return 1;
     }
@@ -594,16 +592,16 @@ PHP_FUNCTION(parse) {
     zend_long max_depth;
 
     ZEND_PARSE_PARAMETERS_START(3, 3)
-        Z_PARAM_STRING(input, input_len)
-        Z_PARAM_LONG(max_depth)
-        Z_PARAM_STRING(default_url, default_url_len)
+    Z_PARAM_STRING(input, input_len)
+    Z_PARAM_LONG(max_depth)
+    Z_PARAM_STRING(default_url, default_url_len)
     ZEND_PARSE_PARAMETERS_END();
 
     if (mesi_reject_max_depth("parse", max_depth)) {
         RETURN_FALSE;
     }
 
-    char* result = Parse(input, (int)max_depth, default_url);
+    char *result = Parse(input, (int)max_depth, default_url);
     if (result == NULL) {
         php_error_docref(NULL, E_WARNING, "mesi\\parse(): invalid max_depth");
         RETURN_FALSE;
@@ -889,10 +887,10 @@ PHP_FUNCTION(parse_with_config) {
     zval *config = NULL;
 
     ZEND_PARSE_PARAMETERS_START(4, 4)
-        Z_PARAM_STRING(input, input_len)
-        Z_PARAM_LONG(max_depth)
-        Z_PARAM_STRING(default_url, default_url_len)
-        Z_PARAM_ARRAY(config)
+    Z_PARAM_STRING(input, input_len)
+    Z_PARAM_LONG(max_depth)
+    Z_PARAM_STRING(default_url, default_url_len)
+    Z_PARAM_ARRAY(config)
     ZEND_PARSE_PARAMETERS_END();
 
     if (mesi_reject_max_depth("parse_with_config", max_depth)) {
@@ -900,12 +898,12 @@ PHP_FUNCTION(parse_with_config) {
     }
 
     const char *cache_backend = "";
-    long cache_size = 0;     /* 0 == "not specified" → use default */
+    long cache_size = 0; /* 0 == "not specified" → use default */
     long cache_ttl = 0;
     const char *cache_redis_addr = NULL;
     const char *cache_redis_password = NULL;
     long cache_redis_db = 0;
-    long cache_redis_db_set = 0;  /* distinguish explicit 0 from "unset" */
+    long cache_redis_db_set = 0; /* distinguish explicit 0 from "unset" */
     zval *cache_memcached_servers = NULL;
 
     /* block_private_ips: secure by default. Absent => true. */
@@ -971,17 +969,15 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (Z_TYPE_P(val) != IS_STRING) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_backend must be a string");
+                                 "mesi\\parse_with_config(): cache_backend must be a string");
                 RETURN_FALSE;
             }
             const char *raw = Z_STRVAL_P(val);
-            if (strcmp(raw, "") != 0
-                && strcmp(raw, "memory") != 0
-                && strcmp(raw, "redis") != 0
-                && strcmp(raw, "memcached") != 0) {
+            if (strcmp(raw, "") != 0 && strcmp(raw, "memory") != 0 && strcmp(raw, "redis") != 0 && strcmp(raw, "memcached") != 0) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): unsupported cache_backend '%s' "
-                    "(allowed: 'memory', 'redis', 'memcached', or empty)", raw);
+                                 "mesi\\parse_with_config(): unsupported cache_backend '%s' "
+                                 "(allowed: 'memory', 'redis', 'memcached', or empty)",
+                                 raw);
                 RETURN_FALSE;
             }
             cache_backend = raw;
@@ -991,14 +987,14 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (Z_TYPE_P(val) != IS_LONG) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_size must be an integer");
+                                 "mesi\\parse_with_config(): cache_size must be an integer");
                 RETURN_FALSE;
             }
             long v = Z_LVAL_P(val);
             if (v < 1 || v > 1000000) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_size %ld is out of range [1, 1000000]",
-                    v);
+                                 "mesi\\parse_with_config(): cache_size %ld is out of range [1, 1000000]",
+                                 v);
                 RETURN_FALSE;
             }
             cache_size = v;
@@ -1008,14 +1004,14 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (Z_TYPE_P(val) != IS_LONG) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_ttl must be an integer");
+                                 "mesi\\parse_with_config(): cache_ttl must be an integer");
                 RETURN_FALSE;
             }
             long v = Z_LVAL_P(val);
             if (v < 0 || v > 86400) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_ttl %ld is out of range [0, 86400]",
-                    v);
+                                 "mesi\\parse_with_config(): cache_ttl %ld is out of range [0, 86400]",
+                                 v);
                 RETURN_FALSE;
             }
             cache_ttl = v;
@@ -1028,20 +1024,22 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (strcmp(cache_backend, "redis") != 0) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_redis_addr is only valid with "
-                    "cache_backend='redis' (got '%s')", cache_backend);
+                                 "mesi\\parse_with_config(): cache_redis_addr is only valid with "
+                                 "cache_backend='redis' (got '%s')",
+                                 cache_backend);
                 RETURN_FALSE;
             }
             if (Z_TYPE_P(val) != IS_STRING) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_redis_addr must be a string");
+                                 "mesi\\parse_with_config(): cache_redis_addr must be a string");
                 RETURN_FALSE;
             }
             if (!parse_host_port(Z_STRVAL_P(val))) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_redis_addr must be host:port with "
-                    "port in [1, 65535] and no whitespace, control chars, '\"' or '\\\\' "
-                    "(got: '%s')", Z_STRVAL_P(val));
+                                 "mesi\\parse_with_config(): cache_redis_addr must be host:port with "
+                                 "port in [1, 65535] and no whitespace, control chars, '\"' or '\\\\' "
+                                 "(got: '%s')",
+                                 Z_STRVAL_P(val));
                 RETURN_FALSE;
             }
             cache_redis_addr = Z_STRVAL_P(val);
@@ -1051,19 +1049,20 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (strcmp(cache_backend, "redis") != 0) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_redis_password is only valid with "
-                    "cache_backend='redis' (got '%s')", cache_backend);
+                                 "mesi\\parse_with_config(): cache_redis_password is only valid with "
+                                 "cache_backend='redis' (got '%s')",
+                                 cache_backend);
                 RETURN_FALSE;
             }
             if (Z_TYPE_P(val) != IS_STRING) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_redis_password must be a string");
+                                 "mesi\\parse_with_config(): cache_redis_password must be a string");
                 RETURN_FALSE;
             }
             if (!mesi_is_safe_string(Z_STRVAL_P(val))) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_redis_password contains invalid characters "
-                    "(no control chars, '\"' or '\\\\' allowed)");
+                                 "mesi\\parse_with_config(): cache_redis_password contains invalid characters "
+                                 "(no control chars, '\"' or '\\\\' allowed)");
                 RETURN_FALSE;
             }
             cache_redis_password = Z_STRVAL_P(val);
@@ -1073,20 +1072,21 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (strcmp(cache_backend, "redis") != 0) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_redis_db is only valid with "
-                    "cache_backend='redis' (got '%s')", cache_backend);
+                                 "mesi\\parse_with_config(): cache_redis_db is only valid with "
+                                 "cache_backend='redis' (got '%s')",
+                                 cache_backend);
                 RETURN_FALSE;
             }
             if (Z_TYPE_P(val) != IS_LONG) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_redis_db must be an integer");
+                                 "mesi\\parse_with_config(): cache_redis_db must be an integer");
                 RETURN_FALSE;
             }
             long v = Z_LVAL_P(val);
             if (v < 0 || v > 15) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_redis_db %ld is out of range [0, 15]",
-                    v);
+                                 "mesi\\parse_with_config(): cache_redis_db %ld is out of range [0, 15]",
+                                 v);
                 RETURN_FALSE;
             }
             cache_redis_db = v;
@@ -1097,20 +1097,21 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (strcmp(cache_backend, "memcached") != 0) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_memcached_servers is only valid with "
-                    "cache_backend='memcached' (got '%s')", cache_backend);
+                                 "mesi\\parse_with_config(): cache_memcached_servers is only valid with "
+                                 "cache_backend='memcached' (got '%s')",
+                                 cache_backend);
                 RETURN_FALSE;
             }
             if (Z_TYPE_P(val) != IS_ARRAY) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_memcached_servers must be an array");
+                                 "mesi\\parse_with_config(): cache_memcached_servers must be an array");
                 RETURN_FALSE;
             }
             HashTable *ht = Z_ARRVAL_P(val);
             if (zend_hash_num_elements(ht) == 0) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_memcached_servers is required for "
-                    "memcached backend and must contain at least one host:port entry");
+                                 "mesi\\parse_with_config(): cache_memcached_servers is required for "
+                                 "memcached backend and must contain at least one host:port entry");
                 RETURN_FALSE;
             }
             /* Validate each entry up front. */
@@ -1118,13 +1119,14 @@ PHP_FUNCTION(parse_with_config) {
             ZEND_HASH_FOREACH_VAL(ht, elt) {
                 if (Z_TYPE_P(elt) != IS_STRING || !parse_host_port(Z_STRVAL_P(elt))) {
                     php_error_docref(NULL, E_WARNING,
-                        "mesi\\parse_with_config(): every cache_memcached_servers entry "
-                        "must be host:port with port in [1, 65535] and no whitespace, "
-                        "control chars, '\"' or '\\\\' (got: '%s')",
-                        Z_TYPE_P(elt) == IS_STRING ? Z_STRVAL_P(elt) : "<non-string>");
+                                     "mesi\\parse_with_config(): every cache_memcached_servers entry "
+                                     "must be host:port with port in [1, 65535] and no whitespace, "
+                                     "control chars, '\"' or '\\\\' (got: '%s')",
+                                     Z_TYPE_P(elt) == IS_STRING ? Z_STRVAL_P(elt) : "<non-string>");
                     RETURN_FALSE;
                 }
-            } ZEND_HASH_FOREACH_END();
+            }
+            ZEND_HASH_FOREACH_END();
             cache_memcached_servers = val;
         }
 
@@ -1140,8 +1142,8 @@ PHP_FUNCTION(parse_with_config) {
                 block_private_ips = (Z_LVAL_P(val) != 0);
             } else {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): block_private_ips must be a boolean "
-                    "(true/false) or integer (non-zero = block)");
+                                 "mesi\\parse_with_config(): block_private_ips must be a boolean "
+                                 "(true/false) or integer (non-zero = block)");
                 RETURN_FALSE;
             }
         }
@@ -1160,8 +1162,8 @@ PHP_FUNCTION(parse_with_config) {
                 shared_http_client = (Z_LVAL_P(val) != 0);
             } else {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): shared_http_client must be a boolean "
-                    "(true/false) or integer (non-zero = enabled)");
+                                 "mesi\\parse_with_config(): shared_http_client must be a boolean "
+                                 "(true/false) or integer (non-zero = enabled)");
                 RETURN_FALSE;
             }
         }
@@ -1174,8 +1176,8 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (Z_TYPE_P(val) != IS_STRING) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): allowed_hosts must be a string "
-                    "(space-separated hostnames, e.g. 'backend.internal cdn.example.com')");
+                                 "mesi\\parse_with_config(): allowed_hosts must be a string "
+                                 "(space-separated hostnames, e.g. 'backend.internal cdn.example.com')");
                 RETURN_FALSE;
             }
             const char *raw = Z_STRVAL_P(val);
@@ -1185,7 +1187,7 @@ PHP_FUNCTION(parse_with_config) {
              * list. */
             if (memchr(raw, '\0', raw_len) != NULL) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): allowed_hosts contains a NUL byte");
+                                 "mesi\\parse_with_config(): allowed_hosts contains a NUL byte");
                 RETURN_FALSE;
             }
             /* Reject control characters — never valid in hostnames. */
@@ -1193,7 +1195,7 @@ PHP_FUNCTION(parse_with_config) {
                 unsigned char c = (unsigned char)raw[i];
                 if (c < 0x20 || c == 0x7f) {
                     php_error_docref(NULL, E_WARNING,
-                        "mesi\\parse_with_config(): allowed_hosts contains control characters");
+                                     "mesi\\parse_with_config(): allowed_hosts contains control characters");
                     RETURN_FALSE;
                 }
             }
@@ -1205,8 +1207,8 @@ PHP_FUNCTION(parse_with_config) {
              * hardened against in #354. */
             if (raw_len > 0 && !mesi_allowed_hosts_has_token(raw)) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): allowed_hosts must contain at least one "
-                    "hostname (whitespace-only values would silently allow all hosts)");
+                                 "mesi\\parse_with_config(): allowed_hosts must contain at least one "
+                                 "hostname (whitespace-only values would silently allow all hosts)");
                 RETURN_FALSE;
             }
             allowed_hosts = raw;
@@ -1229,8 +1231,8 @@ PHP_FUNCTION(parse_with_config) {
                 allow_private_ips_for_allowed_hosts = (Z_LVAL_P(val) != 0);
             } else {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): allow_private_ips_for_allowed_hosts must be "
-                    "a boolean (true/false) or integer (non-zero = enabled)");
+                                 "mesi\\parse_with_config(): allow_private_ips_for_allowed_hosts must be "
+                                 "a boolean (true/false) or integer (non-zero = enabled)");
                 RETURN_FALSE;
             }
         }
@@ -1247,7 +1249,7 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (Z_TYPE_P(val) != IS_STRING) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): cache_key_template must be a string");
+                                 "mesi\\parse_with_config(): cache_key_template must be a string");
                 RETURN_FALSE;
             }
             const char *raw = Z_STRVAL_P(val);
@@ -1257,13 +1259,13 @@ PHP_FUNCTION(parse_with_config) {
             } else {
                 if (memchr(raw, '\0', raw_len) != NULL) {
                     php_error_docref(NULL, E_WARNING,
-                        "mesi\\parse_with_config(): cache_key_template contains a NUL byte");
+                                     "mesi\\parse_with_config(): cache_key_template contains a NUL byte");
                     RETURN_FALSE;
                 }
                 if (!mesi_is_safe_string(raw)) {
                     php_error_docref(NULL, E_WARNING,
-                        "mesi\\parse_with_config(): cache_key_template contains invalid characters "
-                        "(no control chars, spaces, '\"' or '\\\\' allowed)");
+                                     "mesi\\parse_with_config(): cache_key_template contains invalid characters "
+                                     "(no control chars, spaces, '\"' or '\\\\' allowed)");
                     RETURN_FALSE;
                 }
                 cache_key_template = raw;
@@ -1277,7 +1279,7 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (Z_TYPE_P(val) != IS_ARRAY) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): request_headers must be an array");
+                                 "mesi\\parse_with_config(): request_headers must be an array");
                 RETURN_FALSE;
             }
             HashTable *ht = Z_ARRVAL_P(val);
@@ -1286,21 +1288,23 @@ PHP_FUNCTION(parse_with_config) {
             ZEND_HASH_FOREACH_STR_KEY_VAL(ht, k, hv) {
                 if (k == NULL) {
                     php_error_docref(NULL, E_WARNING,
-                        "mesi\\parse_with_config(): request_headers keys must be strings");
+                                     "mesi\\parse_with_config(): request_headers keys must be strings");
                     RETURN_FALSE;
                 }
                 const char *key_str = ZSTR_VAL(k);
                 if (ZSTR_LEN(k) == 0 || !mesi_is_safe_string(key_str)) {
                     php_error_docref(NULL, E_WARNING,
-                        "mesi\\parse_with_config(): request_headers key '%s' contains invalid characters "
-                        "(no control chars, spaces, '\"' or '\\\\' allowed, non-empty)", key_str);
+                                     "mesi\\parse_with_config(): request_headers key '%s' contains invalid characters "
+                                     "(no control chars, spaces, '\"' or '\\\\' allowed, non-empty)",
+                                     key_str);
                     RETURN_FALSE;
                 }
                 if (Z_TYPE_P(hv) == IS_STRING) {
                     if (!mesi_is_safe_string(Z_STRVAL_P(hv))) {
                         php_error_docref(NULL, E_WARNING,
-                            "mesi\\parse_with_config(): request_headers value for '%s' contains invalid characters "
-                            "(no control chars, spaces, '\"' or '\\\\' allowed)", key_str);
+                                         "mesi\\parse_with_config(): request_headers value for '%s' contains invalid characters "
+                                         "(no control chars, spaces, '\"' or '\\\\' allowed)",
+                                         key_str);
                         RETURN_FALSE;
                     }
                 } else if (Z_TYPE_P(hv) == IS_ARRAY) {
@@ -1309,22 +1313,25 @@ PHP_FUNCTION(parse_with_config) {
                     ZEND_HASH_FOREACH_VAL(inner, elt) {
                         if (Z_TYPE_P(elt) != IS_STRING) {
                             php_error_docref(NULL, E_WARNING,
-                                "mesi\\parse_with_config(): request_headers array value for '%s' must contain only strings", key_str);
+                                             "mesi\\parse_with_config(): request_headers array value for '%s' must contain only strings", key_str);
                             RETURN_FALSE;
                         }
                         if (!mesi_is_safe_string(Z_STRVAL_P(elt))) {
                             php_error_docref(NULL, E_WARNING,
-                                "mesi\\parse_with_config(): request_headers array value for '%s' contains invalid characters "
-                                "(no control chars, spaces, '\"' or '\\\\' allowed)", key_str);
+                                             "mesi\\parse_with_config(): request_headers array value for '%s' contains invalid characters "
+                                             "(no control chars, spaces, '\"' or '\\\\' allowed)",
+                                             key_str);
                             RETURN_FALSE;
                         }
-                    } ZEND_HASH_FOREACH_END();
+                    }
+                    ZEND_HASH_FOREACH_END();
                 } else {
                     php_error_docref(NULL, E_WARNING,
-                        "mesi\\parse_with_config(): request_headers value for '%s' must be a string or array of strings", key_str);
+                                     "mesi\\parse_with_config(): request_headers value for '%s' must be a string or array of strings", key_str);
                     RETURN_FALSE;
                 }
-            } ZEND_HASH_FOREACH_END();
+            }
+            ZEND_HASH_FOREACH_END();
             request_headers = val;
         }
 
@@ -1335,7 +1342,7 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (Z_TYPE_P(val) != IS_ARRAY) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): request_cookies must be an array");
+                                 "mesi\\parse_with_config(): request_cookies must be an array");
                 RETURN_FALSE;
             }
             HashTable *ht = Z_ARRVAL_P(val);
@@ -1344,28 +1351,31 @@ PHP_FUNCTION(parse_with_config) {
             ZEND_HASH_FOREACH_STR_KEY_VAL(ht, k, hv) {
                 if (k == NULL) {
                     php_error_docref(NULL, E_WARNING,
-                        "mesi\\parse_with_config(): request_cookies keys must be strings");
+                                     "mesi\\parse_with_config(): request_cookies keys must be strings");
                     RETURN_FALSE;
                 }
                 const char *key_str = ZSTR_VAL(k);
                 if (ZSTR_LEN(k) == 0 || !mesi_is_safe_string(key_str)) {
                     php_error_docref(NULL, E_WARNING,
-                        "mesi\\parse_with_config(): request_cookies key '%s' contains invalid characters "
-                        "(no control chars, spaces, '\"' or '\\\\' allowed, non-empty)", key_str);
+                                     "mesi\\parse_with_config(): request_cookies key '%s' contains invalid characters "
+                                     "(no control chars, spaces, '\"' or '\\\\' allowed, non-empty)",
+                                     key_str);
                     RETURN_FALSE;
                 }
                 if (Z_TYPE_P(hv) != IS_STRING) {
                     php_error_docref(NULL, E_WARNING,
-                        "mesi\\parse_with_config(): request_cookies value for '%s' must be a string", key_str);
+                                     "mesi\\parse_with_config(): request_cookies value for '%s' must be a string", key_str);
                     RETURN_FALSE;
                 }
                 if (!mesi_is_safe_cookie_value(Z_STRVAL_P(hv))) {
                     php_error_docref(NULL, E_WARNING,
-                        "mesi\\parse_with_config(): request_cookies value for '%s' contains invalid characters "
-                        "(no control chars, '\"' or '\\\\' allowed)", key_str);
+                                     "mesi\\parse_with_config(): request_cookies value for '%s' contains invalid characters "
+                                     "(no control chars, '\"' or '\\\\' allowed)",
+                                     key_str);
                     RETURN_FALSE;
                 }
-            } ZEND_HASH_FOREACH_END();
+            }
+            ZEND_HASH_FOREACH_END();
             request_cookies = val;
         }
 
@@ -1383,16 +1393,17 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (Z_TYPE_P(val) != IS_LONG) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): timeout must be an integer "
-                    "(seconds, range [1, %d])", MESI_MAX_TIMEOUT_SECONDS);
+                                 "mesi\\parse_with_config(): timeout must be an integer "
+                                 "(seconds, range [1, %d])",
+                                 MESI_MAX_TIMEOUT_SECONDS);
                 RETURN_FALSE;
             }
             long v = Z_LVAL_P(val);
             if (v < 1 || v > MESI_MAX_TIMEOUT_SECONDS) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): timeout %ld is out of range [1, %d] "
-                    "(0 is not \"no timeout\" — every include would fail immediately)",
-                    v, MESI_MAX_TIMEOUT_SECONDS);
+                                 "mesi\\parse_with_config(): timeout %ld is out of range [1, %d] "
+                                 "(0 is not \"no timeout\" — every include would fail immediately)",
+                                 v, MESI_MAX_TIMEOUT_SECONDS);
                 RETURN_FALSE;
             }
             timeout_seconds = v;
@@ -1416,18 +1427,18 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (Z_TYPE_P(val) != IS_LONG) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): max_response_size must be an integer "
-                    "(bytes, range [0, %lld])",
-                    (long long)MESI_MAX_MAX_RESPONSE_SIZE);
+                                 "mesi\\parse_with_config(): max_response_size must be an integer "
+                                 "(bytes, range [0, %lld])",
+                                 (long long)MESI_MAX_MAX_RESPONSE_SIZE);
                 RETURN_FALSE;
             }
             long v = Z_LVAL_P(val);
             if (v < 0 || v > MESI_MAX_MAX_RESPONSE_SIZE) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): max_response_size %ld is out of range "
-                    "[0, %lld] (0 is the documented \"unlimited\" value; negatives are "
-                    "rejected instead of silently behaving like it)",
-                    v, (long long)MESI_MAX_MAX_RESPONSE_SIZE);
+                                 "mesi\\parse_with_config(): max_response_size %ld is out of range "
+                                 "[0, %lld] (0 is the documented \"unlimited\" value; negatives are "
+                                 "rejected instead of silently behaving like it)",
+                                 v, (long long)MESI_MAX_MAX_RESPONSE_SIZE);
                 RETURN_FALSE;
             }
             max_response_size = v;
@@ -1454,18 +1465,18 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (Z_TYPE_P(val) != IS_LONG) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): max_concurrent_requests must be an integer "
-                    "(concurrent include fetches, range [0, %d])",
-                    MESI_MAX_MAX_CONCURRENT_REQUESTS);
+                                 "mesi\\parse_with_config(): max_concurrent_requests must be an integer "
+                                 "(concurrent include fetches, range [0, %d])",
+                                 MESI_MAX_MAX_CONCURRENT_REQUESTS);
                 RETURN_FALSE;
             }
             long v = Z_LVAL_P(val);
             if (v < 0 || v > MESI_MAX_MAX_CONCURRENT_REQUESTS) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): max_concurrent_requests %ld is out of range "
-                    "[0, %d] (0 is the documented \"unlimited\" value; negatives are "
-                    "rejected instead of silently behaving like it)",
-                    v, MESI_MAX_MAX_CONCURRENT_REQUESTS);
+                                 "mesi\\parse_with_config(): max_concurrent_requests %ld is out of range "
+                                 "[0, %d] (0 is the documented \"unlimited\" value; negatives are "
+                                 "rejected instead of silently behaving like it)",
+                                 v, MESI_MAX_MAX_CONCURRENT_REQUESTS);
                 RETURN_FALSE;
             }
             max_concurrent_requests = v;
@@ -1496,20 +1507,20 @@ PHP_FUNCTION(parse_with_config) {
         if (val != NULL) {
             if (Z_TYPE_P(val) != IS_LONG) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): max_workers must be an integer "
-                    "(drain-pool goroutines, range [0, %d])",
-                    MESI_MAX_MAX_WORKERS);
+                                 "mesi\\parse_with_config(): max_workers must be an integer "
+                                 "(drain-pool goroutines, range [0, %d])",
+                                 MESI_MAX_MAX_WORKERS);
                 RETURN_FALSE;
             }
             long v = Z_LVAL_P(val);
             if (v < 0 || v > MESI_MAX_MAX_WORKERS) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): max_workers %ld is out of range "
-                    "[0, %d] (0 is the documented \"library default\" value; "
-                    "negatives are rejected instead of silently behaving like "
-                    "it — the core substitutes NumCPU*4 for any value <= 0 "
-                    "with NO warning)",
-                    v, MESI_MAX_MAX_WORKERS);
+                                 "mesi\\parse_with_config(): max_workers %ld is out of range "
+                                 "[0, %d] (0 is the documented \"library default\" value; "
+                                 "negatives are rejected instead of silently behaving like "
+                                 "it — the core substitutes NumCPU*4 for any value <= 0 "
+                                 "with NO warning)",
+                                 v, MESI_MAX_MAX_WORKERS);
                 RETURN_FALSE;
             }
             max_workers = v;
@@ -1519,18 +1530,16 @@ PHP_FUNCTION(parse_with_config) {
         /* Backend-specific requirements: redis requires addr; memcached
          * requires servers. Detected after per-key parsing so a stray
          * key doesn't by itself trigger the error. */
-        if (strcmp(cache_backend, "redis") == 0
-            && cache_redis_addr == NULL) {
+        if (strcmp(cache_backend, "redis") == 0 && cache_redis_addr == NULL) {
             php_error_docref(NULL, E_WARNING,
-                "mesi\\parse_with_config(): cache_redis_addr is required for "
-                "cache_backend='redis'");
+                             "mesi\\parse_with_config(): cache_redis_addr is required for "
+                             "cache_backend='redis'");
             RETURN_FALSE;
         }
-        if (strcmp(cache_backend, "memcached") == 0
-            && cache_memcached_servers == NULL) {
+        if (strcmp(cache_backend, "memcached") == 0 && cache_memcached_servers == NULL) {
             php_error_docref(NULL, E_WARNING,
-                "mesi\\parse_with_config(): cache_memcached_servers is required for "
-                "cache_backend='memcached' and must contain at least one host:port entry");
+                             "mesi\\parse_with_config(): cache_memcached_servers is required for "
+                             "cache_backend='memcached' and must contain at least one host:port entry");
             RETURN_FALSE;
         }
     }
@@ -1552,8 +1561,9 @@ PHP_FUNCTION(parse_with_config) {
                                 cache_redis_db_set,
                                 config_json, sizeof(config_json)) != 0) {
         php_error_docref(NULL, E_WARNING,
-            "mesi\\parse_with_config(): failed to render cache config JSON "
-            "(backend=%s)", cache_backend);
+                         "mesi\\parse_with_config(): failed to render cache config JSON "
+                         "(backend=%s)",
+                         cache_backend);
         RETURN_FALSE;
     }
 
@@ -1561,14 +1571,14 @@ PHP_FUNCTION(parse_with_config) {
      * that would replace sharedCache with a fresh, empty instance and
      * silently disable the cache. */
     if (!mesi_cache_state_matches(cache_backend, cache_size, cache_ttl, config_json)) {
-        int cache_rc = InitCacheWithConfig((char*)cache_backend,
+        int cache_rc = InitCacheWithConfig((char *)cache_backend,
                                            (int)cache_size,
                                            (int)cache_ttl,
                                            config_json);
         if (cache_rc != 0) {
             php_error_docref(NULL, E_WARNING,
-                "mesi\\parse_with_config(): InitCacheWithConfig('%s', %ld, %ld, '%s') failed",
-                cache_backend, cache_size, cache_ttl, config_json);
+                             "mesi\\parse_with_config(): InitCacheWithConfig('%s', %ld, %ld, '%s') failed",
+                             cache_backend, cache_size, cache_ttl, config_json);
             RETURN_FALSE;
         }
         mesi_cache_state_record(cache_backend, cache_size, cache_ttl, config_json);
@@ -1617,24 +1627,30 @@ PHP_FUNCTION(parse_with_config) {
         buf = (char *)malloc(256);
         if (!buf) {
             php_error_docref(NULL, E_WARNING,
-                "mesi\\parse_with_config(): failed to allocate request context JSON");
+                             "mesi\\parse_with_config(): failed to allocate request context JSON");
             RETURN_FALSE;
         }
-        cap = 256; pos = 0;
+        cap = 256;
+        pos = 0;
         if (!mesi_dyn_putc(&buf, &cap, &pos, '{')) goto ctx_oom;
         /* headers */
         {
             if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
-            const char *hk = "headers"; for (const char*p=hk;*p;p++) if(!mesi_dyn_putc(&buf,&cap,&pos,*p)) goto ctx_oom;
+            const char *hk = "headers";
+            for (const char *p = hk; *p; p++)
+                if (!mesi_dyn_putc(&buf, &cap, &pos, *p)) goto ctx_oom;
             if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
             if (!mesi_dyn_putc(&buf, &cap, &pos, ':')) goto ctx_oom;
             if (!mesi_dyn_putc(&buf, &cap, &pos, '{')) goto ctx_oom;
             int first = 1;
             if (request_headers) {
-                zend_string *k; zval *hv;
+                zend_string *k;
+                zval *hv;
                 ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARRVAL_P(request_headers), k, hv) {
                     const char *key_str = ZSTR_VAL(k);
-                    if (!first) { if (!mesi_dyn_putc(&buf, &cap, &pos, ',')) goto ctx_oom; }
+                    if (!first) {
+                        if (!mesi_dyn_putc(&buf, &cap, &pos, ',')) goto ctx_oom;
+                    }
                     first = 0;
                     if (!mesi_dyn_json_append_str(&buf, &cap, &pos, key_str)) goto ctx_oom;
                     if (!mesi_dyn_putc(&buf, &cap, &pos, ':')) goto ctx_oom;
@@ -1646,13 +1662,17 @@ PHP_FUNCTION(parse_with_config) {
                         HashTable *inner = Z_ARRVAL_P(hv);
                         zval *elt;
                         ZEND_HASH_FOREACH_VAL(inner, elt) {
-                            if (!inner_first) { if (!mesi_dyn_putc(&buf, &cap, &pos, ',')) goto ctx_oom; }
+                            if (!inner_first) {
+                                if (!mesi_dyn_putc(&buf, &cap, &pos, ',')) goto ctx_oom;
+                            }
                             inner_first = 0;
                             if (!mesi_dyn_json_append_str(&buf, &cap, &pos, Z_STRVAL_P(elt))) goto ctx_oom;
-                        } ZEND_HASH_FOREACH_END();
+                        }
+                        ZEND_HASH_FOREACH_END();
                         if (!mesi_dyn_putc(&buf, &cap, &pos, ']')) goto ctx_oom;
                     }
-                } ZEND_HASH_FOREACH_END();
+                }
+                ZEND_HASH_FOREACH_END();
             }
             if (!mesi_dyn_putc(&buf, &cap, &pos, '}')) goto ctx_oom;
         }
@@ -1660,31 +1680,41 @@ PHP_FUNCTION(parse_with_config) {
         /* cookies */
         {
             if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
-            const char *ck = "cookies"; for (const char*p=ck;*p;p++) if(!mesi_dyn_putc(&buf,&cap,&pos,*p)) goto ctx_oom;
+            const char *ck = "cookies";
+            for (const char *p = ck; *p; p++)
+                if (!mesi_dyn_putc(&buf, &cap, &pos, *p)) goto ctx_oom;
             if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
             if (!mesi_dyn_putc(&buf, &cap, &pos, ':')) goto ctx_oom;
             if (!mesi_dyn_putc(&buf, &cap, &pos, '[')) goto ctx_oom;
             int first = 1;
             if (request_cookies) {
-                zend_string *k; zval *hv;
+                zend_string *k;
+                zval *hv;
                 ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARRVAL_P(request_cookies), k, hv) {
                     const char *key_str = ZSTR_VAL(k);
-                    if (!first) { if (!mesi_dyn_putc(&buf, &cap, &pos, ',')) goto ctx_oom; }
+                    if (!first) {
+                        if (!mesi_dyn_putc(&buf, &cap, &pos, ',')) goto ctx_oom;
+                    }
                     first = 0;
                     if (!mesi_dyn_putc(&buf, &cap, &pos, '{')) goto ctx_oom;
                     if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
-                    const char *nk="name"; for(const char*p=nk;*p;p++) if(!mesi_dyn_putc(&buf,&cap,&pos,*p)) goto ctx_oom;
+                    const char *nk = "name";
+                    for (const char *p = nk; *p; p++)
+                        if (!mesi_dyn_putc(&buf, &cap, &pos, *p)) goto ctx_oom;
                     if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
                     if (!mesi_dyn_putc(&buf, &cap, &pos, ':')) goto ctx_oom;
                     if (!mesi_dyn_json_append_str(&buf, &cap, &pos, key_str)) goto ctx_oom;
                     if (!mesi_dyn_putc(&buf, &cap, &pos, ',')) goto ctx_oom;
                     if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
-                    const char *vk="value"; for(const char*p=vk;*p;p++) if(!mesi_dyn_putc(&buf,&cap,&pos,*p)) goto ctx_oom;
+                    const char *vk = "value";
+                    for (const char *p = vk; *p; p++)
+                        if (!mesi_dyn_putc(&buf, &cap, &pos, *p)) goto ctx_oom;
                     if (!mesi_dyn_putc(&buf, &cap, &pos, '"')) goto ctx_oom;
                     if (!mesi_dyn_putc(&buf, &cap, &pos, ':')) goto ctx_oom;
                     if (!mesi_dyn_json_append_str(&buf, &cap, &pos, Z_STRVAL_P(hv))) goto ctx_oom;
                     if (!mesi_dyn_putc(&buf, &cap, &pos, '}')) goto ctx_oom;
-                } ZEND_HASH_FOREACH_END();
+                }
+                ZEND_HASH_FOREACH_END();
             }
             if (!mesi_dyn_putc(&buf, &cap, &pos, ']')) goto ctx_oom;
         }
@@ -1694,14 +1724,14 @@ PHP_FUNCTION(parse_with_config) {
         ctx_json_buf = buf;
         ctx_json = buf;
         goto ctx_done;
-ctx_oom:
+    ctx_oom:
         free(buf);
         php_error_docref(NULL, E_WARNING,
-            "mesi\\parse_with_config(): failed to render request context JSON (allocation failure)");
+                         "mesi\\parse_with_config(): failed to render request context JSON (allocation failure)");
         RETURN_FALSE;
-ctx_done: ;
+    ctx_done:;
     } else {
-        ctx_json = (char*)"";
+        ctx_json = (char *)"";
     }
 
     /* #181 `timeout` / #201 `max_response_size` / #206
@@ -1742,15 +1772,15 @@ ctx_done: ;
                 max_concurrent_requests_set, max_concurrent_requests,
                 max_workers_set, max_workers,
                 tmpl_for_ctx,
-                ctx_json && *ctx_json ? ctx_json : (char*)"");
+                ctx_json && *ctx_json ? ctx_json : (char *)"");
             if (parse_json_blob == NULL) {
                 if (ctx_json_buf) free(ctx_json_buf);
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): failed to render parse config JSON "
-                    "(timeout=%ld, max_response_size=%ld, max_concurrent_requests=%ld, "
-                    "max_workers=%ld)",
-                    timeout_seconds, max_response_size, max_concurrent_requests,
-                    max_workers);
+                                 "mesi\\parse_with_config(): failed to render parse config JSON "
+                                 "(timeout=%ld, max_response_size=%ld, max_concurrent_requests=%ld, "
+                                 "max_workers=%ld)",
+                                 timeout_seconds, max_response_size, max_concurrent_requests,
+                                 max_workers);
                 RETURN_FALSE;
             }
             used_parse_json = 1;
@@ -1759,40 +1789,41 @@ ctx_done: ;
         } else {
             if (timeout_set) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): timeout is set but libgomesi lacks "
-                    "ParseJson; timeout ignored (default %d timeout applies). "
-                    "Upgrade libgomesi.so.", MESI_DEFAULT_TIMEOUT_SECONDS);
+                                 "mesi\\parse_with_config(): timeout is set but libgomesi lacks "
+                                 "ParseJson; timeout ignored (default %d timeout applies). "
+                                 "Upgrade libgomesi.so.",
+                                 MESI_DEFAULT_TIMEOUT_SECONDS);
             }
             if (max_response_size_set) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): max_response_size is set but "
-                    "libgomesi lacks ParseJson; max_response_size ignored "
-                    "(unlimited response size applies, the pre-#201 behaviour). "
-                    "Upgrade libgomesi.so.");
+                                 "mesi\\parse_with_config(): max_response_size is set but "
+                                 "libgomesi lacks ParseJson; max_response_size ignored "
+                                 "(unlimited response size applies, the pre-#201 behaviour). "
+                                 "Upgrade libgomesi.so.");
             }
             if (max_concurrent_requests_set) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): max_concurrent_requests is set but "
-                    "libgomesi lacks ParseJson; max_concurrent_requests ignored "
-                    "(unlimited concurrent fetches apply, the pre-#206 behaviour). "
-                    "Upgrade libgomesi.so.");
+                                 "mesi\\parse_with_config(): max_concurrent_requests is set but "
+                                 "libgomesi lacks ParseJson; max_concurrent_requests ignored "
+                                 "(unlimited concurrent fetches apply, the pre-#206 behaviour). "
+                                 "Upgrade libgomesi.so.");
             }
             if (max_workers_set) {
                 php_error_docref(NULL, E_WARNING,
-                    "mesi\\parse_with_config(): max_workers is set but "
-                    "libgomesi lacks ParseJson; max_workers ignored "
-                    "(library default NumCPU*4 worker pool applies, the "
-                    "pre-#211 behaviour). Upgrade libgomesi.so.");
+                                 "mesi\\parse_with_config(): max_workers is set but "
+                                 "libgomesi lacks ParseJson; max_workers ignored "
+                                 "(library default NumCPU*4 worker pool applies, the "
+                                 "pre-#211 behaviour). Upgrade libgomesi.so.");
             }
         }
     }
 
     if (!used_parse_json) {
-        result = ParseWithConfigCtx(input, (int)max_depth, default_url, (char*)allowed_hosts,
+        result = ParseWithConfigCtx(input, (int)max_depth, default_url, (char *)allowed_hosts,
                                     block_private_ips ? 1 : 0,
                                     allow_private_ips_for_allowed_hosts ? 1 : 0,
-                                    (char*)tmpl_for_ctx,
-                                    ctx_json && *ctx_json ? ctx_json : (char*)"");
+                                    (char *)tmpl_for_ctx,
+                                    ctx_json && *ctx_json ? ctx_json : (char *)"");
     }
     if (ctx_json_buf) free(ctx_json_buf);
     if (result == NULL) {
@@ -1802,11 +1833,11 @@ ctx_done: ;
              * maxConcurrentRequests / maxWorkers, malformed JSON, ...)
              * Go-side — surface it loudly instead of blaming max_depth. */
             php_error_docref(NULL, E_WARNING,
-                "mesi\\parse_with_config(): libgomesi rejected the parse config "
-                "(timeout=%ld, max_response_size=%ld, max_concurrent_requests=%ld, "
-                "max_workers=%ld)",
-                timeout_seconds, max_response_size, max_concurrent_requests,
-                max_workers);
+                             "mesi\\parse_with_config(): libgomesi rejected the parse config "
+                             "(timeout=%ld, max_response_size=%ld, max_concurrent_requests=%ld, "
+                             "max_workers=%ld)",
+                             timeout_seconds, max_response_size, max_concurrent_requests,
+                             max_workers);
         } else {
             php_error_docref(NULL, E_WARNING, "mesi\\parse_with_config(): invalid max_depth");
         }
@@ -1849,9 +1880,8 @@ PHP_MSHUTDOWN_FUNCTION(mesi) {
 
 zend_function_entry mesi_functions[] = {
     ZEND_NS_FE("mesi", parse, arginfo_parse)
-    ZEND_NS_FE("mesi", parse_with_config, arginfo_parse_with_config)
-    PHP_FE_END
-};
+        ZEND_NS_FE("mesi", parse_with_config, arginfo_parse_with_config)
+            PHP_FE_END};
 
 zend_module_entry mesi_module_entry = {
     STANDARD_MODULE_HEADER,
@@ -1863,7 +1893,6 @@ zend_module_entry mesi_module_entry = {
     NULL,
     NULL,
     "0.1",
-    STANDARD_MODULE_PROPERTIES
-};
+    STANDARD_MODULE_PROPERTIES};
 
 ZEND_GET_MODULE(mesi)
