@@ -2,7 +2,11 @@
 
 ## [Unreleased]
 
+### Security
+- RoadRunner: `spiral/roadrunner` raised from `^2024.3` to `^2025.1`, fixing the open critical HTTP request/response smuggling advisory (GHSA-g9pc-8g42-g6vq). `servers/roadrunner/build.sh` and the README move off the pinned `v2024.3.5` to `v2025.1.7` (and the velox module path from `v2024` to `v2025`) so the compiled binary is not left on the vulnerable line
+
 ### Changed
+- Dependabot gained a `composer` entry for `servers/roadrunner/worker`. Its advisories were reported on the security page but no PR was ever opened, because the ecosystem was not configured; `composer.lock` is now tracked (it was gitignored) because dependabot needs it to open updates
 - `mesi.DefaultLogger` builds each line in memory and writes it with a single `Write`, instead of up to 16 partially-checked `fmt.Fprint*` calls. Output is byte-identical (including the `MISSING` marker for an odd `keyvals` count), but an unwritable stream now yields one short write rather than a partial line, and concurrent writers cannot interleave into the middle of a line
 - `docs/workflow.md` and `docs/release-workflow.md` follow the shared crazy-goat templates; project commands live in the new `AGENTS.md`
 - `bin/` has the shared issue and worktree helper scripts, plus `worktree-setup.sh` and `worktree-teardown.sh`
