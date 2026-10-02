@@ -150,3 +150,21 @@ func TestBodyLimitCaddyfile(t *testing.T) {
 		}
 	}
 }
+
+func TestBodyLimitIgnoresHEAD(t *testing.T) {
+	page, _ := bodyLimitPage(t)
+	m, logs := newBodyLimitModule(t, 10, "error")
+	h := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Content-Length", strconv.Itoa(len(page)))
+		w.WriteHeader(http.StatusOK) // HEAD: no body follows
+		return nil
+	})
+	rec := httptest.NewRecorder()
+	if err := m.ServeHTTP(rec, httptest.NewRequest("HEAD", "http://example.com/", nil), h); err != nil {
+		t.Fatalf("ServeHTTP: %v", err)
+	}
+	if rec.Code != http.StatusOK || logs.Len() != 0 {
+		t.Errorf("HEAD must not be limited: got %d and %d log entries", rec.Code, logs.Len())
+	}
+}

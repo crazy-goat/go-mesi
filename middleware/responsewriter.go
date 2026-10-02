@@ -74,6 +74,8 @@ func NewResponseWriter(w http.ResponseWriter) *ResponseWriter {
 // status, headers and body are then streamed to the client unchanged; in
 // OversizeError mode the data is dropped (so memory stays bounded) and the
 // integration must call HandleOversize to answer 502. notify may be nil.
+// Integrations must not set a limit for HEAD requests: their Content-Length
+// describes a body that is never sent.
 func (rw *ResponseWriter) SetBodyLimit(maxBody int64, mode OnOversize, notify func(mode OnOversize, limit, size int64)) {
 	rw.maxBody = maxBody
 	rw.mode = mode
@@ -92,6 +94,9 @@ func (rw *ResponseWriter) decide() {
 		return
 	}
 	rw.watch = true
+	if rw.statusCode == http.StatusNoContent || rw.statusCode == http.StatusNotModified {
+		return // no body follows, whatever Content-Length says
+	}
 	if cl := rw.Header().Get("Content-Length"); cl != "" {
 		if n, err := strconv.ParseInt(cl, 10, 64); err == nil && n > rw.maxBody {
 			rw.trigger(n)
@@ -135,6 +140,12 @@ func (rw *ResponseWriter) Write(b []byte) (int, error) {
 
 func (rw *ResponseWriter) WriteHeader(statusCode int) {
 	if rw.committed {
+		return
+	}
+	// Informational responses (for example 103 Early Hints) come before the
+	// real one: they must neither replace the status nor start the decision,
+	// the final headers are not set yet.
+	if statusCode >= 100 && statusCode < 200 && statusCode != http.StatusSwitchingProtocols {
 		return
 	}
 	rw.statusCode = statusCode

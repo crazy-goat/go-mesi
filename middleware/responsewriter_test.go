@@ -351,3 +351,34 @@ func TestParseOnOversize(t *testing.T) {
 		}
 	}
 }
+
+func TestResponseWriter_BodyLimit_EarlyHintsDoNotSkipTheLimit(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rw := NewResponseWriter(rec)
+	rw.SetBodyLimit(10, OversizeError, nil)
+
+	rw.WriteHeader(http.StatusEarlyHints) // before the real headers exist
+	rec.Header().Set("Content-Type", "text/html")
+	rw.WriteHeader(http.StatusOK)
+	_, _ = rw.Write([]byte("0123456789ABC"))
+
+	if rw.StatusCode() != http.StatusOK {
+		t.Errorf("status = %d, a 1xx must not replace it", rw.StatusCode())
+	}
+	if !rw.HandleOversize() || rec.Code != http.StatusBadGateway {
+		t.Errorf("the limit must still apply after a 103, got %d", rec.Code)
+	}
+}
+
+func TestResponseWriter_BodyLimit_NoBodyStatusesAreNotCounted(t *testing.T) {
+	for _, status := range []int{http.StatusNoContent, http.StatusNotModified} {
+		rec := httptest.NewRecorder()
+		rw := htmlWriter(rec)
+		rec.Header().Set("Content-Length", "99")
+		rw.SetBodyLimit(10, OversizeError, nil)
+		rw.WriteHeader(status)
+		if rw.HandleOversize() {
+			t.Errorf("status %d has no body: Content-Length must be ignored", status)
+		}
+	}
+}

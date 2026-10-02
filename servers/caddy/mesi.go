@@ -266,7 +266,9 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 	r.Header.Set("Surrogate-Capability", "ESI/1.0")
 
 	customWriter := middleware.NewResponseWriter(w)
-	customWriter.SetBodyLimit(m.MaxBodySize, m.onOversize, m.logOversize)
+	if r.Method != http.MethodHead { // a HEAD Content-Length has no body behind it
+		customWriter.SetBodyLimit(m.MaxBodySize, m.onOversize, m.logOversize)
+	}
 
 	err := next.ServeHTTP(customWriter, r)
 	if err != nil {

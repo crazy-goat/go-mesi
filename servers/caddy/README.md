@@ -382,6 +382,10 @@ mesi {
   streamed to the client unchanged; in `error` mode the rest is dropped and
   the client gets the 502 (the headers are held back until then, so unlike
   nginx a 502 is always possible).
+- `error` mode still reads the whole upstream body (it is dropped, not
+  buffered) before it answers, and the 502 replaces all response headers,
+  including those set by earlier `header` directives.
+- `HEAD` requests are never limited.
 - Values are plain integer bytes. Negative values and unknown `on_oversize`
   values are rejected at config load.
 - The FrankenPHP integration uses this module, so the same directives apply.
