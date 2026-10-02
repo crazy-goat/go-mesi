@@ -112,7 +112,7 @@ func TestMemcachedCache_InFlightOperationsHonorDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	accepted := make(chan net.Conn, 3)
 	serverDone := make(chan struct{})
@@ -127,7 +127,7 @@ func TestMemcachedCache_InFlightOperationsHonorDeadline(t *testing.T) {
 		}
 	}()
 	defer func() {
-		listener.Close()
+		_ = listener.Close()
 		<-serverDone
 		close(accepted)
 		for conn := range accepted {
