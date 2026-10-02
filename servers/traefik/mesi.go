@@ -452,6 +452,11 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// customWriter intercepted the upstream WriteHeader, so forward the
+	// captured status; a bare Write would answer with an implicit 200
+	// and turn every non-HTML 3xx/4xx/5xx into a success (#491).
+	// Headers need no copy: customWriter shares rw's header map.
+	rw.WriteHeader(customWriter.StatusCode())
 	_, _ = rw.Write(customWriter.Body().Bytes())
 }
 
