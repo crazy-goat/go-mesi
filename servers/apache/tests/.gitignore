@@ -1,6 +1,8 @@
 *
 !.gitignore
 !allowed.txt
+!body-limit-small.html
+!body-limit-large.html
 !cached-fragment.txt
 !cache-test.html
 !comment.html

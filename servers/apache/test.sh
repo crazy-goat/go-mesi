@@ -21,6 +21,8 @@ APACHE_PORT_8092=${APACHE_PORT_8092:-8092}
 APACHE_PORT_8093=${APACHE_PORT_8093:-8093}
 APACHE_PORT_8094=${APACHE_PORT_8094:-8094}
 APACHE_PORT_8095=${APACHE_PORT_8095:-8095}
+APACHE_PORT_8096=${APACHE_PORT_8096:-8096}
+APACHE_PORT_8097=${APACHE_PORT_8097:-8097}
 
 docker compose up -d --wait
 
@@ -930,8 +932,89 @@ else
 fi
 rm -f /tmp/mesi-mw-unset.html
 
+echo "=== Test 43: MesiMaxBodySize — body under the limit is processed ==="
+R=$(curl -s http://localhost:"$APACHE_PORT_8096"/body-limit-small.html)
+if echo "$R" | grep -q "included content from backend" && echo "$R" | grep -q "small-body-marker"; then
+    echo "PASS: small body processed"
+else
+    echo "FAIL: small body not processed"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 44: MesiMaxBodySize + pass — oversize body sent unprocessed ==="
+R=$(curl -s -w '\n%{http_code}' http://localhost:"$APACHE_PORT_8096"/body-limit-large.html)
+if echo "$R" | grep -q "large-body-marker" && echo "$R" | grep -q '<esi:include' \
+    && ! echo "$R" | grep -q "included content from backend" && [ "$(echo "$R" | tail -n1)" = "200" ]; then
+    echo "PASS: oversize body passed through untouched"
+else
+    echo "FAIL: oversize body not passed through"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 45: MesiMaxBodySize + error — oversize body gives 502 ==="
+CODE=$(curl -s -o /tmp/mesi-bl-err.html -w '%{http_code}' http://localhost:"$APACHE_PORT_8097"/body-limit-large.html)
+if [ "$CODE" = "502" ] && ! grep -q "large-body-marker" /tmp/mesi-bl-err.html; then
+    echo "PASS: oversize body answered 502"
+else
+    echo "FAIL: expected 502 (got $CODE)"
+    head -c 500 /tmp/mesi-bl-err.html
+    rm -f /tmp/mesi-bl-err.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-bl-err.html
+
+echo "=== Test 46: MesiMaxBodySize + error — small body still processed ==="
+R=$(curl -s http://localhost:"$APACHE_PORT_8097"/body-limit-small.html)
+if echo "$R" | grep -q "included content from backend"; then
+    echo "PASS: small body processed in error mode"
+else
+    echo "FAIL: small body not processed in error mode"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 47: MesiMaxBodySize + pass — streamed body without Content-Length ==="
+R=$(curl -s -w '\n%{http_code}' http://localhost:"$APACHE_PORT_8096"/backend/nolen-html/6000)
+if echo "$R" | grep -q "nolen-end-marker" && echo "$R" | grep -q '<esi:include' \
+    && ! echo "$R" | grep -q "included content from backend" && [ "$(echo "$R" | tail -n1)" = "200" ]; then
+    echo "PASS: streamed oversize body passed through untouched, nothing lost"
+else
+    echo "FAIL: streamed oversize body (pass) wrong"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 48: MesiMaxBodySize + error — streamed body without Content-Length gives 502 ==="
+CODE=$(curl -s -o /tmp/mesi-bl-err.html -w '%{http_code}' http://localhost:"$APACHE_PORT_8097"/backend/nolen-html/6000)
+if [ "$CODE" = "502" ] && ! grep -q "nolen-end-marker" /tmp/mesi-bl-err.html; then
+    echo "PASS: streamed oversize body answered 502"
+else
+    echo "FAIL: expected 502 (got $CODE)"
+    head -c 500 /tmp/mesi-bl-err.html
+    rm -f /tmp/mesi-bl-err.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-bl-err.html
+
+echo "=== Test 49: MesiMaxBodySize — streamed body under the limit is processed ==="
+R=$(curl -s http://localhost:"$APACHE_PORT_8097"/backend/nolen-html/500)
+if echo "$R" | grep -q "included content from backend" && echo "$R" | grep -q "nolen-end-marker"; then
+    echo "PASS: small streamed body processed"
+else
+    echo "FAIL: small streamed body not processed"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+
 docker compose down
 
 echo ""
 echo "=== All tests passed ==="
-
