@@ -259,6 +259,9 @@ MesiCacheTTL 60
   ```
 - `MesiAllowedHosts host1 host2 …` — Space-separated list of hostnames
   allowed in `<esi:include src=…>`. Matches `isURLSafe` from libgomesi.
+  A value without any hostname (empty, or only ASCII or Unicode whitespace
+  such as U+00A0) is rejected at config load, so the restriction can never
+  silently become an empty allowlist that allows every host (#358).
 - `MesiBlockPrivateIPs on|off` — Enable/disable SSRF dial-time private-IP
   blocking. Default: On.
 - `MesiAllowPrivateIPsForAllowedHosts on|off` — When `On` together with
