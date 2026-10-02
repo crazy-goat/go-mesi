@@ -2226,6 +2226,39 @@ fi
 
 rm -f /tmp/nginx-mesi-max-workers.conf
 
+echo "=== Test 72: Proxied 5 MB HTML page is delivered in full and quickly (#483) ==="
+# The body filter used to leave every input buf unconsumed, so the
+# upstream module never got its proxy buffers back: a proxied page
+# bigger than proxy_buffers stalled until proxy_read_timeout (60 s) and
+# ended with an empty reply. 20 s is far above the fixed time (well
+# under a second) and far below the 60 s stall.
+PROXY_OUT=$(curl -s --max-time 20 -o /tmp/mesi-proxy-big.html \
+    -w '%{http_code} %{size_download}' \
+    http://localhost:"$HTTP_PORT"/proxy-big/bytes/5242880) || true
+if [ "$PROXY_OUT" = "200 5242880" ] \
+    && grep -q "MesiBytesPayload 5242880" /tmp/mesi-proxy-big.html; then
+    echo "PASS: proxied 5 MB page delivered in full ($PROXY_OUT)"
+else
+    echo "FAIL: proxied 5 MB page not delivered in full within 20 s (got '$PROXY_OUT', expected '200 5242880')"
+    rm -f /tmp/mesi-proxy-big.html
+    exit 1
+fi
+rm -f /tmp/mesi-proxy-big.html
+
+echo "=== Test 73: ESI include processed with sendfile on (#483) ==="
+# With sendfile on a static file reaches the body filter as a file-only
+# buf; the filter used to copy from its NULL buf->pos and crash the worker.
+RESPONSE=$(curl -s --max-time 10 http://localhost:"$HTTP_PORT"/sendfile/index.html) || true
+if echo "$RESPONSE" | grep -q "After include" \
+    && echo "$RESPONSE" | grep -q "included content from backend" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: ESI include processed with sendfile on"
+else
+    echo "FAIL: ESI include not processed with sendfile on"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
 docker compose down
 
 echo ""
