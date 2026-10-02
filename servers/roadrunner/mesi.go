@@ -2,6 +2,7 @@ package roadrunner
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -78,6 +79,13 @@ type Config struct {
 	// MaxWorkers caps the token-processing drain pool per MESIParse call.
 	// Zero (unset) selects the core library default runtime.NumCPU()*4.
 	MaxWorkers int `mapstructure:"max_workers"`
+	// MaxBodySize limits the parent HTML body (in bytes) that is buffered
+	// for ESI processing (#538). Zero (unset) is unlimited.
+	MaxBodySize int64 `mapstructure:"max_body_size"`
+	// OnOversize is what happens when the parent body is over MaxBodySize:
+	// "pass" (default) sends it unchanged with a warning, "error" logs an
+	// error and answers 502.
+	OnOversize string `mapstructure:"on_oversize"`
 }
 
 func intPtr(v int) *int { return &v }
@@ -107,6 +115,7 @@ type Plugin struct {
 	sharedTransport *http.Transport
 	blockPrivateIPs bool
 	closeFn         func() error
+	onOversize      middleware.OnOversize
 }
 
 func (p *Plugin) Init() error {
@@ -117,6 +126,14 @@ func (p *Plugin) Init() error {
 	if err := validateMaxResponseSize(p.config.MaxResponseSize); err != nil {
 		return err
 	}
+	if p.config.MaxBodySize < 0 {
+		return fmt.Errorf("invalid max_body_size %d: must be non-negative (0 = unlimited)", p.config.MaxBodySize)
+	}
+	onOversize, err := middleware.ParseOnOversize(p.config.OnOversize)
+	if err != nil {
+		return err
+	}
+	p.onOversize = onOversize
 	if err := validateMaxConcurrentRequests(p.config.MaxConcurrentRequests); err != nil {
 		return err
 	}
@@ -247,8 +264,15 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 		r.Header.Set("Surrogate-Capability", "ESI/1.0")
 
 		customWriter := middleware.NewResponseWriter(w)
+		if r.Method != http.MethodHead { // a HEAD Content-Length has no body behind it
+			customWriter.SetBodyLimit(p.config.MaxBodySize, p.onOversize, logOversize)
+		}
 
 		next.ServeHTTP(customWriter, r)
+
+		if customWriter.HandleOversize() {
+			return
+		}
 
 		contentType := customWriter.Header().Get("Content-Type")
 		if strings.HasPrefix(contentType, "text/html") {
@@ -301,6 +325,14 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 			_, _ = w.Write(customWriter.Body().Bytes())
 		}
 	})
+}
+
+func logOversize(mode middleware.OnOversize, limit, size int64) {
+	if mode == middleware.OversizeError {
+		log.Printf("mesi: parent body is over max_body_size %d (size %d); answering 502 (on_oversize error)", limit, size)
+		return
+	}
+	log.Printf("mesi: parent body is over max_body_size %d (size %d); sending it unchanged without ESI processing (on_oversize pass)", limit, size)
 }
 
 func (p *Plugin) timeoutBudget() time.Duration {
