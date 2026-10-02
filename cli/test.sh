@@ -124,11 +124,14 @@ else
 fi
 
 echo "Test 8: URL mode returns error on bad URL"
-RESULT=$("$CLI_BINARY" "http://127.0.0.1:1/" 2>&1 || true)
-if echo "$RESULT" | grep -qi "error\|refused\|connection"; then
+set +e
+RESULT=$("$CLI_BINARY" "http://127.0.0.1:1/" 2>&1)
+CODE=$?
+set -e
+if [ "$CODE" -eq 1 ] && echo "$RESULT" | grep -qi "error\|refused\|connection"; then
 	pass "Bad URL error reported"
 else
-	fail "Bad URL" "Output: $RESULT"
+	fail "Bad URL" "exit=$CODE output: $RESULT"
 fi
 
 echo ""
@@ -220,27 +223,36 @@ echo ""
 echo "--- Error Handling ---"
 
 echo "Test 16: Missing argument produces error message"
-RESULT=$("$CLI_BINARY" 2>&1 || true)
-if echo "$RESULT" | grep -qi "error\|missing\|usage"; then
+set +e
+RESULT=$("$CLI_BINARY" 2>&1)
+CODE=$?
+set -e
+if [ "$CODE" -eq 1 ] && echo "$RESULT" | grep -qi "error\|missing\|usage"; then
 	pass "Missing argument error reported"
 else
-	fail "Missing argument" "Output: $RESULT"
+	fail "Missing argument" "exit=$CODE output: $RESULT"
 fi
 
 echo "Test 17: Nonexistent file produces error message"
-RESULT=$("$CLI_BINARY" "/nonexistent/file.html" 2>&1 || true)
-if echo "$RESULT" | grep -qi "error"; then
+set +e
+RESULT=$("$CLI_BINARY" "/nonexistent/file.html" 2>&1)
+CODE=$?
+set -e
+if [ "$CODE" -eq 1 ] && echo "$RESULT" | grep -qi "error"; then
 	pass "Nonexistent file error reported"
 else
-	fail "Nonexistent file" "Output: $RESULT"
+	fail "Nonexistent file" "exit=$CODE output: $RESULT"
 fi
 
 echo "Test 18: Bad URL produces error message"
-RESULT=$("$CLI_BINARY" "http://127.0.0.1:99999/" 2>&1 || true)
-if echo "$RESULT" | grep -qi "error\|refused\|timeout\|connection"; then
+set +e
+RESULT=$("$CLI_BINARY" "http://127.0.0.1:99999/" 2>&1)
+CODE=$?
+set -e
+if [ "$CODE" -eq 1 ] && echo "$RESULT" | grep -qi "error\|refused\|timeout\|connection"; then
 	pass "Bad URL error reported"
 else
-	fail "Bad URL" "Output: $RESULT"
+	fail "Bad URL" "exit=$CODE output: $RESULT"
 fi
 
 echo ""

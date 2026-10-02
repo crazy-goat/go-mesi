@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,18 +138,62 @@ func TestCLI_fileMode_emptyFile(t *testing.T) {
 }
 
 func TestCLI_error_missingArgument(t *testing.T) {
-	stdout, stderr, _ := runCLI(t)
+	stdout, stderr, exitCode := runCLI(t)
 	output := stdout + stderr
 	if !strings.Contains(output, "Error") && !strings.Contains(output, "Usage") {
 		t.Errorf("expected error message in output, got stdout=%q stderr=%q", stdout, stderr)
 	}
+	if exitCode != 1 {
+		t.Errorf("expected exit code 1, got %d", exitCode)
+	}
 }
 
 func TestCLI_error_nonexistentFile(t *testing.T) {
-	stdout, stderr, _ := runCLI(t, "/nonexistent/file/path.html")
+	stdout, stderr, exitCode := runCLI(t, "/nonexistent/file/path.html")
 	output := stdout + stderr
 	if !strings.Contains(output, "Error") {
 		t.Errorf("expected error message, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	if exitCode != 1 {
+		t.Errorf("expected exit code 1, got %d", exitCode)
+	}
+}
+
+func TestCLI_error_urlModeFailures(t *testing.T) {
+	notFound := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "gone", http.StatusNotFound)
+	}))
+	defer notFound.Close()
+	serverError := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer serverError.Close()
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("plain"))
+	}))
+	defer plain.Close()
+
+	tests := []struct {
+		name    string
+		args    []string
+		wantMsg string
+	}{
+		{"connection refused", []string{"http://127.0.0.1:1/"}, "Error fetching url"},
+		{"invalid port", []string{"http://127.0.0.1:99999/"}, "Error fetching url"},
+		{"status 404", []string{notFound.URL}, "Invalid status code: 404"},
+		{"status 500", []string{serverError.URL}, "Invalid status code: 500"},
+		{"missing Edge-control header", []string{"-parse-on-header", plain.URL}, "Error response missing Edge-control header"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, stderr, exitCode := runCLI(t, tt.args...)
+			if !strings.Contains(stdout+stderr, tt.wantMsg) {
+				t.Errorf("expected %q in output, got stdout=%q stderr=%q", tt.wantMsg, stdout, stderr)
+			}
+			if exitCode != 1 {
+				t.Errorf("expected exit code 1, got %d", exitCode)
+			}
+		})
 	}
 }
 
