@@ -36,7 +36,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
           cache: true
 
       - name: Build libgomesi
@@ -74,7 +74,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
           cache: true
 
       - name: Download dependencies
@@ -96,7 +96,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
           cache: true
 
       - name: Build libgomesi
@@ -135,7 +135,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
           cache: true
 
       - name: Run Yaegi compatibility test
@@ -186,7 +186,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
           cache: true
 
       - name: Download CLI dependencies
@@ -208,7 +208,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
           cache: true
 
       - name: Download dependencies
@@ -237,7 +237,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
           cache: true
 
       - name: Download proxy dependencies
@@ -266,7 +266,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
           cache: true
 
       - name: Build libgomesi
@@ -306,7 +306,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
           cache: true
 
       - name: Run Caddy tests
@@ -329,7 +329,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
           cache: true
 
       - name: Run FrankenPHP tests
@@ -352,7 +352,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
           cache: true
 
       - name: Download roadrunner dependencies
@@ -378,7 +378,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
           cache: true
 
       - name: Build libgomesi
