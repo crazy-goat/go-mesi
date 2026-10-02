@@ -65,6 +65,28 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 return
 
+        if self.path.startswith('/bytes-nolen/'):
+            # /bytes-nolen/<size> (#537): like /bytes/<size>, but the
+            # response has no Content-Length (HTTP/1.0, ended by closing
+            # the connection), so nginx sees a body of unknown length
+            # and can only check its size while it accumulates.
+            parts = self.path.split('?', 1)[0].split('/')
+            try:
+                size = int(parts[2]) if len(parts) >= 3 else -1
+            except ValueError:
+                size = -1
+            if 0 <= size <= MAX_GENERATED_BYTES:
+                marker = ('MesiBytesPayload ' + parts[2] + '\n').encode()
+                body = marker + b'x' * max(0, size - len(marker))
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+
         if self.path.startswith('/bytes/'):
             # /bytes/<size> (#208): exactly <size> bytes, prefixed with
             # a "MesiBytesPayload <size>" marker line when the size

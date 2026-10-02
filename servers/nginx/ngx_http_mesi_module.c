@@ -60,6 +60,19 @@
 // distinguishable from it (see the merge comment below).
 #define MESI_MAX_MAX_RESPONSE_SIZE ((off_t)9223372036854775806LL)
 
+// Parent (input) HTML body cap in bytes (#537). Same plain-integer-bytes
+// grammar and upper bound as mesi_max_response_size, so the two size
+// directives accept exactly the same values. 0 means "unlimited" (the
+// behaviour before #537), so the unset sentinel stays distinguishable
+// from it only for inheritance: a child location's explicit 0 overrides
+// a parent's limit.
+#define MESI_MAX_MAX_BODY_SIZE MESI_MAX_MAX_RESPONSE_SIZE
+
+// mesi_on_oversize values (#537): what to do with a parent body that is
+// over mesi_max_body_size.
+#define MESI_ON_OVERSIZE_PASS 0  // send the body unchanged, log a warning
+#define MESI_ON_OVERSIZE_ERROR 1 // log an error and fail the response
+
 // Per-parse cap on concurrent <esi:include> HTTP fetches (#214). Matches
 // libgomesi's config.MaxMaxConcurrentRequests / Apache
 // MESI_MAX_MAX_CONCURRENT_REQUESTS / php-ext `max_concurrent_requests`
@@ -151,12 +164,19 @@ typedef struct {
   ngx_str_t allowed_hosts;                  // space-separated host whitelist ("" = no restriction)
   ngx_flag_t allow_private_ips_for_allowed; // private-IP bypass for allowed_hosts (default OFF)
   ngx_str_t cache_key_template;             // "" = URL-only DefaultCacheKey (backward compat)
+  off_t max_body_size;                      // Parent HTML body cap in bytes (#537):
+                                            // NGX_CONF_UNSET until merged, 0 =
+                                            // unlimited (the default)
+  ngx_uint_t on_oversize;                   // MESI_ON_OVERSIZE_PASS (default) or
+                                            // MESI_ON_OVERSIZE_ERROR (#537)
 } ngx_http_mesi_loc_conf_t;
 
 typedef struct {
   ngx_str_t accumulated;
   size_t capacity; // bytes allocated at accumulated.data (>= accumulated.len)
   ngx_flag_t done;
+  ngx_flag_t passthrough; // body went over mesi_max_body_size in pass mode (#537):
+                          // the rest of the body is forwarded unchanged
 } ngx_http_html_head_filter_ctx_t;
 
 static ngx_http_output_header_filter_pt ngx_http_next_header_filter;
@@ -184,6 +204,8 @@ static char *ngx_http_mesi_set_timeout(ngx_conf_t *cf, ngx_command_t *cmd,
 static char *ngx_http_mesi_set_max_response_size(ngx_conf_t *cf,
                                                  ngx_command_t *cmd,
                                                  void *conf);
+static char *ngx_http_mesi_set_max_body_size(ngx_conf_t *cf,
+                                             ngx_command_t *cmd, void *conf);
 static char *ngx_http_mesi_set_max_concurrent_requests(ngx_conf_t *cf,
                                                        ngx_command_t *cmd,
                                                        void *conf);
@@ -210,6 +232,11 @@ static InitCacheWithConfigFunc EsiInitCacheWithConfig = NULL;
 static FreeCacheFunc EsiFreeCache = NULL;
 static ngx_flag_t cache_initialized = 0;
 static ngx_str_t cache_last_backend = ngx_null_string;
+
+static ngx_conf_enum_t ngx_http_mesi_on_oversize_values[] = {
+    {ngx_string("pass"), MESI_ON_OVERSIZE_PASS},
+    {ngx_string("error"), MESI_ON_OVERSIZE_ERROR},
+    {ngx_null_string, 0}};
 
 static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("enable_mesi"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
@@ -309,6 +336,18 @@ static ngx_command_t ngx_http_mesi_commands[] = {
      ngx_conf_set_flag_slot, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, allow_private_ips_for_allowed), NULL},
 
+    // Parent (input) HTML body cap (#537): the whole parent body is
+    // buffered in memory before it is parsed, so this bounds that
+    // buffer. Not mesi_max_response_size, which caps one include.
+    {ngx_string("mesi_max_body_size"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_http_mesi_set_max_body_size, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, max_body_size), NULL},
+
+    {ngx_string("mesi_on_oversize"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_enum_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, on_oversize),
+     ngx_http_mesi_on_oversize_values},
+
     {ngx_string("mesi_cache_key_template"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, cache_key_template), NULL},
@@ -375,6 +414,30 @@ static ngx_int_t ngx_http_html_mesi_head_filter(ngx_http_request_t *r) {
     return ngx_http_next_header_filter(r);
   }
 
+  // Parent body cap (#537), known-length case: the upstream already told
+  // us the body is over the limit, so decide now and never buffer it.
+  // (A body without Content-Length is checked while it accumulates, in
+  // the body filter.) Content-Length is still intact here: it is
+  // cleared further down, only for a body that will be processed.
+  if (lcf->max_body_size > 0 &&
+      r->headers_out.content_length_n > lcf->max_body_size) {
+    if (lcf->on_oversize == MESI_ON_OVERSIZE_ERROR) {
+      ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                    "mesi: parent body of %O bytes is over "
+                    "mesi_max_body_size %O; returning HTTP 502 "
+                    "(mesi_on_oversize error)",
+                    r->headers_out.content_length_n, lcf->max_body_size);
+      return NGX_HTTP_BAD_GATEWAY;
+    }
+
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                  "mesi: parent body of %O bytes is over "
+                  "mesi_max_body_size %O; sending it unchanged without "
+                  "ESI processing (mesi_on_oversize pass)",
+                  r->headers_out.content_length_n, lcf->max_body_size);
+    return ngx_http_next_header_filter(r);
+  }
+
   if (lcf->allowed_hosts.len > 0 && EsiParseWithConfig == NULL) {
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                   "mesi: ParseWithConfig unavailable in libgomesi — "
@@ -437,6 +500,12 @@ static ngx_int_t ngx_http_html_mesi_body_filter(ngx_http_request_t *r,
     return ngx_http_next_body_filter(r, in);
   }
 
+  // Over mesi_max_body_size in pass mode (#537): the earlier part of the
+  // body was already sent unchanged, so send the rest the same way.
+  if (ctx->passthrough) {
+    return ngx_http_next_body_filter(r, in);
+  }
+
   ngx_chain_t *cl;
   ngx_buf_t *buf;
 
@@ -446,6 +515,49 @@ static ngx_int_t ngx_http_html_mesi_body_filter(ngx_http_request_t *r,
     if (size > 0 && !ctx->done) {
       size_t old_len = ctx->accumulated.len;
       size_t new_len = old_len + size;
+
+      // Parent body cap (#537), unknown-length case. cl and the bufs
+      // after it are still untouched here (only the earlier bufs of this
+      // call were consumed into ctx->accumulated).
+      if (lcf->max_body_size > 0 && (off_t)new_len > lcf->max_body_size) {
+        if (lcf->on_oversize == MESI_ON_OVERSIZE_ERROR) {
+          // The response headers are already sent, so there is no way
+          // to answer 502 any more: log and abort the connection, which
+          // the client sees as a truncated response.
+          ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                        "mesi: parent body is over mesi_max_body_size %O; "
+                        "aborting the response (mesi_on_oversize error)",
+                        lcf->max_body_size);
+          return NGX_ERROR;
+        }
+
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "mesi: parent body is over mesi_max_body_size %O; "
+                      "sending it unchanged without ESI processing "
+                      "(mesi_on_oversize pass)",
+                      lcf->max_body_size);
+
+        ctx->passthrough = 1;
+
+        ngx_chain_t *rest = cl;
+        if (ctx->accumulated.len > 0) {
+          // Send what was buffered so far, then this buf and the rest.
+          ngx_chain_t *head = ngx_alloc_chain_link(r->pool);
+          ngx_buf_t *hb = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
+          if (head == NULL || hb == NULL) {
+            return NGX_ERROR;
+          }
+
+          hb->pos = ctx->accumulated.data;
+          hb->last = ctx->accumulated.data + ctx->accumulated.len;
+          hb->memory = 1;
+          head->buf = hb;
+          head->next = cl;
+          rest = head;
+        }
+
+        return ngx_http_next_body_filter(r, rest);
+      }
 
       // Grow geometrically so a body split into many bufs is copied
       // O(n) times in total, not O(n^2) (#483).
@@ -2224,6 +2336,62 @@ static char *ngx_http_mesi_set_max_workers(ngx_conf_t *cf, ngx_command_t *cmd,
   return NGX_CONF_OK;
 }
 
+// ngx_http_mesi_set_max_body_size parses the `mesi_max_body_size`
+// directive argument (#537). Same grammar as mesi_max_response_size:
+// non-empty, digits only, plain integer BYTES in
+// [0, MESI_MAX_MAX_BODY_SIZE], with a per-digit overflow guard before
+// the multiply. 0 means "unlimited". Every rejection fails config load
+// with an EMERG log naming the directive and the value.
+static char *ngx_http_mesi_set_max_body_size(ngx_conf_t *cf,
+                                             ngx_command_t *cmd, void *conf) {
+  ngx_http_mesi_loc_conf_t *lcf = conf;
+  ngx_str_t *value = cf->args->elts;
+  off_t val = 0;
+  size_t i;
+
+  (void)cmd;
+
+  if (lcf->max_body_size != NGX_CONF_UNSET) {
+    return "is duplicate";
+  }
+
+  if (value[1].len == 0) {
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "\"mesi_max_body_size\" directive requires an "
+                       "argument (a non-negative integer in bytes, in "
+                       "[0, %O])",
+                       (off_t)MESI_MAX_MAX_BODY_SIZE);
+    return NGX_CONF_ERROR;
+  }
+
+  for (i = 0; i < value[1].len; i++) {
+    u_char c = value[1].data[i];
+    off_t d;
+    if (c < '0' || c > '9') {
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "invalid value \"%V\" in "
+                         "\"mesi_max_body_size\" directive: must be "
+                         "a non-negative integer (digits only, bytes) in "
+                         "[0, %O]",
+                         &value[1], (off_t)MESI_MAX_MAX_BODY_SIZE);
+      return NGX_CONF_ERROR;
+    }
+    d = (off_t)(c - '0');
+    if (val > (MESI_MAX_MAX_BODY_SIZE - d) / 10) {
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "value \"%V\" out of range in "
+                         "\"mesi_max_body_size\" directive: must be "
+                         "in [0, %O]",
+                         &value[1], (off_t)MESI_MAX_MAX_BODY_SIZE);
+      return NGX_CONF_ERROR;
+    }
+    val = val * 10 + d;
+  }
+
+  lcf->max_body_size = val;
+  return NGX_CONF_OK;
+}
+
 static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
   ngx_http_mesi_loc_conf_t *conf;
   conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_mesi_loc_conf_t));
@@ -2241,6 +2409,9 @@ static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
   // 0 ("library default") must not masquerade as configured and route
   // every parse through ParseJson (#219) — same -1 rule as #208/#214.
   conf->max_workers = NGX_CONF_UNSET;
+  // 0 ("unlimited") is a valid value, so the sentinel must be -1 (#537).
+  conf->max_body_size = NGX_CONF_UNSET;
+  conf->on_oversize = NGX_CONF_UNSET_UINT;
   conf->cache_size = NGX_CONF_UNSET;
   conf->cache_ttl = NGX_CONF_UNSET;
   conf->cache_redis_db = NGX_CONF_UNSET;
@@ -2317,6 +2488,11 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   // mesi_max_response_size / mesi_max_concurrent_requests).
   ngx_conf_merge_value(conf->max_workers, prev->max_workers,
                        NGX_CONF_UNSET);
+  // Unset → 0 (unlimited, the behaviour before #537) and `pass`. An
+  // explicit 0 in a child location overrides a parent's limit.
+  ngx_conf_merge_off_value(conf->max_body_size, prev->max_body_size, 0);
+  ngx_conf_merge_uint_value(conf->on_oversize, prev->on_oversize,
+                            MESI_ON_OVERSIZE_PASS);
   ngx_conf_merge_str_value(conf->cache_backend, prev->cache_backend, "");
   ngx_conf_merge_value(conf->cache_size, prev->cache_size, 10000);
   ngx_conf_merge_value(conf->cache_ttl, prev->cache_ttl, 30);
