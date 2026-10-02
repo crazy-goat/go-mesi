@@ -41,7 +41,7 @@ RUN wget "http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" -O /tmp/nginx
     cp /build/servers/nginx/ngx_http_mesi_module.c /tmp/mesi/ && \
     cp /build/servers/nginx/config /tmp/mesi/ && \
     ./configure --add-dynamic-module=/tmp/mesi && \
-    make -j$(nproc) modules && \
+    make -j"$(nproc)" modules && \
     mkdir -p /usr/lib/nginx/modules && \
     cp objs/ngx_http_mesi_module.so /usr/lib/nginx/modules/ && \
     make install && \

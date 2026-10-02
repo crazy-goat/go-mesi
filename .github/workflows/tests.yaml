@@ -30,37 +30,46 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Check for committed generated artifacts
-        run: ./scripts/check-no-generated-artifacts.sh
-
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
           go-version: '1.25'
           cache: true
 
-      - name: Build libgomesi
-        run: cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go cache_config.go
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v9
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
         with:
-          version: latest
-          only-new-issues: false
-          skip-cache: true
-          args: ./mesi/...
+          php-version: '8.3'
 
-      - name: Download CLI dependencies
-        run: cd cli && go mod download
+      - name: Install golangci-lint
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.13.2/install.sh \
+            | sh -s -- -b "$HOME/.local/bin" v2.13.2
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Run golangci-lint (cli)
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: latest
-          only-new-issues: false
-          skip-cache: true
-          working-directory: cli
-          args: ./...
+      - name: Install shellcheck and hadolint
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            | tar -xJ --strip-components=1 -C "$HOME/.local/bin" shellcheck-v0.11.0/shellcheck
+          curl -fsSL -o "$HOME/.local/bin/hadolint" https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+          chmod +x "$HOME/.local/bin/hadolint"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install clang-format
+        run: |
+          pip install --user clang-format==23.1.2
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Download Go module dependencies
+        run: |
+          git ls-files '*go.mod' | while read -r mod; do
+            (cd "$(dirname "$mod")" && go mod download)
+          done
+
+      - name: Lint
+        run: bin/lint.sh
 
   test:
     name: Test

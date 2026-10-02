@@ -42,13 +42,19 @@ the `go-version` values in `.github/workflows/tests.yaml` in sync.
 # Shared library used by many suites
 (cd libgomesi && make build)
 
-# Lint and unit tests of the core (CI runs golangci-lint on ./mesi/... and on cli/)
-golangci-lint run ./mesi/...
-go vet ./mesi/...
+# Lint everything (also `make lint`): golangci-lint + go vet in every Go module (shared
+# .golangci.yml), clang-format on C (.clang-format), php -l, shellcheck, hadolint
+# (.hadolint.yaml) and the generated-artifacts guard. --fix applies the formatters first.
+# Needs golangci-lint, clang-format, shellcheck, hadolint and php on PATH (a missing tool
+# fails the run). CI pins golangci-lint v2.13.2, clang-format 23.1.2, shellcheck v0.11.0
+# and hadolint v2.12.0.
+bin/lint.sh
+bin/lint.sh --fix
+
+# Unit tests of the core
 go test -count=1 ./mesi/...
 
 # CLI
-(cd cli && golangci-lint run ./...)
 (cd cli && go test -count=1 ./...)
 (cd cli && bash test.sh)
 
@@ -81,7 +87,7 @@ at a time per worktree. `bin/worktree-teardown.sh` stops every stack of the work
 
 ## CI
 
-`.github/workflows/tests.yaml` runs on pull requests. The `changes` job detects
+`.github/workflows/tests.yaml` runs on pull requests. The `lint` job installs the pinned tools and runs only `bin/lint.sh`. The `changes` job detects
 documentation-only changes; the `docs` job checks them fast. All build and test
 jobs run only for code changes. The required check is `ci-ok`.
 
