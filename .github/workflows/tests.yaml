@@ -43,7 +43,7 @@ jobs:
         run: cd libgomesi && go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libgomesi.so libgomesi.go cache_config.go
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
           only-new-issues: false
@@ -54,7 +54,7 @@ jobs:
         run: cd cli && go mod download
 
       - name: Run golangci-lint (cli)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
           only-new-issues: false
