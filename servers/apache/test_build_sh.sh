@@ -101,7 +101,7 @@ run_build() {
     env_args+=("$@")
 
     (
-        cd "$root/servers/apache"
+        cd "$root/servers/apache" || exit
         "$ENV_BIN" "${env_args[@]}" bash "$root/servers/apache/build.sh" \
             >"$root/${log_basename}.out" 2>"$root/${log_basename}.err"
     )

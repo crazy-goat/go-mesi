@@ -66,7 +66,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<!DOCTYPE html>
+		_, _ = w.Write([]byte(`<!DOCTYPE html>
 <html lang="en">
 <head>
     <title>Test ESI</title>
@@ -188,18 +188,18 @@ func main() {
 	})
 	mux.HandleFunc("/plain", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(`plain text with <esi:include src="http://example.com/test" /> tags`))
+		_, _ = w.Write([]byte(`plain text with <esi:include src="http://example.com/test" /> tags`))
 	})
 	// /fragment is the loopback include target; /allowed serves a page that
 	// includes it via an absolute URL on the same listener. The hostname is
 	// "127.0.0.1" so allowed_hosts functional cases need no DNS.
 	mux.HandleFunc("/fragment", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("FRAGMENT_OK"))
+		_, _ = w.Write([]byte("FRAGMENT_OK"))
 	})
 	mux.HandleFunc("/allowed", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/fragment" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/fragment" /></body></html>`))
 	})
 	// /nested-depth is a two-level nested include page for the max_depth
 	// functional cases. Each level carries a per-level marker (same scheme
@@ -216,15 +216,15 @@ func main() {
 	// recurses into plain-text fragments (ParseOnHeader is off).
 	mux.HandleFunc("/nested-depth/inner", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("INNER-DEPTH-BODY"))
+		_, _ = w.Write([]byte("INNER-DEPTH-BODY"))
 	})
 	mux.HandleFunc("/nested-depth/outer", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(`OUTER-DEPTH-BODY<esi:include src="http://127.0.0.1:9090/nested-depth/inner" />`))
+		_, _ = w.Write([]byte(`OUTER-DEPTH-BODY<esi:include src="http://127.0.0.1:9090/nested-depth/inner" />`))
 	})
 	mux.HandleFunc("/nested-depth", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/nested-depth/outer" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/nested-depth/outer" /></body></html>`))
 	})
 	mux.HandleFunc("/slow-fragment", func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(5 * time.Second)
@@ -255,6 +255,6 @@ func main() {
 	<-quit
 
 	log.Println("Shutting down server...")
-	server.Close()
+	_ = server.Close()
 	log.Println("Server stopped")
 }

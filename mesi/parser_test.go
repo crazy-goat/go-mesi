@@ -232,8 +232,8 @@ func TestMESIParseWorkerPoolRespectsMaxWorkers(t *testing.T) {
 		t.Skip("skipping concurrency test in short mode")
 	}
 
-		var maxConcurrent atomic.Int64
-		var current atomic.Int64
+	var maxConcurrent atomic.Int64
+	var current atomic.Int64
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		v := current.Add(1)
@@ -502,10 +502,10 @@ func TestMESIParseNestedIncludes(t *testing.T) {
 
 func TestExtractTryBlocks(t *testing.T) {
 	tests := []struct {
-		name              string
-		input             string
-		wantAttempt       string
-		wantExcept        string
+		name        string
+		input       string
+		wantAttempt string
+		wantExcept  string
 	}{
 		{
 			name:        "no attempt tag",
@@ -864,28 +864,28 @@ func TestESITryEmptyAttempt(t *testing.T) {
 
 func TestExtractChooseBlocks(t *testing.T) {
 	tests := []struct {
-		name            string
-		input           string
-		wantWhenCount   int
-		wantWhenTests   []string
-		wantWhenBodies  []string
-		wantOtherwise   string
+		name           string
+		input          string
+		wantWhenCount  int
+		wantWhenTests  []string
+		wantWhenBodies []string
+		wantOtherwise  string
 	}{
 		{
-			name:          "single when true",
-			input:         `<esi:choose><esi:when test="true">body</esi:when></esi:choose>`,
-			wantWhenCount: 1,
-			wantWhenTests: []string{"true"},
+			name:           "single when true",
+			input:          `<esi:choose><esi:when test="true">body</esi:when></esi:choose>`,
+			wantWhenCount:  1,
+			wantWhenTests:  []string{"true"},
 			wantWhenBodies: []string{"body"},
-			wantOtherwise: "",
+			wantOtherwise:  "",
 		},
 		{
-			name:          "multiple whens with otherwise",
-			input:         `<esi:choose><esi:when test="true">a</esi:when><esi:when test="false">b</esi:when><esi:otherwise>c</esi:otherwise></esi:choose>`,
-			wantWhenCount: 2,
-			wantWhenTests: []string{"true", "false"},
+			name:           "multiple whens with otherwise",
+			input:          `<esi:choose><esi:when test="true">a</esi:when><esi:when test="false">b</esi:when><esi:otherwise>c</esi:otherwise></esi:choose>`,
+			wantWhenCount:  2,
+			wantWhenTests:  []string{"true", "false"},
 			wantWhenBodies: []string{"a", "b"},
-			wantOtherwise: "c",
+			wantOtherwise:  "c",
 		},
 		{
 			name:          "otherwise only",
@@ -900,36 +900,36 @@ func TestExtractChooseBlocks(t *testing.T) {
 			wantOtherwise: "",
 		},
 		{
-			name:          "when with nested choose inside",
-			input:         `<esi:choose><esi:when test="true"><esi:choose><esi:when test="false">nested</esi:when></esi:choose></esi:when></esi:choose>`,
-			wantWhenCount: 1,
-			wantWhenTests: []string{"true"},
+			name:           "when with nested choose inside",
+			input:          `<esi:choose><esi:when test="true"><esi:choose><esi:when test="false">nested</esi:when></esi:choose></esi:when></esi:choose>`,
+			wantWhenCount:  1,
+			wantWhenTests:  []string{"true"},
 			wantWhenBodies: []string{"<esi:choose><esi:when test=\"false\">nested</esi:when></esi:choose>"},
-			wantOtherwise: "",
+			wantOtherwise:  "",
 		},
 		{
-			name:          "when with include inside",
-			input:         `<esi:choose><esi:when test="true"><esi:include src="/fragment"/></esi:when><esi:otherwise>fallback</esi:otherwise></esi:choose>`,
-			wantWhenCount: 1,
-			wantWhenTests: []string{"true"},
+			name:           "when with include inside",
+			input:          `<esi:choose><esi:when test="true"><esi:include src="/fragment"/></esi:when><esi:otherwise>fallback</esi:otherwise></esi:choose>`,
+			wantWhenCount:  1,
+			wantWhenTests:  []string{"true"},
 			wantWhenBodies: []string{"<esi:include src=\"/fragment\"/>"},
-			wantOtherwise: "fallback",
+			wantOtherwise:  "fallback",
 		},
 		{
-			name:          "test attribute with extra whitespace",
-			input:         `<esi:choose><esi:when test=" true ">body</esi:when></esi:choose>`,
-			wantWhenCount: 1,
-			wantWhenTests: []string{" true "},
+			name:           "test attribute with extra whitespace",
+			input:          `<esi:choose><esi:when test=" true ">body</esi:when></esi:choose>`,
+			wantWhenCount:  1,
+			wantWhenTests:  []string{" true "},
 			wantWhenBodies: []string{"body"},
-			wantOtherwise: "",
+			wantOtherwise:  "",
 		},
 		{
-			name:          "choose with body content before when (should be ignored)",
-			input:         `<esi:choose>ignored text<esi:when test="true">body</esi:when></esi:choose>`,
-			wantWhenCount: 1,
-			wantWhenTests: []string{"true"},
+			name:           "choose with body content before when (should be ignored)",
+			input:          `<esi:choose>ignored text<esi:when test="true">body</esi:when></esi:choose>`,
+			wantWhenCount:  1,
+			wantWhenTests:  []string{"true"},
 			wantWhenBodies: []string{"body"},
-			wantOtherwise: "",
+			wantOtherwise:  "",
 		},
 	}
 
@@ -1598,7 +1598,6 @@ func TestESITryE2EFixture(t *testing.T) {
 		t.Errorf("third try: onerror=continue content should appear, got %q", result)
 	}
 }
-
 
 func TestMESIParseABRatioRejectsInvalidInput(t *testing.T) {
 	// The mock upstream must never be touched when the ab-ratio attribute

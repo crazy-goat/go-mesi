@@ -10,13 +10,13 @@ import (
 )
 
 func hello(w http.ResponseWriter, _ *http.Request) {
-	w.Write([]byte("Hello World"))
+	_, _ = w.Write([]byte("Hello World"))
 }
 
 func statusCode(w http.ResponseWriter, r *http.Request) {
 	code, _ := strconv.Atoi(r.PathValue("id"))
 	w.WriteHeader(code)
-	w.Write([]byte(http.StatusText(code)))
+	_, _ = w.Write([]byte(http.StatusText(code)))
 }
 
 func sleep(w http.ResponseWriter, r *http.Request) {
@@ -24,7 +24,7 @@ func sleep(w http.ResponseWriter, r *http.Request) {
 	timeout, _ := strconv.Atoi(r.PathValue("timeout"))
 	index := r.PathValue("index")
 	time.Sleep(time.Duration(timeout) * time.Second)
-	w.Write([]byte(index + " Waited " + strconv.Itoa(timeout)))
+	_, _ = w.Write([]byte(index + " Waited " + strconv.Itoa(timeout)))
 }
 
 func returnEsi(w http.ResponseWriter, r *http.Request) {
@@ -32,25 +32,25 @@ func returnEsi(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Edge-control", "dca=esi")
 	slow := r.URL.Query().Get("slow")
 	if slow != "" {
-		w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:18080/sleep/" + slow + "/1\" />]"))
+		_, _ = w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:18080/sleep/" + slow + "/1\" />]"))
 		return
 	}
-	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:18080/hello\" />]"))
+	_, _ = w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:18080/hello\" />]"))
 }
 
 func returnEsiNoHeader(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:18080/hello\" />]"))
+	_, _ = w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:18080/hello\" />]"))
 }
 
 func recursive(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
 	w.Header().Add("Edge-control", "dca=esi")
-	w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:18080/recursive\" />]"))
+	_, _ = w.Write([]byte("included: [<esi:include src=\"http://127.0.0.1:18080/recursive\" />]"))
 }
 
 func returnString(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte(r.PathValue("data")))
+	_, _ = w.Write([]byte(r.PathValue("data")))
 }
 
 // bytesHandler serves an exactly-N-byte body, mirroring the
@@ -68,7 +68,7 @@ func bytesHandler(w http.ResponseWriter, r *http.Request) {
 	for len(body) < size {
 		body = append(body, marker...)
 	}
-	w.Write(body[:size])
+	_, _ = w.Write(body[:size])
 }
 
 var (
@@ -82,7 +82,7 @@ func countHandler(w http.ResponseWriter, r *http.Request) {
 	counters[name]++
 	n := counters[name]
 	countersMu.Unlock()
-	w.Write([]byte(strconv.Itoa(n)))
+	_, _ = w.Write([]byte(strconv.Itoa(n)))
 }
 
 // Peak-concurrency tracker for the CLI -max-concurrent-requests tests
@@ -125,7 +125,7 @@ func holdHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 	time.Sleep(time.Duration(millis) * time.Millisecond)
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(label + " Held " + strconv.Itoa(millis)))
+	_, _ = w.Write([]byte(label + " Held " + strconv.Itoa(millis)))
 }
 
 // trackHandler serves /track/reset (zero both counters) and /track/max
@@ -138,13 +138,13 @@ func trackHandler(w http.ResponseWriter, r *http.Request) {
 		trackPeak = 0
 		trackMu.Unlock()
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("reset"))
+		_, _ = w.Write([]byte("reset"))
 	case "max":
 		trackMu.Lock()
 		peak := strconv.Itoa(trackPeak)
 		trackMu.Unlock()
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(peak))
+		_, _ = w.Write([]byte(peak))
 	default:
 		http.NotFound(w, r)
 	}

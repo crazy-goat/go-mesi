@@ -45,8 +45,8 @@ type EsiParserConfig struct {
 	// MaxWorkers caps the number of goroutines used to process ESI tokens
 	// within a single MESIParse call. Zero means runtime.NumCPU()*4.
 	// Static tokens do not count against this limit.
-	MaxWorkers         int
-	requestSemaphore   chan struct{} // semaphore for limiting HTTP requests
+	MaxWorkers       int
+	requestSemaphore chan struct{} // semaphore for limiting HTTP requests
 
 	// Variables holds ESI variable definitions from <esi:vars> blocks and
 	// can be pre-populated by callers. Variables are resolved via $(NAME)

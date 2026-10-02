@@ -310,6 +310,7 @@ for CASE in cap-2 cap-100 absent; do
     if echo "$RESPONSE" | grep -q "AFTER-DEEP" \
         && ! echo "$RESPONSE" | grep -q '<esi:include'; then
         for LEVEL in 4 3 2 1; do
+            # shellcheck disable=SC2015 # the failure branch always exits, so A && B || C is intended
             echo "$RESPONSE" | grep -q "LEVEL-$LEVEL-START" \
                 && echo "$RESPONSE" | grep -q "LEVEL-$LEVEL-END" || {
                     echo "FAIL: $CASE omitted a deep nesting marker at level $LEVEL"
@@ -317,6 +318,7 @@ for CASE in cap-2 cap-100 absent; do
                     exit 1
                 }
             if [ "$LEVEL" -gt 1 ]; then
+                # shellcheck disable=SC2015 # the failure branch always exits, so A && B || C is intended
                 echo "$RESPONSE" | grep -q "LEVEL-MARKER-$LEVEL-A" \
                     && echo "$RESPONSE" | grep -q "LEVEL-MARKER-$LEVEL-B" || {
                         echo "FAIL: $CASE omitted sibling marker jobs at level $LEVEL"

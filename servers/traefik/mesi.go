@@ -396,7 +396,7 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	customWriter := middleware.NewResponseWriter(rw)
 
 	_, ok := req.Header["Surrogate-Capability"]
-	if ok == false {
+	if !ok {
 		req.Header.Set("Surrogate-Capability", "ESI/1.0")
 	}
 
@@ -447,12 +447,12 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 		rw.WriteHeader(customWriter.StatusCode())
 
-		rw.Write([]byte(processedResponse))
+		_, _ = rw.Write([]byte(processedResponse))
 
 		return
 	}
 
-	rw.Write(customWriter.Body().Bytes())
+	_, _ = rw.Write(customWriter.Body().Bytes())
 }
 
 func (p *ResponsePlugin) maxDepth() int {

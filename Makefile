@@ -1,3 +1,6 @@
+lint:
+	bin/lint.sh
+
 build-libgomesi:
 	$(MAKE) -C libgomesi build
 build-cli:

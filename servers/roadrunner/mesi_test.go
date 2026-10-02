@@ -585,7 +585,7 @@ func TestMiddlewareNonHTML(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	config := CreateConfig()
@@ -612,7 +612,7 @@ func TestMiddlewareHTML(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>content</body></html>"))
+		_, _ = w.Write([]byte("<html><body>content</body></html>"))
 	})
 
 	config := CreateConfig()
@@ -636,7 +636,7 @@ func TestMiddlewareWithCache(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body><esi:include src=\"/fragment\" /></body></html>"))
+		_, _ = w.Write([]byte("<html><body><esi:include src=\"/fragment\" /></body></html>"))
 	})
 
 	config := CreateConfig()
@@ -663,7 +663,7 @@ func TestMiddlewareSurrogateCapability(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>content</body></html>"))
+		_, _ = w.Write([]byte("<html><body>content</body></html>"))
 	})
 
 	config := CreateConfig()
@@ -735,13 +735,13 @@ func newBlockPrivateIPsTestServers(t *testing.T) (fragmentURL string, upstream h
 
 	fragment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte("FRAGMENT_OK"))
+		_, _ = w.Write([]byte("FRAGMENT_OK"))
 	}))
 	t.Cleanup(fragment.Close)
 
 	upstream = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(fmt.Sprintf("<html><body><esi:include src=\"%s/fragment\" /></body></html>", fragment.URL)))
+		_, _ = fmt.Fprintf(w, "<html><body><esi:include src=\"%s/fragment\" /></body></html>", fragment.URL)
 	})
 
 	return fragment.URL, upstream
@@ -832,7 +832,7 @@ func newAllowedHostsTestServers(t *testing.T, hostname string) (fragmentURL stri
 
 	fragment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte("FRAGMENT_OK"))
+		_, _ = w.Write([]byte("FRAGMENT_OK"))
 	}))
 	t.Cleanup(fragment.Close)
 
@@ -841,7 +841,7 @@ func newAllowedHostsTestServers(t *testing.T, hostname string) (fragmentURL stri
 
 	upstream = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(fmt.Sprintf("<html><body><esi:include src=\"%s/fragment\" /></body></html>", includeURL)))
+		_, _ = fmt.Fprintf(w, "<html><body><esi:include src=\"%s/fragment\" /></body></html>", includeURL)
 	})
 
 	return includeURL, upstream
@@ -1143,14 +1143,14 @@ func TestMiddlewareMaxDepthZeroPassthrough(t *testing.T) {
 	frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fragmentCalls++
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fragment"))
+		_, _ = w.Write([]byte("fragment"))
 	}))
 	defer frag.Close()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><esi:include src="` + frag.URL + `/frag" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + frag.URL + `/frag" /></body></html>`))
 	})
 
 	p := &Plugin{config: &Config{MaxDepth: intPtr(0)}}
@@ -1191,7 +1191,7 @@ func newNestedChainServer(t *testing.T, levels int) string {
 		}
 		mux.HandleFunc(fmt.Sprintf("/level-%d", i), func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html")
-			w.Write([]byte(body))
+			_, _ = w.Write([]byte(body))
 		})
 	}
 
@@ -1211,7 +1211,7 @@ func TestMiddlewareCustomMaxDepthThreeProcessesExactLevels(t *testing.T) {
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><esi:include src="` + baseURL + `/level-1" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + baseURL + `/level-1" /></body></html>`))
 	})
 
 	block := false

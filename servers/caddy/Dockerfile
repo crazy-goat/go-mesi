@@ -2,6 +2,8 @@ FROM golang:1.26-alpine AS build
 
 RUN apk add --no-cache git
 
+# kept separate for layer caching of the xcaddy install
+# hadolint ignore=DL3059
 RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
 WORKDIR /build

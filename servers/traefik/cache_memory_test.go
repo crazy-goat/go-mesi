@@ -184,7 +184,7 @@ func TestServeHTTPWithCache(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body><esi:include src=\"/fragment\" /></body></html>"))
+		_, _ = w.Write([]byte("<html><body><esi:include src=\"/fragment\" /></body></html>"))
 	})
 
 	config := CreateConfig()
@@ -210,7 +210,7 @@ func TestServeHTTPWithoutCache(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body><esi:include src=\"/fragment\" /></body></html>"))
+		_, _ = w.Write([]byte("<html><body><esi:include src=\"/fragment\" /></body></html>"))
 	})
 
 	config := CreateConfig()
@@ -234,7 +234,7 @@ func TestServeHTTPNonHTML(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	config := CreateConfig()
@@ -263,7 +263,7 @@ func TestMemoryCachePassedToConfig(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body>static</body></html>`))
+		_, _ = w.Write([]byte(`<html><body>static</body></html>`))
 	})
 
 	config := CreateConfig()

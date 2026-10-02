@@ -20,10 +20,10 @@ cleanup() {
 }
 
 start_proxy() {
-	local extra_flags="$1"
+	local extra_flags=("$@")
 	[ -n "$PROXY_PID" ] && kill "$PROXY_PID" 2>/dev/null || true
 	sleep 2
-	"$PROXY_BINARY" --listen ":$PROXY_PORT" --backend "http://localhost:$TEST_SERVER_PORT" $extra_flags &
+	"$PROXY_BINARY" --listen ":$PROXY_PORT" --backend "http://localhost:$TEST_SERVER_PORT" "${extra_flags[@]}" &
 	PROXY_PID=$!
 	sleep 1
 }
@@ -43,7 +43,7 @@ SERVER_PID=$!
 sleep 1
 
 echo "=== Starting proxy on :$PROXY_PORT -> http://localhost:$TEST_SERVER_PORT ==="
-start_proxy "--block-private-ips=false"
+start_proxy --block-private-ips=false
 
 echo ""
 echo "=== Test 1: ESI include processing ==="
@@ -58,7 +58,7 @@ fi
 
 echo ""
 echo "=== Test 2: ParseOnHeader bypass (no Edge-control) ==="
-start_proxy "--parse-on-header --block-private-ips=false"
+start_proxy --parse-on-header --block-private-ips=false
 RESPONSE=$(curl -s "http://localhost:$PROXY_PORT/returnNonEsiHeader")
 if echo "$RESPONSE" | grep -q "<esi:include"; then
 	echo "PASS: ParseOnHeader bypass works (raw ESI preserved)"
@@ -70,7 +70,7 @@ fi
 
 echo ""
 echo "=== Test 3: ParseOnHeader active (Edge-control present) ==="
-start_proxy "--parse-on-header --block-private-ips=false"
+start_proxy --parse-on-header --block-private-ips=false
 RESPONSE=$(curl -s "http://localhost:$PROXY_PORT/returnEsi")
 if echo "$RESPONSE" | grep -q "Hello World"; then
 	echo "PASS: ParseOnHeader active - ESI processed"
@@ -82,7 +82,7 @@ fi
 
 echo ""
 echo "=== Test 4: Surrogate headers ==="
-start_proxy "--block-private-ips=false"
+start_proxy --block-private-ips=false
 HEADERS=$(curl -sI "http://localhost:$PROXY_PORT/returnEsi")
 if echo "$HEADERS" | grep -qi "Surrogate-Control"; then
 	echo "PASS: Surrogate-Control header in response for processed HTML"
@@ -94,7 +94,7 @@ fi
 
 echo ""
 echo "=== Test 5: Non-HTML passthrough ==="
-start_proxy "--block-private-ips=false"
+start_proxy --block-private-ips=false
 RESPONSE=$(curl -s "http://localhost:$PROXY_PORT/returnString/test.txt")
 if echo "$RESPONSE" | grep -q "test.txt"; then
 	echo "PASS: Non-HTML passthrough works"
@@ -106,7 +106,7 @@ fi
 
 echo ""
 echo "=== Test 6: Max depth ==="
-start_proxy "--max-depth 1 --block-private-ips=false"
+start_proxy --max-depth 1 --block-private-ips=false
 RESPONSE=$(curl -s "http://localhost:$PROXY_PORT/recursive")
 COUNT=$(echo "$RESPONSE" | grep -o "included:" | wc -l)
 if [ "$COUNT" -le 2 ]; then
@@ -119,7 +119,7 @@ fi
 
 echo ""
 echo "=== Test 7: Timeout ==="
-start_proxy "--timeout 1 --block-private-ips=false"
+start_proxy --timeout 1 --block-private-ips=false
 START=$(date +%s%N)
 set +e
 RESPONSE=$(curl -s --max-time 10 "http://localhost:$PROXY_PORT/returnEsi?slow=5" 2>&1)
@@ -135,7 +135,7 @@ fi
 
 echo ""
 echo "=== Test 8: Error passthrough (404) ==="
-start_proxy "--block-private-ips=false"
+start_proxy --block-private-ips=false
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PROXY_PORT/status/code/404")
 if [ "$STATUS" = "404" ]; then
 	echo "PASS: HTTP 404 passed through correctly"
@@ -146,7 +146,7 @@ fi
 
 echo ""
 echo "=== Test 9: Content-Length correctness ==="
-start_proxy "--block-private-ips=false"
+start_proxy --block-private-ips=false
 HEADERS=$(curl -s -D - "http://localhost:$PROXY_PORT/returnEsi" -o "$TEST_DIR/body.txt" 2>/dev/null)
 BODY_SIZE=$(wc -c < "$TEST_DIR/body.txt")
 HEADER_CL=$(echo "$HEADERS" | grep -i "Content-Length" | awk '{print $2}' | tr -d '\r')

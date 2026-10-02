@@ -63,20 +63,20 @@ module AP_MODULE_DECLARE_DATA mesi_module;
 typedef struct {
     int enable_mesi;
     apr_array_header_t *allowed_hosts;
-    int block_private_ips;  // -1=unset, 0=off, 1=on
+    int block_private_ips; // -1=unset, 0=off, 1=on
     // Allow hosts in allowed_hosts to bypass BlockPrivateIPs (SSRF dial
     // block) when they resolve to private/reserved IPs. -1=unset,
     // 0=off, 1=on. Only effective when BOTH block_private_ips is on AND
     // allowed_hosts is set. Default (unset → off) keeps private IPs
     // always blocked regardless of allowed_hosts membership.
-    int allow_private_ips_for_allowed;  // -1=unset, 0=off, 1=on
+    int allow_private_ips_for_allowed; // -1=unset, 0=off, 1=on
     // Share a single http.Client across all <esi:include> fetches in this
     // worker process for TCP/TLS connection pooling. -1=unset, 0=off, 1=on.
     // Default (unset → off) keeps the original per-include client creation
     // so behaviour is unchanged unless an operator opts in. The shared
     // client is created in mesi_child_init via libgomesi InitHTTPClient and
     // honours the effective MesiBlockPrivateIPs setting at startup.
-    int shared_http_client;  // -1=unset, 0=off, 1=on
+    int shared_http_client; // -1=unset, 0=off, 1=on
     // Cached URI of the merged server config that owns the active
     // cache settings. Each child process uses this to lazy-init
     // InitCache once per cache_backend on first request, then skips.
@@ -100,11 +100,11 @@ typedef struct {
     // ${header:Name} and ${cookie:Name} placeholders. Unknown
     // placeholders stay literal; empty/NULL falls back to URL-only for
     // backward compat.
-    const char *cache_key_template;  // NULL/empty = DefaultCacheKey
+    const char *cache_key_template; // NULL/empty = DefaultCacheKey
     // ESI nesting depth (#166). -1 = unset (filter uses 5). Explicit 0
     // is valid passthrough (no ESI fetch). Range [0, MESI_MAX_MAX_DEPTH]
     // matches mesi.MaxMaxDepth / Caddy.
-    int max_depth;  // -1=unset, >=0 = configured
+    int max_depth; // -1=unset, >=0 = configured
     // Global per-include fetch budget in seconds (#167). -1 = unset:
     // the filter stays on the legacy parse path and libgomesi applies
     // its default 30s (config.DefaultTimeoutSeconds — the
@@ -114,7 +114,7 @@ typedef struct {
     // core treats Timeout <= 0 as "budget already exhausted" and fails
     // every include immediately with ErrTimeBudgetExceeded
     // (mesi/fetch.go) — it does NOT mean "no timeout".
-    int timeout_seconds;  // -1=unset, >=1 = configured
+    int timeout_seconds; // -1=unset, >=1 = configured
     // Cap on a single <esi:include> response body, in bytes (#169).
     // -1 = unset: the filter stays on the legacy parse path and
     // libgomesi leaves EsiParserConfig.MaxResponseSize at 0, which the
@@ -128,7 +128,7 @@ typedef struct {
     // Caddy `max_response_size 0`), so the unset sentinel MUST stay
     // -1 for 0 to survive the merge below. Range [0,
     // MESI_MAX_MAX_RESPONSE_SIZE].
-    apr_off_t max_response_size;  // -1=unset, >=0 = configured (bytes)
+    apr_off_t max_response_size; // -1=unset, >=0 = configured (bytes)
     // Cap on concurrent <esi:include> HTTP fetches within one page
     // render (one MESIParse call — per Apache worker thread under
     // MPM worker/event, not process-wide) (#170). -1 = unset: the
@@ -141,7 +141,7 @@ typedef struct {
     // contract shared with Caddy `max_concurrent_requests 0`), so the
     // unset sentinel MUST stay -1 for 0 to survive the merge below.
     // Range [0, MESI_MAX_MAX_CONCURRENT_REQUESTS].
-    int max_concurrent_requests;  // -1=unset, >=0 = configured
+    int max_concurrent_requests; // -1=unset, >=0 = configured
     // Cap on the include worker pool that drains ESI jobs within one
     // page render (one MESIParse call — each nesting level spawns its
     // own pool and inherits the cap; per Apache worker thread under
@@ -155,7 +155,7 @@ typedef struct {
     // Caddy `max_workers 0`), so the unset sentinel MUST stay -1 for
     // 0 to survive the merge below. Range [0,
     // MESI_MAX_MAX_WORKERS].
-    int max_workers;  // -1=unset, >=0 = configured
+    int max_workers; // -1=unset, >=0 = configured
 } mesi_config;
 
 // Default memory cache size when MesiCacheSize is not set.
@@ -233,48 +233,48 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     mesi_config *conf = apr_pcalloc(p, sizeof(*conf));
     conf->enable_mesi = 0;
     conf->allowed_hosts = apr_array_make(p, 4, sizeof(const char *));
-    conf->block_private_ips = -1;  // -1 = unset, default will be applied in filter
-    conf->allow_private_ips_for_allowed = -1;  // -1 = unset, default off
-    conf->shared_http_client = -1;  // -1 = unset, default off
+    conf->block_private_ips = -1;             // -1 = unset, default will be applied in filter
+    conf->allow_private_ips_for_allowed = -1; // -1 = unset, default off
+    conf->shared_http_client = -1;            // -1 = unset, default off
     conf->cache_backend = "";
     conf->cache_size = 0;
-    conf->cache_ttl = -1;  // -1 = unset (no expiry)
+    conf->cache_ttl = -1; // -1 = unset (no expiry)
     conf->cache_redis_addr = NULL;
     conf->cache_redis_password = NULL;
-    conf->cache_redis_db = -1;  // -1 = unset, default 0 in libgomesi
+    conf->cache_redis_db = -1; // -1 = unset, default 0 in libgomesi
     // Memcached: empty list means "no server list configured". The
     // set_cache_memcached_servers directive is the only path that adds
     // entries; an empty list at request time triggers the runtime
     // fail-fast error rather than silently picking some default server.
     conf->cache_memcached_servers = apr_array_make(p, 2, sizeof(const char *));
     conf->cache_key_template = NULL;
-    conf->max_depth = -1;  // -1 = unset, default 5 applied in filter
-    conf->timeout_seconds = -1;  // -1 = unset: legacy parse path, libgomesi applies its 30s Go-side (macro documents it only)
-    conf->max_response_size = -1;  // -1 = unset: legacy parse path, libgomesi leaves 0 = unlimited (pre-#169 behaviour)
-    conf->max_concurrent_requests = -1;  // -1 = unset: legacy parse path, libgomesi leaves 0 = unlimited (pre-#170 behaviour)
-    conf->max_workers = -1;  // -1 = unset: legacy parse path, libgomesi leaves 0 = library default NumCPU*4 (pre-#171 behaviour)
+    conf->max_depth = -1;               // -1 = unset, default 5 applied in filter
+    conf->timeout_seconds = -1;         // -1 = unset: legacy parse path, libgomesi applies its 30s Go-side (macro documents it only)
+    conf->max_response_size = -1;       // -1 = unset: legacy parse path, libgomesi leaves 0 = unlimited (pre-#169 behaviour)
+    conf->max_concurrent_requests = -1; // -1 = unset: legacy parse path, libgomesi leaves 0 = unlimited (pre-#170 behaviour)
+    conf->max_workers = -1;             // -1 = unset: legacy parse path, libgomesi leaves 0 = library default NumCPU*4 (pre-#171 behaviour)
     return conf;
 }
 
 static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
-    mesi_config *base = (mesi_config *) basev;
-    mesi_config *add = (mesi_config *) addv;
+    mesi_config *base = (mesi_config *)basev;
+    mesi_config *add = (mesi_config *)addv;
     mesi_config *conf = apr_pcalloc(p, sizeof(*conf));
     conf->enable_mesi = (add->enable_mesi != 0) ? add->enable_mesi : base->enable_mesi;
     conf->allowed_hosts = (add->allowed_hosts->nelts > 0) ? add->allowed_hosts : base->allowed_hosts;
     conf->block_private_ips = (add->block_private_ips != -1) ? add->block_private_ips : base->block_private_ips;
     conf->allow_private_ips_for_allowed = (add->allow_private_ips_for_allowed != -1)
-        ? add->allow_private_ips_for_allowed
-        : base->allow_private_ips_for_allowed;
+                                              ? add->allow_private_ips_for_allowed
+                                              : base->allow_private_ips_for_allowed;
     conf->shared_http_client = (add->shared_http_client != -1)
-        ? add->shared_http_client
-        : base->shared_http_client;
+                                   ? add->shared_http_client
+                                   : base->shared_http_client;
     // Cache config: child overrides parent when child explicitly sets a
     // backend ("" means "inherit from base"); size/ttl use 0 (unconfigured)
     // sentinel so add's explicit value wins over base's explicit value.
     conf->cache_backend = (add->cache_backend && add->cache_backend[0] != '\0')
-                           ? add->cache_backend
-                           : base->cache_backend;
+                              ? add->cache_backend
+                              : base->cache_backend;
     conf->cache_size = (add->cache_size > 0) ? add->cache_size : base->cache_size;
     conf->cache_ttl = (add->cache_ttl >= 0) ? add->cache_ttl : base->cache_ttl;
     // Redis config: child overrides parent when child explicitly sets a
@@ -286,8 +286,8 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     // matching the allowed_hosts "child with entries replaces parent
     // entirely" rule. An empty child list inherits the parent's list.
     conf->cache_memcached_servers = (add->cache_memcached_servers->nelts > 0)
-                                    ? add->cache_memcached_servers
-                                    : base->cache_memcached_servers;
+                                        ? add->cache_memcached_servers
+                                        : base->cache_memcached_servers;
     conf->cache_key_template = add->cache_key_template ? add->cache_key_template : base->cache_key_template;
     // Max depth: child wins when explicitly set; -1 sentinel inherits.
     // Explicit 0 (passthrough) is a configured value and must win.
@@ -308,16 +308,16 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     // (set_max_concurrent_requests rejects it), so the sentinel stays
     // unambiguous and a vhost's explicit 0 overrides a global cap.
     conf->max_concurrent_requests = (add->max_concurrent_requests != -1)
-        ? add->max_concurrent_requests
-        : base->max_concurrent_requests;
+                                        ? add->max_concurrent_requests
+                                        : base->max_concurrent_requests;
     // Max workers: child wins when explicitly set; -1 sentinel
     // inherits. Unlike timeout, 0 IS storable (explicit "library
     // default"), and -1 can never be stored (set_max_workers rejects
     // it), so the sentinel stays unambiguous and a vhost's explicit 0
     // overrides an inherited cap.
     conf->max_workers = (add->max_workers != -1)
-        ? add->max_workers
-        : base->max_workers;
+                            ? add->max_workers
+                            : base->max_workers;
     return conf;
 }
 
@@ -351,7 +351,7 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     if (env_force && env_force[0] == '1' && env_force[1] == '\0') {
         force_flatten_error = 1;
         ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
-            "mesi: MESI_FORCE_FLATTEN_ERROR=1 - flatten errors will be forced (test mode)");
+                     "mesi: MESI_FORCE_FLATTEN_ERROR=1 - flatten errors will be forced (test mode)");
     }
 
     // RTLD_GLOBAL is required for Go's runtime (signal handlers, etc.)
@@ -370,16 +370,16 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     // as optional — required ones (Parse*/FreeString) are checked below,
     // InitCache/FreeCache are optional and just downgraded to a warning
     // at request time when missing.
-    (void) dlerror();
+    (void)dlerror();
     EsiParse = (ParseFunc)dlsym(go_module, "Parse");
     if (dlerror() != NULL) {
         EsiParse = NULL;
-        (void) dlerror();
+        (void)dlerror();
     }
     EsiParseWithConfig = (ParseWithConfigFunc)dlsym(go_module, "ParseWithConfig");
     if (dlerror() != NULL) {
         EsiParseWithConfig = NULL;
-        (void) dlerror();
+        (void)dlerror();
     }
     // ParseWithConfigEx is optional: it adds the allowPrivateIPsForAllowedHosts
     // parameter. When present, the filter uses it so the
@@ -389,7 +389,7 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     EsiParseWithConfigEx = (ParseWithConfigExFunc)dlsym(go_module, "ParseWithConfigEx");
     if (dlerror() != NULL) {
         EsiParseWithConfigEx = NULL;
-        (void) dlerror();
+        (void)dlerror();
     }
     // ParseWithConfigCtx is optional: it adds cache_key_template +
     // requestCtxJSON. When present, the filter uses it so the
@@ -399,7 +399,7 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     EsiParseWithConfigCtx = (ParseWithConfigCtxFunc)dlsym(go_module, "ParseWithConfigCtx");
     if (dlerror() != NULL) {
         EsiParseWithConfigCtx = NULL;
-        (void) dlerror();
+        (void)dlerror();
     }
     // ParseJson is optional: JSON config entry point that carries the
     // timeoutSeconds (#167), maxResponseSize (#169),
@@ -418,37 +418,37 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     EsiParseJson = (ParseJsonFunc)dlsym(go_module, "ParseJson");
     if (dlerror() != NULL) {
         EsiParseJson = NULL;
-        (void) dlerror();
+        (void)dlerror();
     }
     EsiFreeString = (FreeFunc)dlsym(go_module, "FreeString");
     if (dlerror() != NULL) {
         EsiFreeString = NULL;
-        (void) dlerror();
+        (void)dlerror();
     }
     EsiInitCache = (InitCacheFunc)dlsym(go_module, "InitCache");
     if (dlerror() != NULL) {
         EsiInitCache = NULL;
-        (void) dlerror();
+        (void)dlerror();
     }
     EsiInitCacheWithConfig = (InitCacheWithConfigFunc)dlsym(go_module, "InitCacheWithConfig");
     if (dlerror() != NULL) {
         EsiInitCacheWithConfig = NULL;
-        (void) dlerror();
+        (void)dlerror();
     }
     EsiFreeCache = (FreeCacheFunc)dlsym(go_module, "FreeCache");
     if (dlerror() != NULL) {
         EsiFreeCache = NULL;
-        (void) dlerror();
+        (void)dlerror();
     }
     EsiInitHTTPClient = (InitHTTPClientFunc)dlsym(go_module, "InitHTTPClient");
     if (dlerror() != NULL) {
         EsiInitHTTPClient = NULL;
-        (void) dlerror();
+        (void)dlerror();
     }
     EsiFreeHTTPClient = (FreeHTTPClientFunc)dlsym(go_module, "FreeHTTPClient");
     if (dlerror() != NULL) {
         EsiFreeHTTPClient = NULL;
-        (void) dlerror();
+        (void)dlerror();
     }
 
     // Require at least one parse function and FreeString to avoid memory leaks
@@ -497,17 +497,17 @@ static const char *build_cache_config_json(mesi_config *conf, apr_pool_t *pool) 
     }
     if (strcmp(conf->cache_backend, "redis") == 0) {
         const char *addr = conf->cache_redis_addr
-                           ? conf->cache_redis_addr
-                           : "localhost:6379";
+                               ? conf->cache_redis_addr
+                               : "localhost:6379";
         // Escape any embedded '"' or '\' so a misconfig password can't
         // inject JSON keys.
         apr_size_t pwd_len = conf->cache_redis_password
-                              ? strlen(conf->cache_redis_password)
-                              : 0;
+                                 ? strlen(conf->cache_redis_password)
+                                 : 0;
         // Worst-case: every char is escaped (×2) + 2 quotes.
         char *pwd_esc = NULL;
         if (pwd_len > 0) {
-            apr_size_t esc_cap = pwd_len * 2 + 3;  // + '"' + '"' + NUL
+            apr_size_t esc_cap = pwd_len * 2 + 3; // + '"' + '"' + NUL
             pwd_esc = apr_palloc(pool, esc_cap);
             char *w = pwd_esc;
             *w++ = '"';
@@ -536,15 +536,15 @@ static const char *build_cache_config_json(mesi_config *conf, apr_pool_t *pool) 
 
         if (conf->cache_redis_db >= 0) {
             return apr_psprintf(pool,
-                "{\"redisAddr\":%s,\"redisPassword\":%s,\"redisDB\":%d}",
-                addr_esc,
-                pwd_esc ? pwd_esc : "\"\"",
-                conf->cache_redis_db);
+                                "{\"redisAddr\":%s,\"redisPassword\":%s,\"redisDB\":%d}",
+                                addr_esc,
+                                pwd_esc ? pwd_esc : "\"\"",
+                                conf->cache_redis_db);
         }
         return apr_psprintf(pool,
-            "{\"redisAddr\":%s,\"redisPassword\":%s}",
-            addr_esc,
-            pwd_esc ? pwd_esc : "\"\"");
+                            "{\"redisAddr\":%s,\"redisPassword\":%s}",
+                            addr_esc,
+                            pwd_esc ? pwd_esc : "\"\"");
     }
     if (strcmp(conf->cache_backend, "memcached") == 0) {
         // Render {"servers":["h:p","h:p",...]} where each host:port is
@@ -554,22 +554,23 @@ static const char *build_cache_config_json(mesi_config *conf, apr_pool_t *pool) 
         // would silently default to localhost:11211.
         apr_array_header_t *arr = conf->cache_memcached_servers;
         const char **items = (arr && arr->nelts > 0)
-                             ? (const char **)arr->elts
-                             : NULL;
+                                 ? (const char **)arr->elts
+                                 : NULL;
         if (items) {
             // Pre-size: prefix `{"servers":[` (12 bytes) + each item's
             // worst-case `"<escaped>"` (strlen*2 + 2) + (nelts - 1)
             // commas + `]}` (2 bytes) + NUL (1 byte).
-            apr_size_t total = 12 + 2 + 1;  // prefix + ]} + NUL
+            apr_size_t total = 12 + 2 + 1; // prefix + ]} + NUL
             if (arr->nelts > 1) {
-                total += (apr_size_t)(arr->nelts - 1);  // commas
+                total += (apr_size_t)(arr->nelts - 1); // commas
             }
             for (int i = 0; i < arr->nelts; i++) {
-                total += strlen(items[i]) * 2 + 2;  // worst-case escaped w/ quotes
+                total += strlen(items[i]) * 2 + 2; // worst-case escaped w/ quotes
             }
             char *buf = apr_palloc(pool, total);
             char *p = buf;
-            memcpy(p, "{\"servers\":[", 12); p += 12;
+            memcpy(p, "{\"servers\":[", 12);
+            p += 12;
             for (int i = 0; i < arr->nelts; i++) {
                 if (i > 0) *p++ = ',';
                 *p++ = '"';
@@ -590,7 +591,7 @@ static const char *build_cache_config_json(mesi_config *conf, apr_pool_t *pool) 
         // mask operator misconfiguration.
         return apr_pstrdup(pool, "{\"servers\":[]}");
     }
-    return NULL;  // "memory" or "" — no config blob needed.
+    return NULL; // "memory" or "" — no config blob needed.
 }
 
 // MESI_MAX_CACHE_CONFIG_JSON caps the rendered config blob so an
@@ -612,22 +613,21 @@ static int mesi_init_cache(mesi_config *conf, request_rec *r) {
         return 0;
     }
     if (!conf->cache_backend || conf->cache_backend[0] == '\0') {
-        return 0;  // Cache disabled — nothing to do.
+        return 0; // Cache disabled — nothing to do.
     }
-    cache_initialized = 1;  // Mark before probing so a failing dlsym is not retried.
+    cache_initialized = 1; // Mark before probing so a failing dlsym is not retried.
 
     int size = conf->cache_size > 0 ? conf->cache_size : MESI_DEFAULT_CACHE_SIZE;
-    int ttl  = conf->cache_ttl >= 0 ? conf->cache_ttl : 0;
+    int ttl = conf->cache_ttl >= 0 ? conf->cache_ttl : 0;
 
-    int needs_config = (strcmp(conf->cache_backend, "redis") == 0)
-                    || (strcmp(conf->cache_backend, "memcached") == 0);
+    int needs_config = (strcmp(conf->cache_backend, "redis") == 0) || (strcmp(conf->cache_backend, "memcached") == 0);
     if (needs_config) {
         // Resolve InitCacheWithConfig lazily — mirrors the InitCache
         // fallback below in case the first request arrives before
         // child_init finished probing all symbols.
         if (!EsiInitCacheWithConfig) {
             if (go_module) {
-                (void) dlerror();
+                (void)dlerror();
                 EsiInitCacheWithConfig = (InitCacheWithConfigFunc)
                     dlsym(go_module, "InitCacheWithConfig");
                 if (dlerror() != NULL) {
@@ -637,15 +637,15 @@ static int mesi_init_cache(mesi_config *conf, request_rec *r) {
         }
         if (!EsiInitCacheWithConfig) {
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                "mesi: InitCacheWithConfig symbol not available in libgomesi; "
-                "MesiCacheBackend %s requires a newer libgomesi (rebuild). "
-                "ESI will run without cache.",
-                conf->cache_backend);
+                          "mesi: InitCacheWithConfig symbol not available in libgomesi; "
+                          "MesiCacheBackend %s requires a newer libgomesi (rebuild). "
+                          "ESI will run without cache.",
+                          conf->cache_backend);
             return 0;
         }
     } else if (!EsiInitCache) {
         if (go_module) {
-            (void) dlerror();
+            (void)dlerror();
             EsiInitCache = (InitCacheFunc)dlsym(go_module, "InitCache");
             if (dlerror() != NULL) {
                 EsiInitCache = NULL;
@@ -653,9 +653,9 @@ static int mesi_init_cache(mesi_config *conf, request_rec *r) {
         }
         if (!EsiInitCache) {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r,
-                "mesi: InitCache symbol not available in libgomesi; "
-                "ESI will run without cache despite MesiCacheBackend %s",
-                conf->cache_backend);
+                          "mesi: InitCache symbol not available in libgomesi; "
+                          "ESI will run without cache despite MesiCacheBackend %s",
+                          conf->cache_backend);
             return 0;
         }
     }
@@ -669,17 +669,17 @@ static int mesi_init_cache(mesi_config *conf, request_rec *r) {
         // memory-only paths are obvious to readers.
         if (!cfg_json) {
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                "mesi: cache backend %s lacks configuration; "
-                "ESI will run without cache",
-                conf->cache_backend);
-            cache_initialized = 0;  // Allow next request to retry.
+                          "mesi: cache backend %s lacks configuration; "
+                          "ESI will run without cache",
+                          conf->cache_backend);
+            cache_initialized = 0; // Allow next request to retry.
             return -1;
         }
         if (strlen(cfg_json) > MESI_MAX_CACHE_CONFIG_JSON) {
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                "mesi: rendered cache config JSON exceeds %d bytes; "
-                "refusing to init cache",
-                MESI_MAX_CACHE_CONFIG_JSON);
+                          "mesi: rendered cache config JSON exceeds %d bytes; "
+                          "refusing to init cache",
+                          MESI_MAX_CACHE_CONFIG_JSON);
             cache_initialized = 0;
             return -1;
         }
@@ -690,15 +690,15 @@ static int mesi_init_cache(mesi_config *conf, request_rec *r) {
     }
     if (rc != 0) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-            "mesi: InitCache(backend=%s, size=%d, ttl=%d) returned %d; "
-            "ESI will run without cache",
-            conf->cache_backend, size, ttl, rc);
-        cache_initialized = 0;  // Allow next request to retry.
+                      "mesi: InitCache(backend=%s, size=%d, ttl=%d) returned %d; "
+                      "ESI will run without cache",
+                      conf->cache_backend, size, ttl, rc);
+        cache_initialized = 0; // Allow next request to retry.
         return -1;
     }
     ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r,
-        "mesi: cache initialized (backend=%s, size=%d, ttl=%ds)",
-        conf->cache_backend, size, ttl);
+                  "mesi: cache initialized (backend=%s, size=%d, ttl=%ds)",
+                  conf->cache_backend, size, ttl);
     return 0;
 }
 
@@ -716,13 +716,13 @@ static int mesi_init_http_client(mesi_config *conf, request_rec *r) {
         return 0;
     }
     if (conf->shared_http_client != 1) {
-        return 0;  // Directive off / unset — nothing to do.
+        return 0; // Directive off / unset — nothing to do.
     }
-    http_client_initialized = 1;  // Mark before probing so a failing dlsym is not retried.
+    http_client_initialized = 1; // Mark before probing so a failing dlsym is not retried.
 
     if (!EsiInitHTTPClient) {
         if (go_module) {
-            (void) dlerror();
+            (void)dlerror();
             EsiInitHTTPClient = (InitHTTPClientFunc)
                 dlsym(go_module, "InitHTTPClient");
             if (dlerror() != NULL) {
@@ -732,27 +732,27 @@ static int mesi_init_http_client(mesi_config *conf, request_rec *r) {
     }
     if (!EsiInitHTTPClient) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-            "mesi: MesiSharedHTTPClient set but libgomesi lacks "
-            "InitHTTPClient; shared client disabled. Upgrade libgomesi.so.");
-        http_client_initialized = 0;  // Allow next request to retry.
+                      "mesi: MesiSharedHTTPClient set but libgomesi lacks "
+                      "InitHTTPClient; shared client disabled. Upgrade libgomesi.so.");
+        http_client_initialized = 0; // Allow next request to retry.
         return -1;
     }
 
     int bp = (conf->block_private_ips != -1) ? conf->block_private_ips : 1;
     EsiInitHTTPClient(bp);
     ap_log_rerror(APLOG_MARK, APLOG_NOTICE, 0, r,
-        "mesi: shared HTTP client initialized (blockPrivateIPs=%d)", bp);
+                  "mesi: shared HTTP client initialized (blockPrivateIPs=%d)", bp);
     return 0;
 }
 
 static const char *set_enable_mesi(cmd_parms *cmd, void *cfg, int flag) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     conf->enable_mesi = flag;
     return NULL;
 }
 
 static const char *set_allowed_hosts(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     const char *host;
     while (*arg) {
         // Skip whitespace (space, tab)
@@ -769,19 +769,19 @@ static const char *set_allowed_hosts(cmd_parms *cmd, void *cfg, const char *arg)
 }
 
 static const char *set_block_private_ips(cmd_parms *cmd, void *cfg, int flag) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     conf->block_private_ips = flag;
     return NULL;
 }
 
 static const char *set_allow_private_for_allowed(cmd_parms *cmd, void *cfg, int flag) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     conf->allow_private_ips_for_allowed = flag;
     return NULL;
 }
 
 static const char *set_shared_http_client(cmd_parms *cmd, void *cfg, int flag) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     conf->shared_http_client = flag;
     return NULL;
 }
@@ -801,17 +801,17 @@ static const char *parse_nonneg_int(apr_pool_t *pool, const char *arg,
     while (*p == ' ' || *p == '\t') p++;
     if (*p == '\0') {
         return apr_psprintf(pool,
-            "%s requires a non-negative integer argument", directive);
+                            "%s requires a non-negative integer argument", directive);
     }
     const char *digits = p;
     while (*p >= '0' && *p <= '9') p++;
     if (*p != '\0') {
         return apr_psprintf(pool,
-            "%s must be a non-negative integer (got: %s)", directive, arg);
+                            "%s must be a non-negative integer (got: %s)", directive, arg);
     }
     if (digits == p) {
         return apr_psprintf(pool,
-            "%s must contain at least one digit (got: %s)", directive, arg);
+                            "%s must contain at least one digit (got: %s)", directive, arg);
     }
     // Compute length and compare without atoi to catch overflow cheaply.
     size_t n = (size_t)(p - digits);
@@ -820,7 +820,7 @@ static const char *parse_nonneg_int(apr_pool_t *pool, const char *arg,
         // guarantee we stay inside int32 range (max is 2_147_483_647,
         // which is 10 digits, but we cap at MESI_MAX_* anyway).
         return apr_psprintf(pool,
-            "%s value %s exceeds maximum allowed (%d)", directive, arg, max);
+                            "%s value %s exceeds maximum allowed (%d)", directive, arg, max);
     }
     long val = 0;
     for (size_t i = 0; i < n; i++) {
@@ -828,7 +828,7 @@ static const char *parse_nonneg_int(apr_pool_t *pool, const char *arg,
     }
     if (val < min || val > max) {
         return apr_psprintf(pool,
-            "%s value %s out of range [%d, %d]", directive, arg, min, max);
+                            "%s value %s out of range [%d, %d]", directive, arg, min, max);
     }
     *out = (int)val;
     return NULL;
@@ -838,7 +838,7 @@ static const char *parse_nonneg_int(apr_pool_t *pool, const char *arg,
 // "3foo", empty, decimals, and overflow are rejected (atoi would
 // silently coerce those). Helper errors already name MesiMaxDepth.
 static const char *set_max_depth(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     int v = 0;
     const char *err = parse_nonneg_int(cmd->pool, arg, "MesiMaxDepth",
                                        0, MESI_MAX_MAX_DEPTH, &v);
@@ -871,32 +871,32 @@ static const char *parse_nonneg_off(apr_pool_t *pool, const char *arg,
     while (*p == ' ' || *p == '\t') p++;
     if (*p == '\0') {
         return apr_psprintf(pool,
-            "%s requires a non-negative integer argument", directive);
+                            "%s requires a non-negative integer argument", directive);
     }
     const char *digits = p;
     while (*p >= '0' && *p <= '9') p++;
     if (*p != '\0') {
         return apr_psprintf(pool,
-            "%s must be a non-negative integer (got: %s)", directive, arg);
+                            "%s must be a non-negative integer (got: %s)", directive, arg);
     }
     if (digits == p) {
         return apr_psprintf(pool,
-            "%s must contain at least one digit (got: %s)", directive, arg);
+                            "%s must contain at least one digit (got: %s)", directive, arg);
     }
     apr_off_t val = 0;
     for (const char *q = digits; q < p; q++) {
         apr_off_t d = (apr_off_t)(*q - '0');
         if (val > (max - d) / 10) {
             return apr_psprintf(pool,
-                "%s value %s exceeds maximum allowed (%" APR_INT64_T_FMT ")",
-                directive, arg, (apr_int64_t)max);
+                                "%s value %s exceeds maximum allowed (%" APR_INT64_T_FMT ")",
+                                directive, arg, (apr_int64_t)max);
         }
         val = val * 10 + d;
     }
     if (val < min || val > max) {
         return apr_psprintf(pool,
-            "%s value %s out of range [%" APR_INT64_T_FMT ", %" APR_INT64_T_FMT "]",
-            directive, arg, (apr_int64_t)min, (apr_int64_t)max);
+                            "%s value %s out of range [%" APR_INT64_T_FMT ", %" APR_INT64_T_FMT "]",
+                            directive, arg, (apr_int64_t)min, (apr_int64_t)max);
     }
     *out = val;
     return NULL;
@@ -913,7 +913,7 @@ static const char *parse_nonneg_off(apr_pool_t *pool, const char *arg,
 // matches libgomesi's config.ValidateTimeout, so Apache and the
 // Go side can never disagree. Helper errors already name MesiTimeout.
 static const char *set_timeout(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     int v = 0;
     const char *err = parse_nonneg_int(cmd->pool, arg, "MesiTimeout",
                                        1, MESI_MAX_TIMEOUT_SECONDS, &v);
@@ -943,7 +943,7 @@ static const char *set_timeout(cmd_parms *cmd, void *cfg, const char *arg) {
 // the include would silently render an empty body. Helper errors
 // already name MesiMaxResponseSize.
 static const char *set_max_response_size(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     apr_off_t v = 0;
     const char *err = parse_nonneg_off(cmd->pool, arg, "MesiMaxResponseSize",
                                        0, MESI_MAX_MAX_RESPONSE_SIZE, &v);
@@ -972,7 +972,7 @@ static const char *set_max_response_size(cmd_parms *cmd, void *cfg, const char *
 // byte-identical to pre-#170 Apache behaviour. Helper errors already
 // name MesiMaxConcurrentRequests.
 static const char *set_max_concurrent_requests(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     int v = 0;
     const char *err = parse_nonneg_int(cmd->pool, arg, "MesiMaxConcurrentRequests",
                                        0, MESI_MAX_MAX_CONCURRENT_REQUESTS, &v);
@@ -1004,7 +1004,7 @@ static const char *set_max_concurrent_requests(cmd_parms *cmd, void *cfg, const 
 // processing tokens/includes, also bounding fetches at that level),
 // that one bounds concurrent HTTP fetch slots (an admission semaphore).
 static const char *set_max_workers(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     int v = 0;
     const char *err = parse_nonneg_int(cmd->pool, arg, "MesiMaxWorkers",
                                        0, MESI_MAX_MAX_WORKERS, &v);
@@ -1016,7 +1016,7 @@ static const char *set_max_workers(cmd_parms *cmd, void *cfg, const char *arg) {
 }
 
 static const char *set_cache_backend(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     if (!arg) {
         return "MesiCacheBackend requires an argument (use empty string to disable)";
     }
@@ -1040,13 +1040,13 @@ static const char *set_cache_backend(cmd_parms *cmd, void *cfg, const char *arg)
         return NULL;
     }
     return apr_psprintf(cmd->pool,
-        "MesiCacheBackend: unknown backend %s "
-        "(supported: \"memory\", \"redis\", \"memcached\", or empty)",
-        arg);
+                        "MesiCacheBackend: unknown backend %s "
+                        "(supported: \"memory\", \"redis\", \"memcached\", or empty)",
+                        arg);
 }
 
 static const char *set_cache_size(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     int v = 0;
     const char *err = parse_nonneg_int(cmd->pool, arg, "MesiCacheSize",
                                        1, MESI_MAX_CACHE_SIZE, &v);
@@ -1058,7 +1058,7 @@ static const char *set_cache_size(cmd_parms *cmd, void *cfg, const char *arg) {
 }
 
 static const char *set_cache_ttl(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     int v = 0;
     const char *err = parse_nonneg_int(cmd->pool, arg, "MesiCacheTTL",
                                        0, MESI_MAX_CACHE_TTL_SECONDS, &v);
@@ -1090,32 +1090,32 @@ static const char *parse_nonneg_int_bounded(apr_pool_t *pool,
                                             int min, int max, int *out) {
     if (!arg || !end || arg >= end) {
         return apr_psprintf(pool,
-            "%s requires a non-negative integer argument", directive);
+                            "%s requires a non-negative integer argument", directive);
     }
     const char *p = arg;
     // Skip leading spaces and tabs only.
     while (p < end && (*p == ' ' || *p == '\t')) p++;
     if (p >= end) {
         return apr_psprintf(pool,
-            "%s requires a non-negative integer argument", directive);
+                            "%s requires a non-negative integer argument", directive);
     }
     const char *digits = p;
     while (p < end && *p >= '0' && *p <= '9') p++;
     if (p != end) {
         return apr_psprintf(pool,
-            "%s must be a non-negative integer (got: %.*s)",
-            directive, (int)(end - arg), arg);
+                            "%s must be a non-negative integer (got: %.*s)",
+                            directive, (int)(end - arg), arg);
     }
     if (digits == p) {
         return apr_psprintf(pool,
-            "%s must contain at least one digit", directive);
+                            "%s must contain at least one digit", directive);
     }
     // 9 digits fits in 1_000_000_000; reject anything longer to
     // guarantee we stay inside int32 range.
     size_t n = (size_t)(p - digits);
     if (n > 9) {
         return apr_psprintf(pool,
-            "%s value exceeds maximum allowed (%d)", directive, max);
+                            "%s value exceeds maximum allowed (%d)", directive, max);
     }
     long val = 0;
     for (size_t i = 0; i < n; i++) {
@@ -1123,14 +1123,14 @@ static const char *parse_nonneg_int_bounded(apr_pool_t *pool,
     }
     if (val < min || val > max) {
         return apr_psprintf(pool,
-            "%s value out of range [%d, %d]", directive, min, max);
+                            "%s value out of range [%d, %d]", directive, min, max);
     }
     *out = (int)val;
     return NULL;
 }
 
 static const char *set_cache_redis_addr(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     if (!arg) {
         return "MesiCacheRedisAddr requires a host:port argument";
     }
@@ -1145,8 +1145,8 @@ static const char *set_cache_redis_addr(cmd_parms *cmd, void *cfg, const char *a
         unsigned char c = (unsigned char)*p;
         if (c == ' ' || c == '\t' || c == '"' || c == '\\' || c < 0x20) {
             return apr_psprintf(cmd->pool,
-                "MesiCacheRedisAddr: invalid character %d in %s",
-                (int)c, arg);
+                                "MesiCacheRedisAddr: invalid character %d in %s",
+                                (int)c, arg);
         }
     }
     // Find last ':' (IPv6 addresses use [...] or no port — we keep it
@@ -1154,7 +1154,7 @@ static const char *set_cache_redis_addr(cmd_parms *cmd, void *cfg, const char *a
     const char *colon = strrchr(arg, ':');
     if (!colon || colon == arg || *(colon + 1) == '\0') {
         return apr_psprintf(cmd->pool,
-            "MesiCacheRedisAddr: must be host:port (got: %s)", arg);
+                            "MesiCacheRedisAddr: must be host:port (got: %s)", arg);
     }
     // Validate port is a positive decimal in [1, 65535]. We've already
     // rejected whitespace/JSON-meta chars, so colon+1 is digits-only
@@ -1162,13 +1162,13 @@ static const char *set_cache_redis_addr(cmd_parms *cmd, void *cfg, const char *a
     int port = 0;
     apr_size_t port_len = strlen(colon + 1);
     const char *err = parse_nonneg_int_bounded(cmd->pool,
-                                                colon + 1,
-                                                colon + 1 + port_len,
-                                                "MesiCacheRedisAddr",
-                                                1, 65535, &port);
+                                               colon + 1,
+                                               colon + 1 + port_len,
+                                               "MesiCacheRedisAddr",
+                                               1, 65535, &port);
     if (err) {
         return apr_psprintf(cmd->pool,
-            "MesiCacheRedisAddr: port invalid: %s", arg);
+                            "MesiCacheRedisAddr: port invalid: %s", arg);
     }
     conf->cache_redis_addr = apr_pstrdup(cmd->pool, arg);
     return NULL;
@@ -1178,7 +1178,7 @@ static const char *set_cache_redis_addr(cmd_parms *cmd, void *cfg, const char *a
 // the password value on error (don't leak creds into error.log).
 // Empty arg clears the password.
 static const char *set_cache_redis_password(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     if (!arg) {
         // AP_INIT_TAKE1 args are never NULL per Apache directive contract,
         // but guard anyway — silently treating NULL as "clear" would mask
@@ -1193,8 +1193,8 @@ static const char *set_cache_redis_password(cmd_parms *cmd, void *cfg, const cha
         unsigned char c = (unsigned char)*p;
         if (c < 0x20) {
             return apr_psprintf(cmd->pool,
-                "MesiCacheRedisPassword: invalid control character 0x%02x in value",
-                (unsigned)c);
+                                "MesiCacheRedisPassword: invalid control character 0x%02x in value",
+                                (unsigned)c);
         }
     }
     conf->cache_redis_password = apr_pstrdup(cmd->pool, arg);
@@ -1204,7 +1204,7 @@ static const char *set_cache_redis_password(cmd_parms *cmd, void *cfg, const cha
 // MesiCacheRedisDB — Redis logical database number. 0..15 (Redis
 // default config; redis.conf "databases 16"). Negatives are rejected.
 static const char *set_cache_redis_db(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     int v = -1;
     const char *err = parse_nonneg_int(cmd->pool, arg, "MesiCacheRedisDB",
                                        0, MESI_MAX_REDIS_DB, &v);
@@ -1226,7 +1226,7 @@ static const char *set_cache_redis_db(cmd_parms *cmd, void *cfg, const char *arg
 // gives us the full line, so parsing is line-based (splitting on
 // space/tab) just like set_allowed_hosts.
 static const char *set_cache_memcached_servers(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     if (!arg) {
         return "MesiCacheMemcachedServers requires space-separated host:port entries";
     }
@@ -1256,36 +1256,39 @@ static const char *set_cache_memcached_servers(cmd_parms *cmd, void *cfg, const 
         }
         if (has_invalid) {
             return apr_psprintf(cmd->pool,
-                "MesiCacheMemcachedServers: invalid character in entry %.*s",
-                (int)(arg - tok), tok);
+                                "MesiCacheMemcachedServers: invalid character in entry %.*s",
+                                (int)(arg - tok), tok);
         }
         // Find last ':' (matches redis-addr parser). IPv4/IPv6/hostname
         // forms all end with :port.
         const char *colon = NULL;
         for (const char *p = arg - 1; p >= tok; p--) {
-            if (*p == ':') { colon = p; break; }
+            if (*p == ':') {
+                colon = p;
+                break;
+            }
         }
         if (!colon || colon == tok || colon + 1 == arg) {
             return apr_psprintf(cmd->pool,
-                "MesiCacheMemcachedServers: entry must be host:port (got: %.*s)",
-                (int)(arg - tok), tok);
+                                "MesiCacheMemcachedServers: entry must be host:port (got: %.*s)",
+                                (int)(arg - tok), tok);
         }
         // Validate port over [colon+1, arg) so digits inside the host
         // (which can include '1', '0', ...) aren't accidentally
         // consumed. parse_nonneg_int_bounded stops exactly at `arg`.
         int port = 0;
         const char *err = parse_nonneg_int_bounded(cmd->pool, colon + 1, arg,
-                                                    "MesiCacheMemcachedServers",
-                                                    1, 65535, &port);
+                                                   "MesiCacheMemcachedServers",
+                                                   1, 65535, &port);
         if (err) {
             return apr_psprintf(cmd->pool,
-                "MesiCacheMemcachedServers: port invalid in %.*s",
-                (int)(arg - tok), tok);
+                                "MesiCacheMemcachedServers: port invalid in %.*s",
+                                (int)(arg - tok), tok);
         }
         if (count >= MESI_MAX_MEMCACHED_SERVERS) {
             return apr_psprintf(cmd->pool,
-                "MesiCacheMemcachedServers: too many entries (max %d)",
-                MESI_MAX_MEMCACHED_SERVERS);
+                                "MesiCacheMemcachedServers: too many entries (max %d)",
+                                MESI_MAX_MEMCACHED_SERVERS);
         }
         const char **slot = apr_array_push(conf->cache_memcached_servers);
         // Copy into the server config's pool so it survives past the
@@ -1315,7 +1318,7 @@ static const char *set_cache_memcached_servers(cmd_parms *cmd, void *cfg, const 
 // to libgomesi). Length capped at MESI_MAX_CACHE_KEY_TEMPLATE to avoid
 // unbounded allocations.
 static const char *set_cache_key_template(cmd_parms *cmd, void *cfg, const char *arg) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(cmd->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     if (!arg) {
         return "MesiCacheKeyTemplate requires an argument";
     }
@@ -1329,8 +1332,8 @@ static const char *set_cache_key_template(cmd_parms *cmd, void *cfg, const char 
     size_t len = strlen(arg);
     if (len > MESI_MAX_CACHE_KEY_TEMPLATE) {
         return apr_psprintf(cmd->pool,
-            "MesiCacheKeyTemplate exceeds maximum length %d (got %zu)",
-            MESI_MAX_CACHE_KEY_TEMPLATE, len);
+                            "MesiCacheKeyTemplate exceeds maximum length %d (got %zu)",
+                            MESI_MAX_CACHE_KEY_TEMPLATE, len);
     }
     // Reject NUL already handled by C string; reject control chars
     // other than spaces that are part of the template syntax? Templates
@@ -1348,11 +1351,11 @@ static const char *set_cache_key_template(cmd_parms *cmd, void *cfg, const char 
         unsigned char uc = (unsigned char)*c;
         if (uc < 0x20) {
             return apr_psprintf(cmd->pool,
-                "MesiCacheKeyTemplate contains control character 0x%02x", uc);
+                                "MesiCacheKeyTemplate contains control character 0x%02x", uc);
         }
         if (uc == 0x7f) {
             return apr_psprintf(cmd->pool,
-                "MesiCacheKeyTemplate contains DEL character");
+                                "MesiCacheKeyTemplate contains DEL character");
         }
     }
     // Apache's ap_resolve_env (AH00111) replaces undefined ${VAR} with ""
@@ -1374,7 +1377,9 @@ static const char *set_cache_key_template(cmd_parms *cmd, void *cfg, const char 
         const char *r = arg;
         while (*r) {
             if (r[0] == '$' && r[1] == '$' && r[2] == '{') {
-                *w++ = '$'; *w++ = '{'; r += 3;
+                *w++ = '$';
+                *w++ = '{';
+                r += 3;
             } else {
                 *w++ = *r++;
             }
@@ -1385,11 +1390,11 @@ static const char *set_cache_key_template(cmd_parms *cmd, void *cfg, const char 
     }
     if (strstr(arg, "::") != NULL) {
         return apr_psprintf(cmd->pool,
-            "MesiCacheKeyTemplate: Apache config interpolation replaced ${url} (AH00111); escape the dollar sign as $${url} in httpd.conf (got: %s)", arg);
+                            "MesiCacheKeyTemplate: Apache config interpolation replaced ${url} (AH00111); escape the dollar sign as $${url} in httpd.conf (got: %s)", arg);
     }
     if (arg[len - 1] == ':') {
         return apr_psprintf(cmd->pool,
-            "MesiCacheKeyTemplate: Apache config interpolation replaced ${url} (AH00111); escape the dollar sign as $${url} in httpd.conf (got: %s)", arg);
+                            "MesiCacheKeyTemplate: Apache config interpolation replaced ${url} (AH00111); escape the dollar sign as $${url} in httpd.conf (got: %s)", arg);
     }
     conf->cache_key_template = apr_pstrdup(cmd->pool, arg);
     return NULL;
@@ -1410,15 +1415,21 @@ static void json_escape_append(char **buf, apr_size_t *cap, apr_size_t *pos, con
     for (const unsigned char *q = (const unsigned char *)src; *q; q++) {
         if (*q == '"') {
             json_grow(buf, cap, 2, *pos, pool);
-            (*buf)[(*pos)++] = '\\'; (*buf)[(*pos)++] = '"';
+            (*buf)[(*pos)++] = '\\';
+            (*buf)[(*pos)++] = '"';
         } else if (*q == '\\') {
             json_grow(buf, cap, 2, *pos, pool);
-            (*buf)[(*pos)++] = '\\'; (*buf)[(*pos)++] = '\\';
+            (*buf)[(*pos)++] = '\\';
+            (*buf)[(*pos)++] = '\\';
         } else if (*q < 0x20) {
             static const char hex[] = "0123456789abcdef";
             json_grow(buf, cap, 6, *pos, pool);
-            (*buf)[(*pos)++] = '\\'; (*buf)[(*pos)++] = 'u'; (*buf)[(*pos)++] = '0'; (*buf)[(*pos)++] = '0';
-            (*buf)[(*pos)++] = hex[(*q >> 4) & 0xf]; (*buf)[(*pos)++] = hex[*q & 0xf];
+            (*buf)[(*pos)++] = '\\';
+            (*buf)[(*pos)++] = 'u';
+            (*buf)[(*pos)++] = '0';
+            (*buf)[(*pos)++] = '0';
+            (*buf)[(*pos)++] = hex[(*q >> 4) & 0xf];
+            (*buf)[(*pos)++] = hex[*q & 0xf];
         } else {
             json_grow(buf, cap, 1, *pos, pool);
             (*buf)[(*pos)++] = (char)*q;
@@ -1437,7 +1448,12 @@ static const char *build_request_ctx_json(request_rec *r, mesi_config *conf, apr
     char *buf = apr_palloc(pool, cap);
     apr_size_t pos = 0;
     buf[pos++] = '{';
-    buf[pos++] = '"'; memcpy(buf+pos, "headers", 7); pos+=7; buf[pos++] = '"'; buf[pos++] = ':'; buf[pos++] = '{';
+    buf[pos++] = '"';
+    memcpy(buf + pos, "headers", 7);
+    pos += 7;
+    buf[pos++] = '"';
+    buf[pos++] = ':';
+    buf[pos++] = '{';
     int first_hdr = 1;
     if (r->headers_in) {
         const apr_array_header_t *arr = apr_table_elts(r->headers_in);
@@ -1447,16 +1463,32 @@ static const char *build_request_ctx_json(request_rec *r, mesi_config *conf, apr
             const char *v = elts[i].val;
             if (!k || !v) continue;
             if (strcasecmp(k, "Cookie") == 0) continue;
-            if (!first_hdr) { json_grow(&buf, &cap, 1, pos, pool); buf[pos++] = ','; }
+            if (!first_hdr) {
+                json_grow(&buf, &cap, 1, pos, pool);
+                buf[pos++] = ',';
+            }
             first_hdr = 0;
-            json_grow(&buf, &cap, 2, pos, pool); buf[pos++] = '"';
+            json_grow(&buf, &cap, 2, pos, pool);
+            buf[pos++] = '"';
             json_escape_append(&buf, &cap, &pos, k, pool);
-            json_grow(&buf, &cap, 3, pos, pool); buf[pos++] = '"'; buf[pos++] = ':'; buf[pos++] = '"';
+            json_grow(&buf, &cap, 3, pos, pool);
+            buf[pos++] = '"';
+            buf[pos++] = ':';
+            buf[pos++] = '"';
             json_escape_append(&buf, &cap, &pos, v, pool);
-            json_grow(&buf, &cap, 1, pos, pool); buf[pos++] = '"';
+            json_grow(&buf, &cap, 1, pos, pool);
+            buf[pos++] = '"';
         }
     }
-    json_grow(&buf, &cap, 12, pos, pool); buf[pos++] = '}'; buf[pos++] = ','; buf[pos++] = '"'; memcpy(buf+pos, "cookies", 7); pos+=7; buf[pos++] = '"'; buf[pos++] = ':'; buf[pos++] = '[';
+    json_grow(&buf, &cap, 12, pos, pool);
+    buf[pos++] = '}';
+    buf[pos++] = ',';
+    buf[pos++] = '"';
+    memcpy(buf + pos, "cookies", 7);
+    pos += 7;
+    buf[pos++] = '"';
+    buf[pos++] = ':';
+    buf[pos++] = '[';
     int first_cookie = 1;
     const char *cookie_hdr = r->headers_in ? apr_table_get(r->headers_in, "Cookie") : NULL;
     if (cookie_hdr) {
@@ -1466,30 +1498,61 @@ static const char *build_request_ctx_json(request_rec *r, mesi_config *conf, apr
             if (!*c) break;
             const char *name_start = c;
             while (*c && *c != '=' && *c != ';') c++;
-            if (!*c || *c != '=') { while (*c && *c != ';') c++; continue; }
+            if (!*c || *c != '=') {
+                while (*c && *c != ';') c++;
+                continue;
+            }
             apr_size_t name_len = c - name_start;
             c++;
             const char *val_start = c;
             while (*c && *c != ';') c++;
             apr_size_t val_len = c - val_start;
-            while (name_len > 0 && (name_start[name_len-1] == ' ' || name_start[name_len-1] == '\t')) name_len--;
-            while (name_len > 0 && (*name_start == ' ' || *name_start == '\t')) { name_start++; name_len--; }
-            while (val_len > 0 && (val_start[val_len-1] == ' ' || val_start[val_len-1] == '\t')) val_len--;
-            while (val_len > 0 && (*val_start == ' ' || *val_start == '\t')) { val_start++; val_len--; }
+            while (name_len > 0 && (name_start[name_len - 1] == ' ' || name_start[name_len - 1] == '\t')) name_len--;
+            while (name_len > 0 && (*name_start == ' ' || *name_start == '\t')) {
+                name_start++;
+                name_len--;
+            }
+            while (val_len > 0 && (val_start[val_len - 1] == ' ' || val_start[val_len - 1] == '\t')) val_len--;
+            while (val_len > 0 && (*val_start == ' ' || *val_start == '\t')) {
+                val_start++;
+                val_len--;
+            }
             if (name_len == 0) continue;
             char *name = apr_pstrndup(pool, name_start, name_len);
             char *val = apr_pstrndup(pool, val_start, val_len);
-            if (!first_cookie) { json_grow(&buf, &cap, 1, pos, pool); buf[pos++] = ','; }
+            if (!first_cookie) {
+                json_grow(&buf, &cap, 1, pos, pool);
+                buf[pos++] = ',';
+            }
             first_cookie = 0;
             json_grow(&buf, &cap, 20, pos, pool);
-            buf[pos++] = '{'; buf[pos++] = '"'; memcpy(buf+pos, "name",4); pos+=4; buf[pos++] = '"'; buf[pos++] = ':'; buf[pos++] = '"';
+            buf[pos++] = '{';
+            buf[pos++] = '"';
+            memcpy(buf + pos, "name", 4);
+            pos += 4;
+            buf[pos++] = '"';
+            buf[pos++] = ':';
+            buf[pos++] = '"';
             json_escape_append(&buf, &cap, &pos, name, pool);
-            json_grow(&buf, &cap, 11, pos, pool); buf[pos++] = '"'; buf[pos++] = ','; buf[pos++] = '"'; memcpy(buf+pos, "value",5); pos+=5; buf[pos++] = '"'; buf[pos++] = ':'; buf[pos++] = '"';
+            json_grow(&buf, &cap, 11, pos, pool);
+            buf[pos++] = '"';
+            buf[pos++] = ',';
+            buf[pos++] = '"';
+            memcpy(buf + pos, "value", 5);
+            pos += 5;
+            buf[pos++] = '"';
+            buf[pos++] = ':';
+            buf[pos++] = '"';
             json_escape_append(&buf, &cap, &pos, val, pool);
-            json_grow(&buf, &cap, 3, pos, pool); buf[pos++] = '"'; buf[pos++] = '}';
+            json_grow(&buf, &cap, 3, pos, pool);
+            buf[pos++] = '"';
+            buf[pos++] = '}';
         }
     }
-    json_grow(&buf, &cap, 3, pos, pool); buf[pos++] = ']'; buf[pos++] = '}'; buf[pos++] = '\0';
+    json_grow(&buf, &cap, 3, pos, pool);
+    buf[pos++] = ']';
+    buf[pos++] = '}';
+    buf[pos++] = '\0';
     return buf;
 }
 
@@ -1507,13 +1570,19 @@ static const char *json_string(apr_pool_t *pool, const char *s) {
     *w++ = '"';
     for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
         if (*p == '"') {
-            *w++ = '\\'; *w++ = '"';
+            *w++ = '\\';
+            *w++ = '"';
         } else if (*p == '\\') {
-            *w++ = '\\'; *w++ = '\\';
+            *w++ = '\\';
+            *w++ = '\\';
         } else if (*p < 0x20) {
             static const char hex[] = "0123456789abcdef";
-            *w++ = '\\'; *w++ = 'u'; *w++ = '0'; *w++ = '0';
-            *w++ = hex[(*p >> 4) & 0xf]; *w++ = hex[*p & 0xf];
+            *w++ = '\\';
+            *w++ = 'u';
+            *w++ = '0';
+            *w++ = '0';
+            *w++ = hex[(*p >> 4) & 0xf];
+            *w++ = hex[*p & 0xf];
         } else {
             *w++ = (char)*p;
         }
@@ -1581,24 +1650,24 @@ static const char *build_parse_json_config(mesi_config *conf,
         }
     }
     return apr_psprintf(pool,
-        "{\"maxDepth\":%d,\"defaultUrl\":%s,\"allowedHosts\":%s,"
-        "\"blockPrivateIPs\":%s,\"allowPrivateIPsForAllowedHosts\":%s"
-        "%s%s%s%s%s%s}",
-        depth,
-        json_string(pool, base_url),
-        json_string(pool, allowed_hosts_str),
-        block_private ? "true" : "false",
-        allow_private_for_allowed ? "true" : "false",
-        timeout_part,
-        mrs_part,
-        maxcr_part,
-        maxw_part,
-        tmpl_part,
-        ctx_part);
+                        "{\"maxDepth\":%d,\"defaultUrl\":%s,\"allowedHosts\":%s,"
+                        "\"blockPrivateIPs\":%s,\"allowPrivateIPsForAllowedHosts\":%s"
+                        "%s%s%s%s%s%s}",
+                        depth,
+                        json_string(pool, base_url),
+                        json_string(pool, allowed_hosts_str),
+                        block_private ? "true" : "false",
+                        allow_private_for_allowed ? "true" : "false",
+                        timeout_part,
+                        mrs_part,
+                        maxcr_part,
+                        maxw_part,
+                        tmpl_part,
+                        ctx_part);
 }
 
 static int mesi_request_handler(request_rec *r) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(r->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(r->server->module_config, &mesi_module);
     if (conf->enable_mesi) {
         apr_table_set(r->headers_out, "Surrogate-Capability", "ESI/1.0");
         ap_add_output_filter("MESI_RESPONSE", NULL, r, r->connection);
@@ -1609,17 +1678,17 @@ static int mesi_request_handler(request_rec *r) {
 static char *build_base_url(request_rec *r, apr_pool_t *pool) {
     const char *scheme = ap_http_scheme(r);
     const char *host = r->server->server_hostname
-                        ? r->server->server_hostname
-                        : ap_get_server_name(r);
+                           ? r->server->server_hostname
+                           : ap_get_server_name(r);
     // Use canonical port from server config, not client-supplied
     apr_port_t port = r->server->port ? r->server->port : ap_get_server_port(r);
-    
+
     if (!host || !*host) {
         host = "localhost";
     }
-    
+
     int default_port = (strcmp(scheme, "https") == 0) ? 443 : 80;
-    
+
     if (port != default_port) {
         return apr_psprintf(pool, "%s://%s:%d/", scheme, host, port);
     }
@@ -1634,8 +1703,7 @@ static int is_html_content(const char *ct) {
     if (strncasecmp(ct, "text/html", 9) != 0) return 0;
     char delim = ct[9];
     // Must be followed by delimiter, parameter separator, or end-of-string
-    return delim == '\0' || delim == ';' || delim == ' ' || delim == '\t'
-           || delim == '\r' || delim == '\n';
+    return delim == '\0' || delim == ';' || delim == ' ' || delim == '\t' || delim == '\r' || delim == '\n';
 }
 
 // Flatten brigade into a single NUL-terminated string.
@@ -1671,7 +1739,7 @@ static int flatten_brigade(apr_bucket_brigade *bb, char **html, apr_size_t *len,
 }
 
 static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
-    mesi_config *conf = (mesi_config *) ap_get_module_config(f->r->server->module_config, &mesi_module);
+    mesi_config *conf = (mesi_config *)ap_get_module_config(f->r->server->module_config, &mesi_module);
     if (!conf->enable_mesi) {
         return ap_pass_brigade(f->next, bb);
     }
@@ -1703,7 +1771,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     }
 
     if (!seen_eos) {
-        return APR_SUCCESS;  // Not the last brigade — wait for more data
+        return APR_SUCCESS; // Not the last brigade — wait for more data
     }
 
     // Flatten the accumulated body into a single NUL-terminated string.
@@ -1716,8 +1784,8 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         APR_BRIGADE_INSERT_TAIL(ctx->bb, apr_bucket_eos_create(ctx->bb->bucket_alloc));
         if (len > 0) {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-                "mesi: failed to flatten response body (%lu bytes), skipping ESI processing",
-                (unsigned long)len);
+                          "mesi: failed to flatten response body (%lu bytes), skipping ESI processing",
+                          (unsigned long)len);
         }
         return ap_pass_brigade(f->next, ctx->bb);
     }
@@ -1727,7 +1795,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     // calls are no-ops (guarded by cache_initialized).
     if (conf->cache_backend && conf->cache_backend[0] != '\0') {
         /* Errors here are logged; on -1 we proceed without cache. */
-        (void) mesi_init_cache(conf, f->r);
+        (void)mesi_init_cache(conf, f->r);
     }
 
     // Initialize the shared HTTP client on first request when
@@ -1736,7 +1804,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     // by http_client_initialized). Errors are logged; on -1 we proceed with
     // per-include clients.
     if (conf->shared_http_client == 1) {
-        (void) mesi_init_http_client(conf, f->r);
+        (void)mesi_init_http_client(conf, f->r);
     }
 
     // Build allowed_hosts string from config (O(n) time, single allocation)
@@ -1763,7 +1831,8 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
 
     int block_private = (conf->block_private_ips != -1) ? conf->block_private_ips : 1;
     int allow_private_for_allowed = (conf->allow_private_ips_for_allowed != -1)
-        ? conf->allow_private_ips_for_allowed : 0;
+                                        ? conf->allow_private_ips_for_allowed
+                                        : 0;
     int depth = (conf->max_depth != -1) ? conf->max_depth : MESI_DEFAULT_MAX_DEPTH;
 
     if (!EsiParse && !EsiParseWithConfig) {
@@ -1798,8 +1867,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     // returned NULL" — a NULL must NOT fall back silently; it fails the
     // request closed below (config errors are already logged Go-side).
     int used_parse_json = 0;
-    if (conf->timeout_seconds != -1 || conf->max_response_size != -1
-        || conf->max_concurrent_requests != -1 || conf->max_workers != -1) {
+    if (conf->timeout_seconds != -1 || conf->max_response_size != -1 || conf->max_concurrent_requests != -1 || conf->max_workers != -1) {
         if (EsiParseJson) {
             used_parse_json = 1;
             const char *req_ctx_json = build_request_ctx_json(f->r, conf, f->r->pool);
@@ -1810,26 +1878,26 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         } else {
             if (conf->timeout_seconds != -1) {
                 ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-                    "mesi: MesiTimeout set but libgomesi lacks ParseJson; "
-                    "MesiTimeout ignored (default 30s timeout applies). Upgrade libgomesi.so.");
+                              "mesi: MesiTimeout set but libgomesi lacks ParseJson; "
+                              "MesiTimeout ignored (default 30s timeout applies). Upgrade libgomesi.so.");
             }
             if (conf->max_response_size != -1) {
                 ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-                    "mesi: MesiMaxResponseSize set but libgomesi lacks ParseJson; "
-                    "MesiMaxResponseSize ignored (unlimited response size applies, "
-                    "the pre-#169 behaviour). Upgrade libgomesi.so.");
+                              "mesi: MesiMaxResponseSize set but libgomesi lacks ParseJson; "
+                              "MesiMaxResponseSize ignored (unlimited response size applies, "
+                              "the pre-#169 behaviour). Upgrade libgomesi.so.");
             }
             if (conf->max_concurrent_requests != -1) {
                 ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-                    "mesi: MesiMaxConcurrentRequests set but libgomesi lacks ParseJson; "
-                    "MesiMaxConcurrentRequests ignored (unlimited concurrent requests "
-                    "apply, the pre-#170 behaviour). Upgrade libgomesi.so.");
+                              "mesi: MesiMaxConcurrentRequests set but libgomesi lacks ParseJson; "
+                              "MesiMaxConcurrentRequests ignored (unlimited concurrent requests "
+                              "apply, the pre-#170 behaviour). Upgrade libgomesi.so.");
             }
             if (conf->max_workers != -1) {
                 ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-                    "mesi: MesiMaxWorkers set but libgomesi lacks ParseJson; "
-                    "MesiMaxWorkers ignored (library default NumCPU*4 worker pool "
-                    "applies, the pre-#171 behaviour). Upgrade libgomesi.so.");
+                              "mesi: MesiMaxWorkers set but libgomesi lacks ParseJson; "
+                              "MesiMaxWorkers ignored (library default NumCPU*4 worker pool "
+                              "applies, the pre-#171 behaviour). Upgrade libgomesi.so.");
             }
         }
     }
@@ -1837,7 +1905,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     if (!used_parse_json) {
         if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && !EsiParseWithConfigCtx) {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-                "mesi: MesiCacheKeyTemplate set but libgomesi lacks ParseWithConfigCtx; templated keys disabled. Upgrade libgomesi.so.");
+                          "mesi: MesiCacheKeyTemplate set but libgomesi lacks ParseWithConfigCtx; templated keys disabled. Upgrade libgomesi.so.");
         }
         if (conf->cache_key_template && conf->cache_key_template[0] != '\0' && EsiParseWithConfigCtx) {
             const char *ctx_json = build_request_ctx_json(f->r, conf, f->r->pool);
@@ -1850,16 +1918,15 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         } else if (EsiParseWithConfig) {
             if (allow_private_for_allowed) {
                 ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-                    "mesi: MesiAllowPrivateIPsForAllowedHosts set but libgomesi lacks ParseWithConfigEx; bypass disabled. Upgrade libgomesi.so.");
+                              "mesi: MesiAllowPrivateIPsForAllowedHosts set but libgomesi lacks ParseWithConfigEx; bypass disabled. Upgrade libgomesi.so.");
             }
             esi = EsiParseWithConfig(html, depth, base_url, allowed_hosts_str, block_private);
         } else {
-            int has_security_config = (conf->allowed_hosts && conf->allowed_hosts->nelts > 0)
-                                   || (conf->block_private_ips != -1 && conf->block_private_ips == 1);
+            int has_security_config = (conf->allowed_hosts && conf->allowed_hosts->nelts > 0) || (conf->block_private_ips != -1 && conf->block_private_ips == 1);
             if (has_security_config) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r,
-                    "mesi: ParseWithConfig not found but security directives are configured. "
-                    "SSRF protection disabled! Upgrade libgomesi.so or remove MesiAllowedHosts/MesiBlockPrivateIPs directives.");
+                              "mesi: ParseWithConfig not found but security directives are configured. "
+                              "SSRF protection disabled! Upgrade libgomesi.so or remove MesiAllowedHosts/MesiBlockPrivateIPs directives.");
                 apr_brigade_cleanup(ctx->bb);
                 b = apr_bucket_pool_create(html, strlen(html), f->r->pool, ctx->bb->bucket_alloc);
                 APR_BRIGADE_INSERT_TAIL(ctx->bb, b);
@@ -1867,7 +1934,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
                 return ap_pass_brigade(f->next, ctx->bb);
             }
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
-                "mesi: ParseWithConfig not found, falling back to Parse (no SSRF protection)");
+                          "mesi: ParseWithConfig not found, falling back to Parse (no SSRF protection)");
             if (EsiParse) {
                 esi = EsiParse(html, depth, base_url);
             }
@@ -1878,7 +1945,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
 
     if (!esi) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, f->r,
-            "mesi: libgomesi Parse returned NULL; failing request (fail closed)");
+                      "mesi: libgomesi Parse returned NULL; failing request (fail closed)");
         f->r->status = HTTP_INTERNAL_SERVER_ERROR;
         apr_table_unset(f->r->headers_out, "Content-Length");
         APR_BRIGADE_INSERT_TAIL(ctx->bb, apr_bucket_eos_create(ctx->bb->bucket_alloc));
@@ -1923,15 +1990,13 @@ static const command_rec mesi_directives[] = {
     AP_INIT_TAKE1("MesiCacheRedisDB", set_cache_redis_db, NULL, RSRC_CONF, "Redis database number (0..15). Default: 0. Used when MesiCacheBackend is redis"),
     AP_INIT_RAW_ARGS("MesiCacheMemcachedServers", set_cache_memcached_servers, NULL, RSRC_CONF, "Space-separated list of Memcached servers (host:port). Used when MesiCacheBackend is memcached"),
     AP_INIT_TAKE1("MesiCacheKeyTemplate", set_cache_key_template, NULL, RSRC_CONF, "Cache key template: ${url}, ${header:Name}, ${cookie:Name} (default: mesi:${url}). Unknown placeholders stay literal."),
-    {NULL}
-};
+    {NULL}};
 
 module AP_MODULE_DECLARE_DATA mesi_module = {
     STANDARD20_MODULE_STUFF,
-    NULL,                 // no per-dir config (server-level only)
-    NULL,                 // no per-dir merge
+    NULL, // no per-dir config (server-level only)
+    NULL, // no per-dir merge
     create_server_config,
     merge_server_config,
     mesi_directives,
-    register_hooks
-};
+    register_hooks};

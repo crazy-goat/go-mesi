@@ -34,6 +34,8 @@ RUN mkdir -p /plugins-local/src && \
     cp servers/traefik/go.mod servers/traefik/go.sum servers/traefik/mesi.go servers/traefik/cache.go servers/traefik/cache_memory.go /plugins-local/src/github.com/crazy-goat/go-mesi/servers/traefik/
 
 # Copy third-party dependencies, then remove go.uber.org (uses unsafe)
+# test image; a failed pipe fails the build through the later steps
+# hadolint ignore=DL4006
 RUN cd servers/traefik && go list -m -json all | jq -r 'select(.Dir != null and .Path != "github.com/crazy-goat/go-mesi") | "\(.Path) \(.Dir)"' | while read -r modpath moddir; do \
         target="/plugins-local/src/$modpath"; \
         mkdir -p "$target"; \
@@ -55,6 +57,8 @@ RUN printf '%s\n' \
     > /plugins-local/src/github.com/crazy-goat/go-mesi/mesi/ssrf_yaegi.go
 
 # Stage 2: Final Traefik image with plugin
+# the test follows the latest Traefik release
+# hadolint ignore=DL3007
 FROM traefik:latest
 
 COPY --from=deps /plugins-local /plugins-local

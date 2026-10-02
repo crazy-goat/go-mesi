@@ -320,10 +320,10 @@ func TestIntegrationCacheKeyTemplateParseAndProvision(t *testing.T) {
 // access, and includes real ESI fetches to verify cache key differentiation.
 func TestIntegrationCacheKeyTemplateHeaderVariant(t *testing.T) {
 	m := &MesiMiddleware{
-		CacheBackend:      "memory",
-		CacheKeyTemplate:  "lang:${header:X-Cache-Variant}",
-		CacheTTL:          "60s",
-		SharedHTTPClient:  true,
+		CacheBackend:     "memory",
+		CacheKeyTemplate: "lang:${header:X-Cache-Variant}",
+		CacheTTL:         "60s",
+		SharedHTTPClient: true,
 	}
 	if err := m.Provision(caddy.Context{}); err != nil {
 		t.Fatalf("Provision() returned error: %v", err)
@@ -339,7 +339,7 @@ func TestIntegrationCacheKeyTemplateHeaderVariant(t *testing.T) {
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fragmentCallCount++
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fragment content"))
+		_, _ = w.Write([]byte("fragment content"))
 	}))
 	defer fragmentServer.Close()
 
@@ -349,7 +349,7 @@ func TestIntegrationCacheKeyTemplateHeaderVariant(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -602,7 +602,7 @@ func TestIntegrationCacheKeyTemplateNoTemplate(t *testing.T) {
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fragmentCallCount++
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fragment content"))
+		_, _ = w.Write([]byte("fragment content"))
 	}))
 	defer fragmentServer.Close()
 
@@ -612,7 +612,7 @@ func TestIntegrationCacheKeyTemplateNoTemplate(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -638,10 +638,10 @@ func TestIntegrationCacheKeyTemplateNoTemplate(t *testing.T) {
 // produce different cache entries via the template.
 func TestIntegrationCacheKeyTemplateCookieVariant(t *testing.T) {
 	m := &MesiMiddleware{
-		CacheBackend:      "memory",
-		CacheKeyTemplate:  "abtest:${cookie:ab_test_group}",
-		CacheTTL:          "60s",
-		SharedHTTPClient:  true,
+		CacheBackend:     "memory",
+		CacheKeyTemplate: "abtest:${cookie:ab_test_group}",
+		CacheTTL:         "60s",
+		SharedHTTPClient: true,
 	}
 	if err := m.Provision(caddy.Context{}); err != nil {
 		t.Fatalf("Provision() returned error: %v", err)
@@ -653,7 +653,7 @@ func TestIntegrationCacheKeyTemplateCookieVariant(t *testing.T) {
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fragmentCallCount++
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fragment content"))
+		_, _ = w.Write([]byte("fragment content"))
 	}))
 	defer fragmentServer.Close()
 
@@ -663,7 +663,7 @@ func TestIntegrationCacheKeyTemplateCookieVariant(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -721,7 +721,7 @@ func TestIntegrationRedisCacheHitMiss(t *testing.T) {
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fragmentCallCount++
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fragment content"))
+		_, _ = w.Write([]byte("fragment content"))
 	}))
 	defer fragmentServer.Close()
 
@@ -730,7 +730,7 @@ func TestIntegrationRedisCacheHitMiss(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -800,7 +800,7 @@ func TestIntegrationRedisCacheKEYS(t *testing.T) {
 
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("key-test content"))
+		_, _ = w.Write([]byte("key-test content"))
 	}))
 	defer fragmentServer.Close()
 
@@ -810,7 +810,7 @@ func TestIntegrationRedisCacheKEYS(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -874,7 +874,7 @@ func TestIntegrationRedisCacheTTLExpiry(t *testing.T) {
 
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ttl-test content"))
+		_, _ = w.Write([]byte("ttl-test content"))
 	}))
 	defer fragmentServer.Close()
 
@@ -884,7 +884,7 @@ func TestIntegrationRedisCacheTTLExpiry(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -938,7 +938,7 @@ func TestIntegrationRedisUnreachableDegraded(t *testing.T) {
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		originCallCount++
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fallback content"))
+		_, _ = w.Write([]byte("fallback content"))
 	}))
 	defer fragmentServer.Close()
 
@@ -947,7 +947,7 @@ func TestIntegrationRedisUnreachableDegraded(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -1186,7 +1186,7 @@ func TestIntegrationMemcachedCacheHitMiss(t *testing.T) {
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fragmentCallCount++
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fragment content"))
+		_, _ = w.Write([]byte("fragment content"))
 	}))
 	defer fragmentServer.Close()
 
@@ -1195,7 +1195,7 @@ func TestIntegrationMemcachedCacheHitMiss(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -1256,7 +1256,7 @@ func TestIntegrationMemcachedUnreachableDegraded(t *testing.T) {
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		originCallCount++
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fallback content"))
+		_, _ = w.Write([]byte("fallback content"))
 	}))
 	defer fragmentServer.Close()
 
@@ -1265,7 +1265,7 @@ func TestIntegrationMemcachedUnreachableDegraded(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 

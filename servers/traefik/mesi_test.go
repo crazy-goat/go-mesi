@@ -88,7 +88,7 @@ func TestRedisCacheWithConfig(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>content</body></html>"))
+		_, _ = w.Write([]byte("<html><body>content</body></html>"))
 	})
 
 	config := CreateConfig()
@@ -118,7 +118,7 @@ func TestCacheIntegration(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>content</body></html>"))
+		_, _ = w.Write([]byte("<html><body>content</body></html>"))
 	})
 
 	config := CreateConfig()

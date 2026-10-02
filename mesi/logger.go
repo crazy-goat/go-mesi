@@ -20,7 +20,7 @@ type LoggerWarn interface {
 type DiscardLogger struct{}
 
 func (DiscardLogger) Debug(msg string, keyvals ...interface{}) {}
-func (DiscardLogger) Warn(msg string, keyvals ...interface{}) {}
+func (DiscardLogger) Warn(msg string, keyvals ...interface{})  {}
 
 type DefaultLogger struct {
 	w io.Writer

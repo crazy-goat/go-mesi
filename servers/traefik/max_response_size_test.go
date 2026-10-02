@@ -157,7 +157,7 @@ func sizedFragment(marker string, size int) *httptest.Server {
 			body[i] = 'x'
 		}
 		copy(body, marker)
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 }
 
@@ -168,7 +168,7 @@ func esiPageWithInclude(frag *httptest.Server, path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><h1>PAGE-MARKER</h1><esi:include src="` + frag.URL + path + `" /><p>AFTER-INCLUDE</p></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><h1>PAGE-MARKER</h1><esi:include src="` + frag.URL + path + `" /><p>AFTER-INCLUDE</p></body></html>`))
 	}
 }
 

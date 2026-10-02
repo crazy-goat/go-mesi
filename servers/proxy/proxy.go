@@ -87,7 +87,7 @@ func (p *Proxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	rw.Header().Set("Surrogate-Control", "ESI/1.0")
 	rw.Header().Set("Content-Length", strconv.Itoa(len(processed)))
 	rw.WriteHeader(customWriter.StatusCode())
-	rw.Write([]byte(processed))
+	_, _ = rw.Write([]byte(processed))
 }
 
 func (p *Proxy) writeResponse(rw http.ResponseWriter, customWriter *middleware.ResponseWriter) {
@@ -95,5 +95,5 @@ func (p *Proxy) writeResponse(rw http.ResponseWriter, customWriter *middleware.R
 		rw.Header()[k] = v
 	}
 	rw.WriteHeader(customWriter.StatusCode())
-	rw.Write(customWriter.Body().Bytes())
+	_, _ = rw.Write(customWriter.Body().Bytes())
 }

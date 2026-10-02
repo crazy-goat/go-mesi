@@ -16,7 +16,7 @@ if [ "${CI:-}" != "true" ]; then
 
   echo "Waiting for PHP extension server to be ready..."
   for i in $(seq 1 60); do
-      if curl -s -o /dev/null http://localhost:$TEST_PORT/health 2>/dev/null; then
+      if curl -s -o /dev/null http://localhost:"$TEST_PORT"/health 2>/dev/null; then
           echo "PHP extension server ready after $((i * 2))s"
           break
       fi
@@ -32,7 +32,7 @@ fi
 
 echo ""
 echo "=== Test 1: ESI comment unwrapping ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/)
 if echo "$RESPONSE" | grep -q "Unwrapped content"; then
     echo "PASS: ESI comment unwrapped correctly"
 else
@@ -44,7 +44,7 @@ fi
 
 echo ""
 echo "=== Test 2: ESI include ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "PASS: ESI include processed correctly"
 else
@@ -56,7 +56,7 @@ fi
 
 echo ""
 echo "=== Test 3: ESI remove ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/)
 if echo "$RESPONSE" | grep -q "Failed to include ESI"; then
     echo "FAIL: ESI remove content still present"
     echo "Response: $RESPONSE"
@@ -68,7 +68,7 @@ fi
 
 echo ""
 echo "=== Test 4: ESI remove (dedicated route) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/remove)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/remove)
 if echo "$RESPONSE" | grep -q "remove this"; then
     echo "FAIL: ESI remove content still present in dedicated route"
     echo "Response: $RESPONSE"
@@ -86,7 +86,7 @@ fi
 
 echo ""
 echo "=== Test 5: Non-HTML content (text/plain) - ESI tags are processed ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/plain)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/plain)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "PASS: text/plain content had ESI include resolved"
 else
@@ -95,7 +95,7 @@ fi
 
 echo ""
 echo "=== Test 6: JSON content - ESI tags are processed ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/json)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/json)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "PASS: JSON content had ESI include resolved"
 else
@@ -104,7 +104,7 @@ fi
 
 echo ""
 echo "=== Test 7: Content-Type preserved ==="
-HEADERS=$(curl -sI http://localhost:$TEST_PORT/)
+HEADERS=$(curl -sI http://localhost:"$TEST_PORT"/)
 if echo "$HEADERS" | grep -qi "text/html"; then
     echo "PASS: Content-Type is text/html"
 else
@@ -117,7 +117,7 @@ fi
 echo ""
 echo "=== Test 8: Content-Length correctness ==="
 TMPFILE=$(mktemp)
-HEADERS=$(curl -sD - http://localhost:$TEST_PORT/remove -o "$TMPFILE" 2>/dev/null)
+HEADERS=$(curl -sD - http://localhost:"$TEST_PORT"/remove -o "$TMPFILE" 2>/dev/null)
 ACTUAL_BODY_SIZE=$(wc -c < "$TMPFILE")
 HEADER_CL=$(echo "$HEADERS" | grep -i "Content-Length" | awk '{print $2}' | tr -d '\r')
 if [ -n "$HEADER_CL" ]; then
@@ -135,7 +135,7 @@ rm -f "$TMPFILE"
 
 echo ""
 echo "=== Test 9: allowed_hosts (host listed -> include resolves) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/allowed-hosts)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/allowed-hosts)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "PASS: allowed_hosts whitelist permits the configured backend"
 else
@@ -147,7 +147,7 @@ fi
 
 echo ""
 echo "=== Test 10: allowed_hosts (host not listed -> include blocked) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/allowed-hosts-blocked)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/allowed-hosts-blocked)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "FAIL: include from host outside allowed_hosts was still fetched"
     echo "Response: $RESPONSE"
@@ -160,7 +160,7 @@ fi
 echo ""
 echo "=== Test 11: allowed_hosts subdomain match (docker network alias) ==="
 if [ "${CI:-}" != "true" ]; then
-    RESPONSE=$(curl -s http://localhost:$TEST_PORT/allowed-hosts-subdomain)
+    RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/allowed-hosts-subdomain)
     if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
         echo "PASS: subdomain of an allowed host resolves (sub.test-server alias)"
     else
@@ -179,7 +179,7 @@ echo "=== Test 12: allow_private_ips_for_allowed_hosts (on -> listed private bac
 # private/reserved IP (loopback in CI, container IP in docker). Only the
 # per-host bypass can let that dial through — this case proves the libgomesi
 # shared-client yield; without it the bypass is a silent no-op and this FAILS.
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/bypass-on)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/bypass-on)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "PASS: bypass lets the whitelisted private backend through (block_private_ips on)"
 else
@@ -191,7 +191,7 @@ fi
 
 echo ""
 echo "=== Test 13: allow_private_ips_for_allowed_hosts (off by default -> blocked) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/bypass-off)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/bypass-off)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "FAIL: private backend fetched although the bypass is off"
     echo "Response: $RESPONSE"
@@ -203,7 +203,7 @@ fi
 
 echo ""
 echo "=== Test 14: allow_private_ips_for_allowed_hosts (unlisted host still blocked) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/bypass-unlisted)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/bypass-unlisted)
 if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
     echo "FAIL: unlisted private host fetched despite whitelist"
     echo "Response: $RESPONSE"
@@ -241,7 +241,7 @@ else
 fi
 
 START=$(date +%s)
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/timeout)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/timeout)
 ELAPSED=$(( $(date +%s) - START ))
 if echo "$RESPONSE" | grep -q "SLOW-FRAGMENT"; then
     echo "FAIL: timeout=2 did not cut the slow include (timeout ignored?)"
@@ -266,7 +266,7 @@ fi
 
 echo ""
 echo "=== Test 16: timeout=30 + slow include -> success (#181) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/timeout-ok)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/timeout-ok)
 if echo "$RESPONSE" | grep -q "SLOW-FRAGMENT"; then
     echo "PASS: timeout=30 outlasted the 4s backend (include resolved)"
 else
@@ -279,7 +279,7 @@ fi
 
 echo ""
 echo "=== Test 17: timeout key absent -> default 30s, positional path (#181) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/timeout-default)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/timeout-default)
 if echo "$RESPONSE" | grep -q "SLOW-FRAGMENT"; then
     echo "PASS: absent timeout kept the documented 30s default (include resolved)"
 else
@@ -319,7 +319,7 @@ else
   done
 fi
 
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-response-size-over)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/max-response-size-over)
 if echo "$RESPONSE" | grep -q "over test" \
    && ! echo "$RESPONSE" | grep -q '#' \
    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
@@ -334,7 +334,7 @@ fi
 
 echo ""
 echo "=== Test 19: max_response_size=1000 delivers a 200-byte include (#201) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-response-size-under)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/max-response-size-under)
 COUNT=$(printf '%s' "$RESPONSE" | tr -cd '#' | wc -c | tr -d ' ')
 if echo "$RESPONSE" | grep -q "under test" && [ "$COUNT" -eq 200 ]; then
     echo "PASS: under-cap include delivered fully ($COUNT/200 bytes)"
@@ -348,7 +348,7 @@ fi
 
 echo ""
 echo "=== Test 20: max_response_size absent -> unlimited (10 MB + 1 body) (#201) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-response-size-absent)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/max-response-size-absent)
 COUNT=$(printf '%s' "$RESPONSE" | tr -cd '#' | wc -c | tr -d ' ')
 if echo "$RESPONSE" | grep -q "absent test" && [ "$COUNT" -eq 10485761 ]; then
     echo "PASS: absent key kept unlimited size (10485761/10485761 bytes delivered)"
@@ -362,7 +362,7 @@ fi
 
 echo ""
 echo "=== Test 21: max_response_size=0 -> unlimited (10 MB + 1 body) (#201) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-response-size-zero)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/max-response-size-zero)
 COUNT=$(printf '%s' "$RESPONSE" | tr -cd '#' | wc -c | tr -d ' ')
 if echo "$RESPONSE" | grep -q "zero test" && [ "$COUNT" -eq 10485761 ]; then
     echo "PASS: explicit 0 delivered the full body (unlimited)"
@@ -398,9 +398,9 @@ echo "=== Test 22: max_concurrent_requests=3 funnels 20 includes (peak <= 3) (#2
 # multi-slot queue rather than a serialisation to 1. The absent timeout
 # key keeps the documented 30s default — well above the ~10.5s worst case
 # of 20 x 1500ms queued 3 at a time.
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-concurrent-requests-cap)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/max-concurrent-requests-cap)
 FRAGMENTS=$(printf '%s' "$RESPONSE" | grep -o 'Held 1500' | wc -l | tr -d ' ')
-PEAK=$(curl -s http://localhost:$TEST_PORT/max-concurrent-requests-peak)
+PEAK=$(curl -s http://localhost:"$TEST_PORT"/max-concurrent-requests-peak)
 if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 2 ] && [ "$PEAK" -le 3 ] \
    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
     echo "PASS: cap 3 funneled: peak=$PEAK (<=3 cap, >=2 parallel slots), 20/20 fragments delivered"
@@ -413,9 +413,9 @@ fi
 
 echo ""
 echo "=== Test 23: max_concurrent_requests=0 -> unlimited (peak >= 4) (#206) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-concurrent-requests-zero)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/max-concurrent-requests-zero)
 FRAGMENTS=$(printf '%s' "$RESPONSE" | grep -o 'Held 1500' | wc -l | tr -d ' ')
-PEAK=$(curl -s http://localhost:$TEST_PORT/max-concurrent-requests-peak)
+PEAK=$(curl -s http://localhost:"$TEST_PORT"/max-concurrent-requests-peak)
 if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 4 ] \
    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
     echo "PASS: explicit 0 unthrottled: peak=$PEAK >= 4, 20/20 fragments delivered"
@@ -428,9 +428,9 @@ fi
 
 echo ""
 echo "=== Test 24: max_concurrent_requests absent -> unlimited (peak >= 4) (#206) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-concurrent-requests-absent)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/max-concurrent-requests-absent)
 FRAGMENTS=$(printf '%s' "$RESPONSE" | grep -o 'Held 1500' | wc -l | tr -d ' ')
-PEAK=$(curl -s http://localhost:$TEST_PORT/max-concurrent-requests-peak)
+PEAK=$(curl -s http://localhost:"$TEST_PORT"/max-concurrent-requests-peak)
 if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 4 ] \
    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
     echo "PASS: absent key unlimited: peak=$PEAK >= 4, 20/20 fragments delivered"
@@ -471,9 +471,9 @@ echo "=== Test 25: max_workers=2 drains 20 includes through a 2-goroutine pool (
 # of min(NumCPU*4, 20) >= 4 goroutines -> <= 5 waves = ~7.5s worst
 # case. No explicit timeout is passed through the blob — that would
 # violate the per-key conditional rendering contract.
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-workers-pool)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/max-workers-pool)
 FRAGMENTS=$(printf '%s' "$RESPONSE" | grep -o 'Held 1500' | wc -l | tr -d ' ')
-PEAK=$(curl -s http://localhost:$TEST_PORT/max-workers-peak)
+PEAK=$(curl -s http://localhost:"$TEST_PORT"/max-workers-peak)
 if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -le 2 ] && [ "$PEAK" -ge 2 ] \
    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
     echo "PASS: pool 2 bounded: peak=$PEAK (==2 hard pool bound + both slots parallel), 20/20 fragments delivered"
@@ -486,9 +486,9 @@ fi
 
 echo ""
 echo "=== Test 26: max_workers=0 -> library default pool (peak >= 4) (#211) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-workers-zero)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/max-workers-zero)
 FRAGMENTS=$(printf '%s' "$RESPONSE" | grep -o 'Held 1500' | wc -l | tr -d ' ')
-PEAK=$(curl -s http://localhost:$TEST_PORT/max-workers-peak)
+PEAK=$(curl -s http://localhost:"$TEST_PORT"/max-workers-peak)
 if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 4 ] \
    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
     echo "PASS: explicit 0 = library default: peak=$PEAK >= 4, 20/20 fragments delivered"
@@ -501,9 +501,9 @@ fi
 
 echo ""
 echo "=== Test 27: max_workers absent -> library default pool (peak >= 4) (#211) ==="
-RESPONSE=$(curl -s http://localhost:$TEST_PORT/max-workers-absent)
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/max-workers-absent)
 FRAGMENTS=$(printf '%s' "$RESPONSE" | grep -o 'Held 1500' | wc -l | tr -d ' ')
-PEAK=$(curl -s http://localhost:$TEST_PORT/max-workers-peak)
+PEAK=$(curl -s http://localhost:"$TEST_PORT"/max-workers-peak)
 if [ "$FRAGMENTS" -eq 20 ] && [ "$PEAK" -ge 4 ] \
    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
     echo "PASS: absent key library default: peak=$PEAK >= 4, 20/20 fragments delivered"

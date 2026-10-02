@@ -7,6 +7,8 @@ ARG TARGETARCH
 ENV GOARCH=${TARGETARCH}
 RUN go mod tidy && go mod download && go build -o mesi-proxy .
 
+# test image; untagged alpine tracks the latest release
+# hadolint ignore=DL3006
 FROM alpine
 COPY --from=build --chmod=755 /tmp/mesi-proxy/mesi-proxy /usr/bin/mesi-proxy
 

@@ -94,63 +94,63 @@
 
 typedef struct {
   ngx_flag_t enable_mesi;
-  ngx_int_t  max_depth;      // ESI nesting depth (#180): NGX_CONF_UNSET
-                             // until merged (default 5), explicit 0 =
-                             // passthrough (no ESI fetch), range
-                             // [0, MESI_MAX_MAX_DEPTH] validated by the
-                             // directive setter
-  ngx_int_t  timeout_seconds;// Global per-include fetch budget in
-                             // seconds (#184): NGX_CONF_UNSET =
-                             // unset (legacy positional path, effective
-                             // 30s applied Go-side), a stored value is
-                             // in [1, MESI_MAX_TIMEOUT_SECONDS]
-                             // validated by the directive setter —
-                             // a stored value routes the parse through
-                             // libgomesi ParseJson
-  off_t      max_response_size; // Per-include response body cap in
-                             // bytes (#208): NGX_CONF_UNSET =
-                             // unset (legacy positional path, effective
-                             // "unlimited" applied Go-side), a stored
-                             // value is in [0,
-                             // MESI_MAX_MAX_RESPONSE_SIZE] validated
-                             // by the directive setter — a stored
-                             // value routes the parse through
-                             // libgomesi ParseJson; 0 ("unlimited")
-                             // IS storable, which is why the sentinel
-                             // is -1 and not 0
-  ngx_int_t  max_concurrent_requests; // Per-parse cap on concurrent
-                             // <esi:include> HTTP fetches (#214):
-                             // NGX_CONF_UNSET = unset (legacy
-                             // positional path, effective
-                             // "unlimited" applied Go-side), a stored
-                             // value is in [0,
-                             // MESI_MAX_MAX_CONCURRENT_REQUESTS]
-                             // validated by the directive setter — a
-                             // stored value routes the parse through
-                             // libgomesi ParseJson; 0 ("unlimited")
-                             // IS storable, which is why the sentinel
-                             // is -1 and not 0
-  ngx_int_t  max_workers;    // Per-parse token-processing drain-pool
-                             // cap (#219): NGX_CONF_UNSET = unset
-                             // (legacy positional path, the library
-                             // default NumCPU*4 applied Go-side), a
-                             // stored value is in [0,
-                             // MESI_MAX_MAX_WORKERS] validated by the
-                             // directive setter — a stored value routes
-                             // the parse through libgomesi ParseJson;
-                             // 0 ("library default") IS storable, which
-                             // is why the sentinel is -1 and not 0
-  ngx_str_t  cache_backend;  // "" (off), "memory", "redis", "memcached"
-  ngx_int_t  cache_size;     // max entries for memory cache
-  ngx_int_t  cache_ttl;      // TTL in seconds
-  ngx_str_t  cache_memcached_servers;  // space-separated "host:port host:port"
-  ngx_str_t  cache_redis_addr;         // e.g. "localhost:6379"
-  ngx_str_t  cache_redis_password;
-  ngx_int_t  cache_redis_db;           // Redis database number (0-15)
-  ngx_flag_t block_private_ips;        // SSRF: block private/reserved IPs (default ON)
-  ngx_str_t  allowed_hosts;  // space-separated host whitelist ("" = no restriction)
-  ngx_flag_t allow_private_ips_for_allowed;  // private-IP bypass for allowed_hosts (default OFF)
-  ngx_str_t  cache_key_template;  // "" = URL-only DefaultCacheKey (backward compat)
+  ngx_int_t max_depth;               // ESI nesting depth (#180): NGX_CONF_UNSET
+                                     // until merged (default 5), explicit 0 =
+                                     // passthrough (no ESI fetch), range
+                                     // [0, MESI_MAX_MAX_DEPTH] validated by the
+                                     // directive setter
+  ngx_int_t timeout_seconds;         // Global per-include fetch budget in
+                                     // seconds (#184): NGX_CONF_UNSET =
+                                     // unset (legacy positional path, effective
+                                     // 30s applied Go-side), a stored value is
+                                     // in [1, MESI_MAX_TIMEOUT_SECONDS]
+                                     // validated by the directive setter —
+                                     // a stored value routes the parse through
+                                     // libgomesi ParseJson
+  off_t max_response_size;           // Per-include response body cap in
+                                     // bytes (#208): NGX_CONF_UNSET =
+                                     // unset (legacy positional path, effective
+                                     // "unlimited" applied Go-side), a stored
+                                     // value is in [0,
+                                     // MESI_MAX_MAX_RESPONSE_SIZE] validated
+                                     // by the directive setter — a stored
+                                     // value routes the parse through
+                                     // libgomesi ParseJson; 0 ("unlimited")
+                                     // IS storable, which is why the sentinel
+                                     // is -1 and not 0
+  ngx_int_t max_concurrent_requests; // Per-parse cap on concurrent
+                                     // <esi:include> HTTP fetches (#214):
+                                     // NGX_CONF_UNSET = unset (legacy
+                                     // positional path, effective
+                                     // "unlimited" applied Go-side), a stored
+                                     // value is in [0,
+                                     // MESI_MAX_MAX_CONCURRENT_REQUESTS]
+                                     // validated by the directive setter — a
+                                     // stored value routes the parse through
+                                     // libgomesi ParseJson; 0 ("unlimited")
+                                     // IS storable, which is why the sentinel
+                                     // is -1 and not 0
+  ngx_int_t max_workers;             // Per-parse token-processing drain-pool
+                                     // cap (#219): NGX_CONF_UNSET = unset
+                                     // (legacy positional path, the library
+                                     // default NumCPU*4 applied Go-side), a
+                                     // stored value is in [0,
+                                     // MESI_MAX_MAX_WORKERS] validated by the
+                                     // directive setter — a stored value routes
+                                     // the parse through libgomesi ParseJson;
+                                     // 0 ("library default") IS storable, which
+                                     // is why the sentinel is -1 and not 0
+  ngx_str_t cache_backend;           // "" (off), "memory", "redis", "memcached"
+  ngx_int_t cache_size;              // max entries for memory cache
+  ngx_int_t cache_ttl;               // TTL in seconds
+  ngx_str_t cache_memcached_servers; // space-separated "host:port host:port"
+  ngx_str_t cache_redis_addr;        // e.g. "localhost:6379"
+  ngx_str_t cache_redis_password;
+  ngx_int_t cache_redis_db;                 // Redis database number (0-15)
+  ngx_flag_t block_private_ips;             // SSRF: block private/reserved IPs (default ON)
+  ngx_str_t allowed_hosts;                  // space-separated host whitelist ("" = no restriction)
+  ngx_flag_t allow_private_ips_for_allowed; // private-IP bypass for allowed_hosts (default OFF)
+  ngx_str_t cache_key_template;             // "" = URL-only DefaultCacheKey (backward compat)
 } ngx_http_mesi_loc_conf_t;
 
 typedef struct {
@@ -293,8 +293,8 @@ static ngx_command_t ngx_http_mesi_commands[] = {
      offsetof(ngx_http_mesi_loc_conf_t, cache_redis_password), NULL},
 
     {ngx_string("mesi_cache_redis_db"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
-      ngx_conf_set_num_slot, NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_mesi_loc_conf_t, cache_redis_db), NULL},
+     ngx_conf_set_num_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, cache_redis_db), NULL},
 
     {ngx_string("mesi_block_private_ips"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
      ngx_conf_set_flag_slot, NGX_HTTP_LOC_CONF_OFFSET,
@@ -517,74 +517,75 @@ static void mesi_json_append_str(u_char **w, const u_char *s, size_t len);
 // produces a deterministic "servers required" error instead of silently
 // defaulting to localhost:11211.
 static char *build_memcached_config_json(ngx_http_mesi_loc_conf_t *lcf, ngx_pool_t *pool) {
-    if (lcf->cache_memcached_servers.len == 0) {
-        char *empty = ngx_palloc(pool, sizeof("{\"servers\":[]}"));
-        if (empty == NULL) return NULL;
-        ngx_memcpy(empty, "{\"servers\":[]}", sizeof("{\"servers\":[]}"));
-        return empty;
+  if (lcf->cache_memcached_servers.len == 0) {
+    char *empty = ngx_palloc(pool, sizeof("{\"servers\":[]}"));
+    if (empty == NULL) return NULL;
+    ngx_memcpy(empty, "{\"servers\":[]}", sizeof("{\"servers\":[]}"));
+    return empty;
+  }
+
+  // Copy the string so we can tokenise it.
+  char *servers = ngx_str_to_cstr(&lcf->cache_memcached_servers, pool);
+  if (servers == NULL) return NULL;
+
+  // First pass: count tokens.
+  int ntok = 0;
+  int in_token = 0;
+  for (char *p = servers; *p; p++) {
+    if (*p == ' ') {
+      in_token = 0;
+    } else if (!in_token) {
+      in_token = 1;
+      ntok++;
     }
+  }
 
-    // Copy the string so we can tokenise it.
-    char *servers = ngx_str_to_cstr(&lcf->cache_memcached_servers, pool);
-    if (servers == NULL) return NULL;
+  // Second pass: measure total JSON size.
+  // Prefix: {"servers":[  (12 bytes)
+  // Each token: "escaped",  (worst case: tokenlen*2 + 3)
+  // Suffix: ]}  (2 bytes) + NUL (1 byte)
+  size_t total = 12 + 2 + 1;                 // prefix + ]} + NUL
+  if (ntok > 1) total += (size_t)(ntok - 1); // commas between tokens
 
-    // First pass: count tokens.
-    int ntok = 0;
-    int in_token = 0;
-    for (char *p = servers; *p; p++) {
-        if (*p == ' ') {
-            in_token = 0;
-        } else if (!in_token) {
-            in_token = 1;
-            ntok++;
-        }
+  // Restore pointer for second pass.
+  char *q = servers;
+  int ti;
+  for (ti = 0; ti < ntok; ti++) {
+    // Skip leading spaces.
+    while (*q == ' ') q++;
+    char *start = q;
+    while (*q && *q != ' ') q++;
+    // Measure worst-case escaped length.
+    size_t tlen = (size_t)(q - start);
+    total += tlen * 2 + 2; // worst-case escaped w/ quotes
+  }
+
+  char *buf = ngx_palloc(pool, total);
+  if (buf == NULL) return NULL;
+
+  char *w = buf;
+  memcpy(w, "{\"servers\":[", 12);
+  w += 12;
+
+  // Reset q for third pass (write).
+  q = servers;
+  for (ti = 0; ti < ntok; ti++) {
+    while (*q == ' ') q++;
+    char *start = q;
+    while (*q && *q != ' ') q++;
+    if (ti > 0) *w++ = ',';
+    *w++ = '"';
+    for (char *r = start; r < q; r++) {
+      if (*r == '"' || *r == '\\') *w++ = '\\';
+      *w++ = *r;
     }
+    *w++ = '"';
+  }
 
-    // Second pass: measure total JSON size.
-    // Prefix: {"servers":[  (12 bytes)
-    // Each token: "escaped",  (worst case: tokenlen*2 + 3)
-    // Suffix: ]}  (2 bytes) + NUL (1 byte)
-    size_t total = 12 + 2 + 1;  // prefix + ]} + NUL
-    if (ntok > 1) total += (size_t)(ntok - 1);  // commas between tokens
-
-    // Restore pointer for second pass.
-    char *q = servers;
-    int ti;
-    for (ti = 0; ti < ntok; ti++) {
-        // Skip leading spaces.
-        while (*q == ' ') q++;
-        char *start = q;
-        while (*q && *q != ' ') q++;
-        // Measure worst-case escaped length.
-        size_t tlen = (size_t)(q - start);
-        total += tlen * 2 + 2;  // worst-case escaped w/ quotes
-    }
-
-    char *buf = ngx_palloc(pool, total);
-    if (buf == NULL) return NULL;
-
-    char *w = buf;
-    memcpy(w, "{\"servers\":[", 12); w += 12;
-
-    // Reset q for third pass (write).
-    q = servers;
-    for (ti = 0; ti < ntok; ti++) {
-        while (*q == ' ') q++;
-        char *start = q;
-        while (*q && *q != ' ') q++;
-        if (ti > 0) *w++ = ',';
-        *w++ = '"';
-        for (char *r = start; r < q; r++) {
-            if (*r == '"' || *r == '\\') *w++ = '\\';
-            *w++ = *r;
-        }
-        *w++ = '"';
-    }
-
-    *w++ = ']';
-    *w++ = '}';
-    *w = '\0';
-    return buf;
+  *w++ = ']';
+  *w++ = '}';
+  *w = '\0';
+  return buf;
 }
 
 // build_redis_config_json constructs a JSON blob for
@@ -592,59 +593,61 @@ static char *build_memcached_config_json(ngx_http_mesi_loc_conf_t *lcf, ngx_pool
 // {"redisAddr":"host:port","redisPassword":"…","redisDB":N}.
 // When addr is empty, defaults to "localhost:6379" (libgomesi default).
 static char *build_redis_config_json(ngx_http_mesi_loc_conf_t *lcf, ngx_pool_t *pool) {
-    char *addr = lcf->cache_redis_addr.len > 0
-        ? ngx_str_to_cstr(&lcf->cache_redis_addr, pool)
-        : "localhost:6379";
-    char *password = lcf->cache_redis_password.len > 0
-        ? ngx_str_to_cstr(&lcf->cache_redis_password, pool)
-        : "";
+  char *addr = lcf->cache_redis_addr.len > 0
+                   ? ngx_str_to_cstr(&lcf->cache_redis_addr, pool)
+                   : "localhost:6379";
+  char *password = lcf->cache_redis_password.len > 0
+                       ? ngx_str_to_cstr(&lcf->cache_redis_password, pool)
+                       : "";
 
-    // Measure: {"redisAddr":"...","redisPassword":"...","redisDB":N}
-    // addr and password are escaped (worst case: double the length).
-    size_t addr_len = ngx_strlen(addr);
-    size_t pwd_len = ngx_strlen(password);
-    size_t escaped_addr_len = addr_len * 2;
-    size_t escaped_pwd_len = pwd_len * 2;
+  // Measure: {"redisAddr":"...","redisPassword":"...","redisDB":N}
+  // addr and password are escaped (worst case: double the length).
+  size_t addr_len = ngx_strlen(addr);
+  size_t pwd_len = ngx_strlen(password);
+  size_t escaped_addr_len = addr_len * 2;
+  size_t escaped_pwd_len = pwd_len * 2;
 
-    // Fixed overhead (excluding escaped addr/pwd):
-    //   {"redisAddr":"  = 14
-    //   ","redisPassword":" = 19
-    //   ","redisDB":  = 12
-    //   <max 2 digits for 0..15> = 2
-    //   } = 1
-    //   NUL = 1
-    // Total = 14 + 19 + 12 + 2 + 1 + 1 = 49
-    size_t total = 49 + escaped_addr_len + escaped_pwd_len;
+  // Fixed overhead (excluding escaped addr/pwd):
+  //   {"redisAddr":"  = 14
+  //   ","redisPassword":" = 19
+  //   ","redisDB":  = 12
+  //   <max 2 digits for 0..15> = 2
+  //   } = 1
+  //   NUL = 1
+  // Total = 14 + 19 + 12 + 2 + 1 + 1 = 49
+  size_t total = 49 + escaped_addr_len + escaped_pwd_len;
 
-    char *buf = ngx_palloc(pool, total);
-    if (buf == NULL) return NULL;
+  char *buf = ngx_palloc(pool, total);
+  if (buf == NULL) return NULL;
 
-    char *w = buf;
-    memcpy(w, "{\"redisAddr\":\"", 14); w += 14;
+  char *w = buf;
+  memcpy(w, "{\"redisAddr\":\"", 14);
+  w += 14;
 
-    // Escape addr
-    for (char *r = addr; *r; r++) {
-        if (*r == '"' || *r == '\\') *w++ = '\\';
-        *w++ = *r;
-    }
+  // Escape addr
+  for (char *r = addr; *r; r++) {
+    if (*r == '"' || *r == '\\') *w++ = '\\';
+    *w++ = *r;
+  }
 
-    memcpy(w, "\",\"redisPassword\":\"", 19); w += 19;
+  memcpy(w, "\",\"redisPassword\":\"", 19);
+  w += 19;
 
-    // Escape password
-    for (char *r = password; *r; r++) {
-        if (*r == '"' || *r == '\\') *w++ = '\\';
-        *w++ = *r;
-    }
+  // Escape password
+  for (char *r = password; *r; r++) {
+    if (*r == '"' || *r == '\\') *w++ = '\\';
+    *w++ = *r;
+  }
 
-    // Append redisDB
-    ngx_int_t db = lcf->cache_redis_db;
-    if (db < 0) db = 0;
-    int len = snprintf(w, total - (size_t)(w - buf), "\",\"redisDB\":%d}", (int)db);
-    if (len < 0) return NULL;
-    w += len;
-    *w = '\0';
+  // Append redisDB
+  ngx_int_t db = lcf->cache_redis_db;
+  if (db < 0) db = 0;
+  int len = snprintf(w, total - (size_t)(w - buf), "\",\"redisDB\":%d}", (int)db);
+  if (len < 0) return NULL;
+  w += len;
+  *w = '\0';
 
-    return buf;
+  return buf;
 }
 
 static char *ngx_str_to_cstr(ngx_str_t *input, ngx_pool_t *pool) {
@@ -719,7 +722,7 @@ static size_t mesi_json_uint_len(ngx_int_t v) {
 }
 
 static void mesi_json_write_uint(u_char **w, ngx_int_t v) {
-  u_char digits[20];  // ngx_int_t is at most 64-bit: 19 digits + sign
+  u_char digits[20]; // ngx_int_t is at most 64-bit: 19 digits + sign
   size_t n = 0;
   do {
     digits[n++] = (u_char)('0' + v % 10);
@@ -748,7 +751,7 @@ static size_t mesi_json_off_len(off_t v) {
 }
 
 static void mesi_json_write_off(u_char **w, off_t v) {
-  u_char digits[20];  // off_t is at most 64-bit: 19 digits + sign
+  u_char digits[20]; // off_t is at most 64-bit: 19 digits + sign
   size_t n = 0;
   do {
     digits[n++] = (u_char)('0' + v % 10);
@@ -839,7 +842,7 @@ static char *build_request_ctx_json(ngx_http_request_t *r, ngx_str_t *template,
       i = 0;
     }
     if (header[i].hash == 0) {
-      continue;  // skipped/hidden header entry
+      continue; // skipped/hidden header entry
     }
     if (header[i].key.len == 6 &&
         ngx_strncasecmp(header[i].key.data, (u_char *)"cookie", 6) == 0) {
@@ -944,7 +947,7 @@ static char *build_request_ctx_json(ngx_http_request_t *r, ngx_str_t *template,
     }
     if (header[i].key.len == 6 &&
         ngx_strncasecmp(header[i].key.data, (u_char *)"cookie", 6) == 0) {
-      continue;  // serialised in the cookies array below
+      continue; // serialised in the cookies array below
     }
     if (n_headers > 0) {
       *w++ = ',';
@@ -1109,7 +1112,7 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
   int has_tmpl = lcf->cache_key_template.len > 0;
   int has_ctx = has_tmpl && ctx_json != NULL && ctx_json[0] != '\0';
   const char *block_str = lcf->block_private_ips ? "true" : "false";
-  size_t block_len = lcf->block_private_ips ? 4 : 5;   // "true"/"false"
+  size_t block_len = lcf->block_private_ips ? 4 : 5; // "true"/"false"
   const char *bypass_str =
       lcf->allow_private_ips_for_allowed ? "true" : "false";
   size_t bypass_len = lcf->allow_private_ips_for_allowed ? 4 : 5;
@@ -1147,8 +1150,8 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
   if (has_ctx) {
     total += sizeof(pfx_ctx) - 1 + strlen(ctx_json);
   }
-  total += 1;  // '}'
-  total += 1;  // NUL
+  total += 1; // '}'
+  total += 1; // NUL
 
   char *buf = ngx_palloc(pool, total);
   if (buf == NULL) {
@@ -1227,24 +1230,24 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
 // (not a space) — forms a hostname token, so it is not whitespace here.
 static size_t ngx_http_mesi_unicode_space(const u_char *p, size_t len) {
   if (len >= 2 && p[0] == 0xc2 && (p[1] == 0x85 || p[1] == 0xa0)) {
-    return 2;  // U+0085 NEL, U+00A0 no-break space
+    return 2; // U+0085 NEL, U+00A0 no-break space
   }
   if (len >= 3 && p[0] == 0xe1 && p[1] == 0x9a && p[2] == 0x80) {
-    return 3;  // U+1680 ogham space mark
+    return 3; // U+1680 ogham space mark
   }
   if (len >= 3 && p[0] == 0xe2 && p[1] == 0x80 &&
-      ((p[2] >= 0x80 && p[2] <= 0x8a)  // U+2000..U+200A
-       || p[2] == 0xa8                 // U+2028 line separator
-       || p[2] == 0xa9                 // U+2029 paragraph separator
-       || p[2] == 0xaf))               // U+202F narrow no-break space
+      ((p[2] >= 0x80 && p[2] <= 0x8a) // U+2000..U+200A
+       || p[2] == 0xa8                // U+2028 line separator
+       || p[2] == 0xa9                // U+2029 paragraph separator
+       || p[2] == 0xaf))              // U+202F narrow no-break space
   {
     return 3;
   }
   if (len >= 3 && p[0] == 0xe2 && p[1] == 0x81 && p[2] == 0x9f) {
-    return 3;  // U+205F medium mathematical space
+    return 3; // U+205F medium mathematical space
   }
   if (len >= 3 && p[0] == 0xe3 && p[1] == 0x80 && p[2] == 0x80) {
-    return 3;  // U+3000 ideographic space
+    return 3; // U+3000 ideographic space
   }
   return 0;
 }
@@ -1470,7 +1473,7 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
       // placeholder — the same optimisation as the positional
       // ParseWithConfigCtx path below.
       char *ctx_json = build_request_ctx_json(r, &lcf->cache_key_template,
-                                               r->pool);
+                                              r->pool);
       char *parse_cfg_json =
           build_parse_json_config(lcf, max_depth, base_url_cstr, hosts_cstr,
                                   ctx_json, r->pool);
@@ -1774,11 +1777,11 @@ static void ngx_http_mesi_thread_exit(ngx_cycle_t *cycle) {
 static char *ngx_http_mesi_set_max_depth(ngx_conf_t *cf, ngx_command_t *cmd,
                                          void *conf) {
   ngx_http_mesi_loc_conf_t *lcf = conf;
-  ngx_str_t *value = cf->args->elts;  // value[0] = directive name (TAKE1)
+  ngx_str_t *value = cf->args->elts; // value[0] = directive name (TAKE1)
   ngx_int_t val = 0;
   size_t i;
 
-  (void)cmd;  // offset is informational; the setter writes lcf directly.
+  (void)cmd; // offset is informational; the setter writes lcf directly.
 
   // Reject a repeated directive in the same scope, matching the
   // "is duplicate" behaviour of the ngx_conf_set_*_slot setters used
@@ -1846,11 +1849,11 @@ static char *ngx_http_mesi_set_max_depth(ngx_conf_t *cf, ngx_command_t *cmd,
 static char *ngx_http_mesi_set_timeout(ngx_conf_t *cf, ngx_command_t *cmd,
                                        void *conf) {
   ngx_http_mesi_loc_conf_t *lcf = conf;
-  ngx_str_t *value = cf->args->elts;  // value[0] = directive name (TAKE1)
+  ngx_str_t *value = cf->args->elts; // value[0] = directive name (TAKE1)
   ngx_int_t val = 0;
   size_t i;
 
-  (void)cmd;  // offset is informational; the setter writes lcf directly.
+  (void)cmd; // offset is informational; the setter writes lcf directly.
 
   // Reject a repeated directive in the same scope, matching the
   // "is duplicate" behaviour of the ngx_conf_set_*_slot setters used
@@ -1936,11 +1939,11 @@ static char *ngx_http_mesi_set_max_response_size(ngx_conf_t *cf,
                                                  ngx_command_t *cmd,
                                                  void *conf) {
   ngx_http_mesi_loc_conf_t *lcf = conf;
-  ngx_str_t *value = cf->args->elts;  // value[0] = directive name (TAKE1)
+  ngx_str_t *value = cf->args->elts; // value[0] = directive name (TAKE1)
   off_t val = 0;
   size_t i;
 
-  (void)cmd;  // offset is informational; the setter writes lcf directly.
+  (void)cmd; // offset is informational; the setter writes lcf directly.
 
   // Reject a repeated directive in the same scope, matching the
   // "is duplicate" behaviour of the ngx_conf_set_*_slot setters used
@@ -2032,11 +2035,11 @@ static char *ngx_http_mesi_set_max_concurrent_requests(ngx_conf_t *cf,
                                                        ngx_command_t *cmd,
                                                        void *conf) {
   ngx_http_mesi_loc_conf_t *lcf = conf;
-  ngx_str_t *value = cf->args->elts;  // value[0] = directive name (TAKE1)
+  ngx_str_t *value = cf->args->elts; // value[0] = directive name (TAKE1)
   ngx_int_t val = 0;
   size_t i;
 
-  (void)cmd;  // offset is informational; the setter writes lcf directly.
+  (void)cmd; // offset is informational; the setter writes lcf directly.
 
   // Reject a repeated directive in the same scope, matching the
   // "is duplicate" behaviour of the ngx_conf_set_*_slot setters used
@@ -2125,11 +2128,11 @@ static char *ngx_http_mesi_set_max_concurrent_requests(ngx_conf_t *cf,
 static char *ngx_http_mesi_set_max_workers(ngx_conf_t *cf, ngx_command_t *cmd,
                                            void *conf) {
   ngx_http_mesi_loc_conf_t *lcf = conf;
-  ngx_str_t *value = cf->args->elts;  // value[0] = directive name (TAKE1)
+  ngx_str_t *value = cf->args->elts; // value[0] = directive name (TAKE1)
   ngx_int_t val = 0;
   size_t i;
 
-  (void)cmd;  // offset is informational; the setter writes lcf directly.
+  (void)cmd; // offset is informational; the setter writes lcf directly.
 
   // Reject a repeated directive in the same scope, matching the
   // "is duplicate" behaviour of the ngx_conf_set_*_slot setters used
@@ -2216,7 +2219,7 @@ static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
 }
 
 static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
-                                           void *child) {
+                                          void *child) {
   ngx_http_mesi_loc_conf_t *prev = parent;
   ngx_http_mesi_loc_conf_t *conf = child;
   ngx_conf_merge_value(conf->enable_mesi, prev->enable_mesi, 0);
@@ -2330,7 +2333,8 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
       if (tc < 0x20) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "\"mesi_cache_key_template\" must not contain "
-                           "control characters (found byte %d)", (int)tc);
+                           "control characters (found byte %d)",
+                           (int)tc);
         return NGX_CONF_ERROR;
       }
       if (tc == 0x7f) {
@@ -2364,7 +2368,7 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
       ws_width = ngx_http_mesi_unicode_space(&conf->allowed_hosts.data[i],
                                              conf->allowed_hosts.len - i);
       if (ws_width == 0) {
-        break;  // a non-whitespace rune: the value has a hostname token
+        break; // a non-whitespace rune: the value has a hostname token
       }
       i += ws_width;
     }

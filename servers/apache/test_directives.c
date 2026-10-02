@@ -18,12 +18,13 @@ static int tests_passed = 0;
 static int tests_failed = 0;
 
 #define TEST(name) static void test_##name()
-#define RUN_TEST(name) do { \
-    printf("  Testing %s... ", #name); \
-    test_##name(); \
-    printf("PASS\n"); \
-    tests_passed++; \
-} while(0)
+#define RUN_TEST(name)                     \
+    do {                                   \
+        printf("  Testing %s... ", #name); \
+        test_##name();                     \
+        printf("PASS\n");                  \
+        tests_passed++;                    \
+    } while (0)
 
 #define ASSERT_EQ(a, b) assert((a) == (b))
 #define ASSERT_STR_EQ(a, b) assert(strcmp((a), (b)) == 0)
@@ -144,22 +145,22 @@ static const char *parse_nonneg_int(apr_pool_t *pool_arg, const char *arg,
     while (*p == ' ' || *p == '\t') p++;
     if (*p == '\0') {
         return apr_psprintf(pool_arg,
-            "%s requires a non-negative integer argument", directive);
+                            "%s requires a non-negative integer argument", directive);
     }
     const char *digits = p;
     while (*p >= '0' && *p <= '9') p++;
     if (*p != '\0') {
         return apr_psprintf(pool_arg,
-            "%s must be a non-negative integer (got: %s)", directive, arg);
+                            "%s must be a non-negative integer (got: %s)", directive, arg);
     }
     if (digits == p) {
         return apr_psprintf(pool_arg,
-            "%s must contain at least one digit (got: %s)", directive, arg);
+                            "%s must contain at least one digit (got: %s)", directive, arg);
     }
     size_t n = (size_t)(p - digits);
     if (n > 9) {
         return apr_psprintf(pool_arg,
-            "%s value %s exceeds maximum allowed (%d)", directive, arg, max);
+                            "%s value %s exceeds maximum allowed (%d)", directive, arg, max);
     }
     long val = 0;
     for (size_t i = 0; i < n; i++) {
@@ -167,7 +168,7 @@ static const char *parse_nonneg_int(apr_pool_t *pool_arg, const char *arg,
     }
     if (val < min || val > max) {
         return apr_psprintf(pool_arg,
-            "%s value %s out of range [%d, %d]", directive, arg, min, max);
+                            "%s value %s out of range [%d, %d]", directive, arg, min, max);
     }
     *out = (int)val;
     return NULL;
@@ -183,29 +184,29 @@ static const char *parse_nonneg_int_bounded(apr_pool_t *pool_arg,
                                             int min, int max, int *out) {
     if (!arg || !end || arg >= end) {
         return apr_psprintf(pool_arg,
-            "%s requires a non-negative integer argument", directive);
+                            "%s requires a non-negative integer argument", directive);
     }
     const char *p = arg;
     while (p < end && (*p == ' ' || *p == '\t')) p++;
     if (p >= end) {
         return apr_psprintf(pool_arg,
-            "%s requires a non-negative integer argument", directive);
+                            "%s requires a non-negative integer argument", directive);
     }
     const char *digits = p;
     while (p < end && *p >= '0' && *p <= '9') p++;
     if (p != end) {
         return apr_psprintf(pool_arg,
-            "%s must be a non-negative integer (got: %.*s)",
-            directive, (int)(end - arg), arg);
+                            "%s must be a non-negative integer (got: %.*s)",
+                            directive, (int)(end - arg), arg);
     }
     if (digits == p) {
         return apr_psprintf(pool_arg,
-            "%s must contain at least one digit", directive);
+                            "%s must contain at least one digit", directive);
     }
     size_t n = (size_t)(p - digits);
     if (n > 9) {
         return apr_psprintf(pool_arg,
-            "%s value exceeds maximum allowed (%d)", directive, max);
+                            "%s value exceeds maximum allowed (%d)", directive, max);
     }
     long val = 0;
     for (size_t i = 0; i < n; i++) {
@@ -213,7 +214,7 @@ static const char *parse_nonneg_int_bounded(apr_pool_t *pool_arg,
     }
     if (val < min || val > max) {
         return apr_psprintf(pool_arg,
-            "%s value out of range [%d, %d]", directive, min, max);
+                            "%s value out of range [%d, %d]", directive, min, max);
     }
     *out = (int)val;
     return NULL;
@@ -266,32 +267,32 @@ static const char *parse_nonneg_off(apr_pool_t *pool_arg, const char *arg,
     while (*p == ' ' || *p == '\t') p++;
     if (*p == '\0') {
         return apr_psprintf(pool_arg,
-            "%s requires a non-negative integer argument", directive);
+                            "%s requires a non-negative integer argument", directive);
     }
     const char *digits = p;
     while (*p >= '0' && *p <= '9') p++;
     if (*p != '\0') {
         return apr_psprintf(pool_arg,
-            "%s must be a non-negative integer (got: %s)", directive, arg);
+                            "%s must be a non-negative integer (got: %s)", directive, arg);
     }
     if (digits == p) {
         return apr_psprintf(pool_arg,
-            "%s must contain at least one digit (got: %s)", directive, arg);
+                            "%s must contain at least one digit (got: %s)", directive, arg);
     }
     apr_off_t val = 0;
     for (const char *q = digits; q < p; q++) {
         apr_off_t d = (apr_off_t)(*q - '0');
         if (val > (max - d) / 10) {
             return apr_psprintf(pool_arg,
-                "%s value %s exceeds maximum allowed (%" APR_INT64_T_FMT ")",
-                directive, arg, (apr_int64_t)max);
+                                "%s value %s exceeds maximum allowed (%" APR_INT64_T_FMT ")",
+                                directive, arg, (apr_int64_t)max);
         }
         val = val * 10 + d;
     }
     if (val < min || val > max) {
         return apr_psprintf(pool_arg,
-            "%s value %s out of range [%" APR_INT64_T_FMT ", %" APR_INT64_T_FMT "]",
-            directive, arg, (apr_int64_t)min, (apr_int64_t)max);
+                            "%s value %s out of range [%" APR_INT64_T_FMT ", %" APR_INT64_T_FMT "]",
+                            directive, arg, (apr_int64_t)min, (apr_int64_t)max);
     }
     *out = val;
     return NULL;
@@ -376,9 +377,9 @@ static const char *set_cache_backend(mesi_config *conf, const char *arg) {
         return NULL;
     }
     return apr_psprintf(pool,
-        "MesiCacheBackend: unknown backend %s "
-        "(supported: \"memory\", \"redis\", \"memcached\", or empty)",
-        arg);
+                        "MesiCacheBackend: unknown backend %s "
+                        "(supported: \"memory\", \"redis\", \"memcached\", or empty)",
+                        arg);
 }
 
 static const char *set_cache_size(mesi_config *conf, const char *arg) {
@@ -418,21 +419,21 @@ static const char *set_cache_redis_addr(mesi_config *conf, const char *arg) {
         unsigned char c = (unsigned char)*p;
         if (c == ' ' || c == '\t' || c == '"' || c == '\\' || c < 0x20) {
             return apr_psprintf(pool,
-                "MesiCacheRedisAddr: invalid character %d in %s",
-                (int)c, arg);
+                                "MesiCacheRedisAddr: invalid character %d in %s",
+                                (int)c, arg);
         }
     }
     const char *colon = strrchr(arg, ':');
     if (!colon || colon == arg || *(colon + 1) == '\0') {
         return apr_psprintf(pool,
-            "MesiCacheRedisAddr: must be host:port (got: %s)", arg);
+                            "MesiCacheRedisAddr: must be host:port (got: %s)", arg);
     }
     int port = 0;
     const char *err = parse_nonneg_int(pool, colon + 1, "MesiCacheRedisAddr",
                                        1, 65535, &port);
     if (err) {
         return apr_psprintf(pool,
-            "MesiCacheRedisAddr: port invalid: %s", arg);
+                            "MesiCacheRedisAddr: port invalid: %s", arg);
     }
     conf->cache_redis_addr = apr_pstrdup(pool, arg);
     return NULL;
@@ -450,8 +451,8 @@ static const char *set_cache_redis_password(mesi_config *conf, const char *arg) 
         unsigned char c = (unsigned char)*p;
         if (c < 0x20) {
             return apr_psprintf(pool,
-                "MesiCacheRedisPassword: invalid control character 0x%02x in value",
-                (unsigned)c);
+                                "MesiCacheRedisPassword: invalid control character 0x%02x in value",
+                                (unsigned)c);
         }
     }
     conf->cache_redis_password = apr_pstrdup(pool, arg);
@@ -477,7 +478,10 @@ static const char *set_cache_redis_db(mesi_config *conf, const char *arg) {
  */
 static const char *set_cache_key_template(mesi_config *conf, const char *arg) {
     if (!arg) return "MesiCacheKeyTemplate requires an argument";
-    if (arg[0] == '\0') { conf->cache_key_template = NULL; return NULL; }
+    if (arg[0] == '\0') {
+        conf->cache_key_template = NULL;
+        return NULL;
+    }
     size_t len = strlen(arg);
     if (len > MESI_MAX_CACHE_KEY_TEMPLATE) return apr_psprintf(pool, "MesiCacheKeyTemplate exceeds maximum length %d (got %zu)", MESI_MAX_CACHE_KEY_TEMPLATE, len);
     for (const char *c = arg; *c; c++) {
@@ -494,7 +498,9 @@ static const char *set_cache_key_template(mesi_config *conf, const char *arg) {
         const char *r = arg;
         while (*r) {
             if (r[0] == '$' && r[1] == '$' && r[2] == '{') {
-                *w++ = '$'; *w++ = '{'; r += 3;
+                *w++ = '$';
+                *w++ = '{';
+                r += 3;
             } else {
                 *w++ = *r++;
             }
@@ -536,31 +542,34 @@ static const char *set_cache_memcached_servers(mesi_config *conf, const char *ar
         }
         if (has_invalid) {
             return apr_psprintf(pool,
-                "MesiCacheMemcachedServers: invalid character in entry %.*s",
-                (int)(arg - tok), tok);
+                                "MesiCacheMemcachedServers: invalid character in entry %.*s",
+                                (int)(arg - tok), tok);
         }
         const char *colon = NULL;
         for (const char *p = arg - 1; p >= tok; p--) {
-            if (*p == ':') { colon = p; break; }
+            if (*p == ':') {
+                colon = p;
+                break;
+            }
         }
         if (!colon || colon == tok || colon + 1 == arg) {
             return apr_psprintf(pool,
-                "MesiCacheMemcachedServers: entry must be host:port (got: %.*s)",
-                (int)(arg - tok), tok);
+                                "MesiCacheMemcachedServers: entry must be host:port (got: %.*s)",
+                                (int)(arg - tok), tok);
         }
         int port = 0;
         const char *err = parse_nonneg_int_bounded(pool, colon + 1, arg,
-                                                    "MesiCacheMemcachedServers",
-                                                    1, 65535, &port);
+                                                   "MesiCacheMemcachedServers",
+                                                   1, 65535, &port);
         if (err) {
             return apr_psprintf(pool,
-                "MesiCacheMemcachedServers: port invalid in %.*s",
-                (int)(arg - tok), tok);
+                                "MesiCacheMemcachedServers: port invalid in %.*s",
+                                (int)(arg - tok), tok);
         }
         if (count >= MESI_MAX_MEMCACHED_SERVERS) {
             return apr_psprintf(pool,
-                "MesiCacheMemcachedServers: too many entries (max %d)",
-                MESI_MAX_MEMCACHED_SERVERS);
+                                "MesiCacheMemcachedServers: too many entries (max %d)",
+                                MESI_MAX_MEMCACHED_SERVERS);
         }
         const char **slot = apr_array_push(conf->cache_memcached_servers);
         *slot = apr_pstrndup(pool, tok, arg - tok);
@@ -598,30 +607,32 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
     merged->allowed_hosts = (add->allowed_hosts->nelts > 0) ? add->allowed_hosts : base->allowed_hosts;
     merged->block_private_ips = (add->block_private_ips != -1) ? add->block_private_ips : base->block_private_ips;
     merged->allow_private_ips_for_allowed = (add->allow_private_ips_for_allowed != -1)
-        ? add->allow_private_ips_for_allowed : base->allow_private_ips_for_allowed;
+                                                ? add->allow_private_ips_for_allowed
+                                                : base->allow_private_ips_for_allowed;
     merged->shared_http_client = (add->shared_http_client != -1)
-        ? add->shared_http_client : base->shared_http_client;
+                                     ? add->shared_http_client
+                                     : base->shared_http_client;
     merged->cache_backend = (add->cache_backend && add->cache_backend[0] != '\0')
-                           ? add->cache_backend
-                           : base->cache_backend;
+                                ? add->cache_backend
+                                : base->cache_backend;
     merged->cache_size = (add->cache_size > 0) ? add->cache_size : base->cache_size;
     merged->cache_ttl = (add->cache_ttl >= 0) ? add->cache_ttl : base->cache_ttl;
     merged->cache_redis_addr = add->cache_redis_addr ? add->cache_redis_addr : base->cache_redis_addr;
     merged->cache_redis_password = add->cache_redis_password ? add->cache_redis_password : base->cache_redis_password;
     merged->cache_redis_db = (add->cache_redis_db >= 0) ? add->cache_redis_db : base->cache_redis_db;
     merged->cache_memcached_servers = (add->cache_memcached_servers->nelts > 0)
-                                      ? add->cache_memcached_servers
-                                      : base->cache_memcached_servers;
+                                          ? add->cache_memcached_servers
+                                          : base->cache_memcached_servers;
     merged->cache_key_template = add->cache_key_template ? add->cache_key_template : base->cache_key_template;
     merged->max_depth = (add->max_depth != -1) ? add->max_depth : base->max_depth;
     merged->timeout_seconds = (add->timeout_seconds != -1) ? add->timeout_seconds : base->timeout_seconds;
     merged->max_response_size = (add->max_response_size != -1) ? add->max_response_size : base->max_response_size;
     merged->max_concurrent_requests = (add->max_concurrent_requests != -1)
-        ? add->max_concurrent_requests
-        : base->max_concurrent_requests;
+                                          ? add->max_concurrent_requests
+                                          : base->max_concurrent_requests;
     merged->max_workers = (add->max_workers != -1)
-        ? add->max_workers
-        : base->max_workers;
+                              ? add->max_workers
+                              : base->max_workers;
 }
 
 /* Test cases */
@@ -1118,8 +1129,8 @@ TEST(merge_cache_backend_child_overrides) {
     init_config(&base);
     init_config(&add);
     init_config(&merged);
-    base.cache_backend = "";        /* parent has cache disabled */
-    add.cache_backend = "memory";   /* child opts in */
+    base.cache_backend = "";      /* parent has cache disabled */
+    add.cache_backend = "memory"; /* child opts in */
 
     merge_configs(&base, &add, &merged);
     ASSERT_STR_EQ(merged.cache_backend, "memory");
@@ -1156,7 +1167,7 @@ TEST(merge_cache_size_child_inherits) {
     init_config(&add);
     init_config(&merged);
     base.cache_size = 100;
-    add.cache_size = 0;  /* sentinel "unset" */
+    add.cache_size = 0; /* sentinel "unset" */
 
     merge_configs(&base, &add, &merged);
     ASSERT_EQ(merged.cache_size, 100);
@@ -1168,7 +1179,7 @@ TEST(merge_cache_ttl_child_overrides) {
     init_config(&add);
     init_config(&merged);
     base.cache_ttl = 30;
-    add.cache_ttl = 0;  /* explicit 0 = no expiry */
+    add.cache_ttl = 0; /* explicit 0 = no expiry */
 
     merge_configs(&base, &add, &merged);
     ASSERT_EQ(merged.cache_ttl, 0);
@@ -1180,7 +1191,7 @@ TEST(merge_cache_ttl_child_inherits) {
     init_config(&add);
     init_config(&merged);
     base.cache_ttl = 30;
-    add.cache_ttl = -1;  /* sentinel "unset" */
+    add.cache_ttl = -1; /* sentinel "unset" */
 
     merge_configs(&base, &add, &merged);
     ASSERT_EQ(merged.cache_ttl, 30);
@@ -1226,7 +1237,7 @@ TEST(redis_addr_empty_clears) {
      * set_cache_redis_addr() behavior. */
     mesi_config conf;
     init_config(&conf);
-    conf.cache_redis_addr = "10.0.0.5:6379";  // existing value
+    conf.cache_redis_addr = "10.0.0.5:6379"; // existing value
 
     ASSERT_NULL(set_cache_redis_addr(&conf, ""));
     ASSERT_NULL(conf.cache_redis_addr);
@@ -1567,7 +1578,7 @@ TEST(memcached_servers_multiple) {
     mesi_config conf;
     init_config(&conf);
     ASSERT_NULL(set_cache_memcached_servers(&conf,
-        "10.0.0.1:11211 10.0.0.2:11211 10.0.0.3:11211"));
+                                            "10.0.0.1:11211 10.0.0.2:11211 10.0.0.3:11211"));
     ASSERT_EQ(conf.cache_memcached_servers->nelts, 3);
     ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[0],
                   "10.0.0.1:11211");
@@ -1583,7 +1594,7 @@ TEST(memcached_servers_mixed_whitespace) {
     /* Tabs and spaces between entries; leading/trailing whitespace
      * silently trimmed (matches set_allowed_hosts behavior). */
     ASSERT_NULL(set_cache_memcached_servers(&conf,
-        "  host1:11211\thost2:11211  \thost3:11211"));
+                                            "  host1:11211\thost2:11211  \thost3:11211"));
     ASSERT_EQ(conf.cache_memcached_servers->nelts, 3);
 }
 
@@ -1818,93 +1829,113 @@ TEST(merge_memcached_servers_child_inherits) {
                   "10.0.0.1:11211");
 }
 
-
 /* --- MesiCacheKeyTemplate directive tests (#177) --- */
 TEST(cache_key_template_default_null) {
-    mesi_config conf; init_config(&conf);
+    mesi_config conf;
+    init_config(&conf);
     ASSERT_NULL(conf.cache_key_template);
 }
 TEST(cache_key_template_valid_simple) {
-    mesi_config conf; init_config(&conf);
+    mesi_config conf;
+    init_config(&conf);
     ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}"));
     ASSERT_NOT_NULL(conf.cache_key_template);
     ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}");
 }
 TEST(cache_key_template_with_header) {
-    mesi_config conf; init_config(&conf);
+    mesi_config conf;
+    init_config(&conf);
     ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${header:Accept-Language}"));
     ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${header:Accept-Language}");
 }
 TEST(cache_key_template_with_cookie) {
-    mesi_config conf; init_config(&conf);
+    mesi_config conf;
+    init_config(&conf);
     ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${cookie:segment}"));
     ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${cookie:segment}");
 }
 TEST(cache_key_template_with_both) {
-    mesi_config conf; init_config(&conf);
+    mesi_config conf;
+    init_config(&conf);
     ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${header:Accept-Language}:${cookie:segment}"));
     ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${header:Accept-Language}:${cookie:segment}");
 }
 TEST(cache_key_template_unknown_placeholder_literal) {
-    mesi_config conf; init_config(&conf);
+    mesi_config conf;
+    init_config(&conf);
     ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${unknown:foo}"));
     ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${unknown:foo}");
 }
 TEST(cache_key_template_empty_clears) {
-    mesi_config conf; init_config(&conf);
+    mesi_config conf;
+    init_config(&conf);
     conf.cache_key_template = "old";
     ASSERT_NULL(set_cache_key_template(&conf, ""));
     ASSERT_NULL(conf.cache_key_template);
 }
 TEST(cache_key_template_null_arg_rejected) {
-    mesi_config conf; init_config(&conf);
+    mesi_config conf;
+    init_config(&conf);
     const char *err = set_cache_key_template(&conf, NULL);
     ASSERT_NOT_NULL(err);
 }
 TEST(cache_key_template_control_rejected) {
-    mesi_config conf; init_config(&conf);
+    mesi_config conf;
+    init_config(&conf);
     const char *err = set_cache_key_template(&conf, "mesi:\001bad");
     ASSERT_NOT_NULL(err);
     ASSERT_STR_CONTAINS(err, "control");
 }
 TEST(cache_key_template_mangled_double_colon_rejected) {
-    mesi_config conf; init_config(&conf);
+    mesi_config conf;
+    init_config(&conf);
     const char *err = set_cache_key_template(&conf, "mesi::${header:X}");
     ASSERT_NOT_NULL(err);
     ASSERT_STR_CONTAINS(err, "AH00111");
 }
 TEST(cache_key_template_trailing_colon_rejected) {
-    mesi_config conf; init_config(&conf);
+    mesi_config conf;
+    init_config(&conf);
     const char *err = set_cache_key_template(&conf, "mesi:${header:X}:");
     ASSERT_NOT_NULL(err);
     ASSERT_STR_CONTAINS(err, "AH00111");
 }
 TEST(cache_key_template_escaped_dollar_accepted) {
-    mesi_config conf; init_config(&conf);
+    mesi_config conf;
+    init_config(&conf);
     ASSERT_NULL(set_cache_key_template(&conf, "mesi:${url}:${header:Accept-Language}"));
     ASSERT_STR_EQ(conf.cache_key_template, "mesi:${url}:${header:Accept-Language}");
 }
 TEST(cache_key_template_mid_position_accepted) {
-    mesi_config conf; init_config(&conf);
+    mesi_config conf;
+    init_config(&conf);
     ASSERT_NULL(set_cache_key_template(&conf, "mesi:${header:X}:${url}:${cookie:C}"));
     ASSERT_STR_EQ(conf.cache_key_template, "mesi:${header:X}:${url}:${cookie:C}");
 }
 TEST(cache_key_template_too_long_rejected) {
-    mesi_config conf; init_config(&conf);
-    char big[MESI_MAX_CACHE_KEY_TEMPLATE+10];
-    memset(big, 'a', sizeof(big)-1); big[sizeof(big)-1]='\0';
+    mesi_config conf;
+    init_config(&conf);
+    char big[MESI_MAX_CACHE_KEY_TEMPLATE + 10];
+    memset(big, 'a', sizeof(big) - 1);
+    big[sizeof(big) - 1] = '\0';
     const char *err = set_cache_key_template(&conf, big);
     ASSERT_NOT_NULL(err);
 }
 TEST(merge_cache_key_template_child_overrides) {
-    mesi_config base, add, merged; init_config(&base); init_config(&add); init_config(&merged);
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
     base.cache_key_template = "mesi:${url}";
     add.cache_key_template = "mesi:${url}:${header:X}";
     merge_configs(&base, &add, &merged);
     ASSERT_STR_EQ(merged.cache_key_template, "mesi:${url}:${header:X}");
 }
 TEST(merge_cache_key_template_child_inherits) {
-    mesi_config base, add, merged; init_config(&base); init_config(&add); init_config(&merged);
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
     base.cache_key_template = "mesi:${url}";
     add.cache_key_template = NULL;
     merge_configs(&base, &add, &merged);
@@ -3076,7 +3107,6 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_mw_child_inherits);
     RUN_TEST(merge_mw_child_zero_overrides);
     RUN_TEST(merge_mw_both_unset);
-
 
     apr_pool_destroy(pool);
 
