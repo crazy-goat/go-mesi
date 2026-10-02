@@ -3,6 +3,7 @@ package traefik
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -87,6 +88,16 @@ type Config struct {
 	// negative SILENTLY, with no warning at all (the open #456 —
 	// cited here, deliberately not fixed).
 	MaxWorkers int `json:"maxWorkers" yaml:"maxWorkers"`
+	// MaxBodySize limits the parent HTML body, in bytes, that is
+	// buffered for ESI processing (#538). 0 — the zero value and the
+	// absent option alike — is unlimited, byte-identical to the
+	// behaviour before #538. A negative value fails New().
+	MaxBodySize int64 `json:"maxBodySize" yaml:"maxBodySize"`
+	// OnOversize is what happens when the parent body is over
+	// MaxBodySize: "pass" (default, also when absent) sends it unchanged
+	// without ESI processing and logs a warning; "error" logs an error
+	// and answers 502. Any other value fails New().
+	OnOversize string `json:"onOversize" yaml:"onOversize"`
 }
 
 func CreateConfig() *Config {
@@ -109,6 +120,7 @@ type ResponsePlugin struct {
 	maxWorkers            int
 	sharedTransport       *http.Transport
 	closeFn               func() error
+	onOversize            middleware.OnOversize
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
@@ -142,6 +154,14 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		return nil, err
 	}
 
+	if config.MaxBodySize < 0 {
+		return nil, fmt.Errorf("invalid maxBodySize %d: value must not be negative (0 = unlimited)", config.MaxBodySize)
+	}
+	onOversize, err := middleware.ParseOnOversize(config.OnOversize)
+	if err != nil {
+		return nil, fmt.Errorf("invalid onOversize %q: must be %q or %q", config.OnOversize, middleware.OversizePass, middleware.OversizeError)
+	}
+
 	p := &ResponsePlugin{
 		next:                  next,
 		name:                  name,
@@ -150,6 +170,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		maxResponseSize:       maxResponseSize,
 		maxConcurrentRequests: maxConcurrentRequests,
 		maxWorkers:            maxWorkers,
+		onOversize:            onOversize,
 	}
 
 	if config.SharedHTTPClient {
@@ -394,6 +415,9 @@ func resolveMaxWorkers(v int) (int, error) {
 
 func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	customWriter := middleware.NewResponseWriter(rw)
+	if req.Method != http.MethodHead { // a HEAD Content-Length has no body behind it
+		customWriter.SetBodyLimit(p.config.MaxBodySize, p.onOversize, logOversize)
+	}
 
 	_, ok := req.Header["Surrogate-Capability"]
 	if !ok {
@@ -401,6 +425,10 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	p.next.ServeHTTP(customWriter, req)
+
+	if customWriter.HandleOversize() {
+		return
+	}
 
 	contentType := customWriter.Header().Get("Content-Type")
 
@@ -458,6 +486,14 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// Headers need no copy: customWriter shares rw's header map.
 	rw.WriteHeader(customWriter.StatusCode())
 	_, _ = rw.Write(customWriter.Body().Bytes())
+}
+
+func logOversize(mode middleware.OnOversize, limit, size int64) {
+	if mode == middleware.OversizeError {
+		log.Printf("mesi: parent body is over maxBodySize %d (size %d); answering 502 (onOversize error)", limit, size)
+		return
+	}
+	log.Printf("mesi: parent body is over maxBodySize %d (size %d); sending it unchanged without ESI processing (onOversize pass)", limit, size)
 }
 
 func (p *ResponsePlugin) maxDepth() int {

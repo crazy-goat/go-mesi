@@ -110,6 +110,27 @@ http:
           timeout: "2s"
 ```
 
+## Parent Body Size
+
+`maxBodySize` caps the **parent** HTML page, in bytes, that the plugin buffers before it runs ESI on it (#538). Without it a very large upstream response is held completely in memory. It is separate from `maxResponseSize`, which caps each include.
+
+- **Default / absent:** `0` = unlimited (the behaviour before #538).
+- **Scope:** only `text/html` responses are counted. `HEAD` requests are never limited.
+- **`onOversize: pass`** (default): the page is sent to the client unchanged, without ESI processing, and a warning is logged.
+- **`onOversize: error`**: an error is logged and the client gets `502 Bad Gateway`. The rest of the upstream body is read and dropped, not buffered.
+- If the upstream `Content-Length` is known and over the limit, the decision is made before anything is buffered; otherwise when the buffered size crosses the limit.
+- A negative `maxBodySize` or an unknown `onOversize` fails middleware creation.
+
+```yaml
+http:
+  middlewares:
+    my-mesi:
+      plugin:
+        mesi:
+          maxBodySize: 1048576 # 1 MiB parent page
+          onOversize: pass     # or: error
+```
+
 ## Response Size
 
 `maxResponseSize` caps the HTTP response body size, in bytes, of a single
@@ -420,6 +441,8 @@ http:
 | `maxResponseSize` | int64 | `0` (unlimited) | Per-include response body cap in **bytes** (per SINGLE include, not per page; over-limit includes fail closed through the include-error path — never truncated); range `[0, 9223372036854775806]`. Absent = unlimited (no implicit 10 MB). Negative / `MaxInt64` explicit values fail middleware creation; above-`int64` values fail the config decode (no silent default). |
 | `maxConcurrentRequests` | int | `0` (unlimited) | Concurrent `<esi:include>` fetch cap per **page render** (one `MESIParse` — not Traefik-global; each concurrent request's own parse builds its own semaphore, 4 workers × 5 → up to 20 outbound); range `[0, 999999999]`. Absent = unlimited. Includes beyond the cap **wait** for a slot (bounded by `timeout`), never dropped. Negative / `1000000000` explicit values fail middleware creation; non-integers / overflow fail the config decode (no silent default). Known core limitation: nested includes can reach cap × depth (#453) |
 | `maxWorkers` | int | `0` (`runtime.NumCPU()*4`) | Token-processing drain-pool cap per page-render parse/nesting level; each nested parse creates its own pool. Explicit `0` and absent both select the core library default (unlike `maxConcurrentRequests`, where `0` means unlimited); range `[0, 999999999]`. Negative values fail middleware creation rather than silently becoming the default (#456); over-cap values fail creation, decode-invalid values fail config loading. |
+| `maxBodySize` | int64 | `0` (unlimited) | Size cap in **bytes** for the **parent** HTML body that is buffered for ESI processing (#538); not the per-include `maxResponseSize`. Absent = unlimited. A negative value fails middleware creation. |
+| `onOversize` | string | `pass` | What happens when the parent body is over `maxBodySize`: `pass` sends it unchanged without ESI processing and logs a warning, `error` logs an error and answers `502 Bad Gateway`. Other values fail middleware creation. |
 | `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
 | `includeErrorMarker` | string | `""` | String rendered for failed includes (empty = silent) |
 | `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis`, `memcached` |

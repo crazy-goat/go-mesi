@@ -32,7 +32,7 @@ Support status of mESI features across all server integrations.
 | MaxWorkers | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | ParseOnHeader | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
 | Debug mode | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ |
-| MaxBodySize / OnOversize (parent body cap, `pass` or `error`, #537/#538) | — | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | — | ✅ |
+| MaxBodySize / OnOversize (parent body cap, `pass` or `error`, #537/#538) | — | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | — | ✅ |
 | Cache (in-memory) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Cache (Redis) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Cache (Memcached) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
