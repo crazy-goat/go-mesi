@@ -2235,7 +2235,8 @@ echo "=== Test 72: Proxied 5 MB HTML page is delivered in full and quickly (#483
 PROXY_OUT=$(curl -s --max-time 20 -o /tmp/mesi-proxy-big.html \
     -w '%{http_code} %{size_download}' \
     http://localhost:"$HTTP_PORT"/proxy-big/bytes/5242880) || true
-if [ "$PROXY_OUT" = "200 5242880" ]; then
+if [ "$PROXY_OUT" = "200 5242880" ] \
+    && grep -q "MesiBytesPayload 5242880" /tmp/mesi-proxy-big.html; then
     echo "PASS: proxied 5 MB page delivered in full ($PROXY_OUT)"
 else
     echo "FAIL: proxied 5 MB page not delivered in full within 20 s (got '$PROXY_OUT', expected '200 5242880')"
