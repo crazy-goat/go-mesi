@@ -27,3 +27,21 @@ for dir in php-ext servers/*/; do
     (cd "$dir" && docker compose down -v --remove-orphans) || true
   fi
 done
+
+# Remove the per-worktree suite images (see bin/worktree-setup.sh). Only images
+# named by an *_IMAGE variable of this worktree's .env.worktree are removed, and
+# never the default CI name, which the variable only overrides.
+if [[ -f .env.worktree ]]; then
+  while IFS='=' read -r name image; do
+    case "$name" in
+      *_IMAGE)
+        case "$image" in
+          *"-$COMPOSE_PROJECT_NAME")
+            echo "docker image rm: $image"
+            docker image rm "$image" >/dev/null 2>&1 || true
+            ;;
+        esac
+        ;;
+    esac
+  done <.env.worktree
+fi

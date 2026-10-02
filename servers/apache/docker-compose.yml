@@ -1,6 +1,6 @@
 services:
   apache:
-    image: go-mesi-apache-test
+    image: ${APACHE_IMAGE:-go-mesi-apache-test}
     build:
       context: ../..
       dockerfile: servers/apache/Dockerfile

@@ -79,6 +79,12 @@ Docker suites publish host ports from compose variables (`APACHE_HTTP_PORT`,
 `PHP_EXT_HTTP_PORT`, and `APACHE_PORT_8081` ... `APACHE_PORT_8095`). The defaults
 keep the old ports (18080 and 8081-8095). `bin/worktree.sh` writes free ports to
 `.env.worktree`; load it with `set -a && . ./.env.worktree && set +a`.
+Suite images with a fixed name (`go-mesi-apache-test`, `go-mesi-nginx-test`,
+`go-mesi-traefik-test` and `go-mesi-php-ext-test`; CI pre-builds the first three) are named `${APACHE_IMAGE:-...}` (and
+`NGINX_IMAGE`, `TRAEFIK_IMAGE`, `PHP_EXT_IMAGE`) in the compose files. `bin/worktree-setup.sh`
+writes a per-worktree tag for each into `.env.worktree`, so two worktrees never overwrite each
+other's image; `bin/worktree-teardown.sh` removes those tags. Without the variable (CI, main
+checkout) the old name is used. A new fixed `image:` needs the same `${NAME_IMAGE:-name}` form.
 All suites of one worktree share one `COMPOSE_PROJECT_NAME`, so run one Docker suite
 at a time per worktree. `bin/worktree-teardown.sh` stops every stack of the worktree (it loads `.env.worktree` and refuses to run without a project name).
 
