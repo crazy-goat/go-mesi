@@ -36,6 +36,8 @@ mesi-proxy --backend http://localhost:8081 --listen :8080
 | `--parse-on-header` | `false` | Only parse when `Edge-control: dca=esi` header is present |
 | `--block-private-ips` | `true` | Block private IP addresses in included URLs |
 | `--debug` | `false` | Enable debug logging |
+| `--max-body-size` | `0` | Max size in bytes of the parent HTML body buffered for ESI processing; `0` = unlimited (#538) |
+| `--on-oversize` | `pass` | When the body is over `--max-body-size`: `pass` sends it unchanged and logs a warning, `error` logs an error and answers `502 Bad Gateway` |
 | `--cache-backend` | `""` | Cache backend: `memory`, `redis`, `memcached` (default: off) |
 | `--cache-size` | `10000` | Max cache entries for memory backend |
 | `--cache-ttl` | `0` | Cache TTL (e.g. `30s`, `5m`); `0` = no expiry |
@@ -43,6 +45,10 @@ mesi-proxy --backend http://localhost:8081 --listen :8080
 | `--cache-redis-password` | `""` | Redis password |
 | `--cache-redis-db` | `0` | Redis database number |
 | `--cache-memcached-servers` | `""` | Comma-separated Memcached servers (host:port) |
+
+### Parent body limit
+
+`--max-body-size` bounds the HTML page that the proxy holds in memory before it runs ESI on it. It does not limit single includes. Only `text/html` responses are counted (with `--parse-on-header`, only those with `Edge-control: dca=esi`, because the others are not parsed). If the upstream `Content-Length` is over the limit the decision is made at once; otherwise it is made when the buffered size crosses the limit. In `pass` mode the part buffered so far and the rest are streamed to the client unchanged. In `error` mode the rest is read and dropped (not buffered) and the client gets `502 Bad Gateway`. `HEAD` requests are never limited. A negative size or an unknown mode makes the proxy exit at start-up.
 
 ## Docker
 

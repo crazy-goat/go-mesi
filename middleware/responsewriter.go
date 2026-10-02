@@ -53,6 +53,7 @@ type ResponseWriter struct {
 	// notify is called once when the limit is crossed. size is the
 	// Content-Length when it is known, otherwise the size reached so far.
 	notify    func(mode OnOversize, limit, size int64)
+	appliesTo func(h http.Header) bool
 	decided   bool // the first Write or WriteHeader has been looked at
 	watch     bool // the body is HTML and a limit is set
 	oversize  bool // the limit has been crossed
@@ -82,6 +83,14 @@ func (rw *ResponseWriter) SetBodyLimit(maxBody int64, mode OnOversize, notify fu
 	rw.notify = notify
 }
 
+// LimitOnlyIf narrows SetBodyLimit to responses the integration would run
+// ESI on: when fn returns false for the final response headers the body is
+// not counted. Without it every text/html response is limited. Call it
+// before the wrapped handler runs.
+func (rw *ResponseWriter) LimitOnlyIf(fn func(h http.Header) bool) {
+	rw.appliesTo = fn
+}
+
 func (rw *ResponseWriter) decide() {
 	if rw.decided {
 		return
@@ -91,6 +100,9 @@ func (rw *ResponseWriter) decide() {
 		return
 	}
 	if !strings.HasPrefix(rw.Header().Get("Content-Type"), "text/html") {
+		return
+	}
+	if rw.appliesTo != nil && !rw.appliesTo(rw.Header()) {
 		return
 	}
 	rw.watch = true
