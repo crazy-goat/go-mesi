@@ -224,37 +224,39 @@ echo "--- Error Handling ---"
 
 # Tests 16-18 also pin WHERE the message goes: stdout carries the parsed
 # page, so `mesi-cli <input> > out.html` must produce an empty out.html on
-# failure (#540). The unit tests in mesi-cli_test.go cover the per-branch
-# wording; these three prove it end to end through the real binary.
+# failure (#540). The unit tests in mesi-cli_test.go cover every branch; these
+# three prove the missing-argument, file-read and URL-fetch paths end to end
+# through the real binary. The pattern is the branch's own message, not a loose
+# "error", so a run that reached a different branch fails instead of passing.
 check_error_on_stderr() {
 	local label="$1" want="$2"
 	shift 2
 	local out err code
 	set +e
-	out=$("$CLI_BINARY" "$@" 2>/tmp/mesi-cli-stderr.txt)
+	out=$("$CLI_BINARY" "$@" 2>"$TEST_DIR/stderr.txt")
 	code=$?
 	set -e
-	err=$(cat /tmp/mesi-cli-stderr.txt)
-	rm -f /tmp/mesi-cli-stderr.txt
+	err=$(cat "$TEST_DIR/stderr.txt")
+	rm -f "$TEST_DIR/stderr.txt"
 	if [ "$code" -ne 1 ]; then
-		fail "$label" "exit=$code (expected 1)"
+		fail "$label" "exit=$code (expected 1) for: $*"
 	elif [ -n "$out" ]; then
 		fail "$label" "stdout not empty on an error path: $out"
-	elif ! echo "$err" | grep -qiE "$want"; then
-		fail "$label" "expected /$want/ on stderr, got: $err"
+	elif ! echo "$err" | grep -q "$want"; then
+		fail "$label" "expected /$want/ on stderr for: $*, got: $err"
 	else
 		pass "$label reported on stderr with empty stdout"
 	fi
 }
 
 echo "Test 16: Missing argument produces error message on stderr"
-check_error_on_stderr "Missing argument" "error.*missing|usage"
+check_error_on_stderr "Missing argument" "Missing file|url path argument"
 
 echo "Test 17: Nonexistent file produces error message on stderr"
-check_error_on_stderr "Nonexistent file" "error"
+check_error_on_stderr "Nonexistent file" "Error reading file" "/nonexistent/file.html"
 
 echo "Test 18: Bad URL produces error message on stderr"
-check_error_on_stderr "Bad URL" "error|refused|timeout|connection"
+check_error_on_stderr "Bad URL" "Error fetching url" "http://127.0.0.1:99999/"
 
 echo ""
 echo "--- Allowed Hosts Tests ---"
