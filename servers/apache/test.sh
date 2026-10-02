@@ -84,13 +84,13 @@ else
     echo "PASS: Include from non-allowed host blocked"
 fi
 
-echo "=== Test 6a: MesiAllowedHosts rejects whitespace-only values at config load (#358) ==="
+echo "=== Test 6a: MesiAllowedHosts rejects whitespace-only and quoted values at config load (#358, #532) ==="
 # A value that tokenizes to zero hostnames would silently become an empty
 # allowlist in libgomesi (strings.Fields) and allow every host (fail-open),
 # so `apache2 -t` must fail. -c applies the directive after the main
 # config, so mod_mesi is already loaded.
 check_allowed_hosts_config() {
-    local expect="$1" label="$2" value="$3" out
+    local expect="$1" label="$2" value="$3" msg="${4:-MesiAllowedHosts must contain at least one hostname}" out
     if out=$(docker compose exec -T apache sh -c '. /etc/apache2/envvars && exec apache2 -t -c "MesiAllowedHosts $1"' sh "$value" 2>&1); then
         if [ "$expect" = "reject" ]; then
             echo "FAIL: MesiAllowedHosts $label was accepted by apache2 -t"
@@ -100,7 +100,7 @@ check_allowed_hosts_config() {
         fi
         echo "PASS: MesiAllowedHosts $label accepted"
     else
-        if [ "$expect" = "accept" ] || ! echo "$out" | grep -q "MesiAllowedHosts must contain at least one hostname"; then
+        if [ "$expect" = "accept" ] || ! echo "$out" | grep -q "$msg"; then
             echo "FAIL: MesiAllowedHosts $label: unexpected apache2 -t result (expected $expect)"
             echo "Output: $out"
             docker compose down
@@ -113,6 +113,11 @@ check_allowed_hosts_config reject "ASCII whitespace only" $'  \t '
 check_allowed_hosts_config reject "U+00A0 only" $'\xc2\xa0'
 check_allowed_hosts_config reject "U+3000 and U+2028 only" $'\xe3\x80\x80 \xe2\x80\xa8'
 check_allowed_hosts_config accept "single hostname" "backend"
+# #532: the directive is RAW_ARGS, so Apache does not unquote it; a quoted
+# value used to store hosts with quote characters that never match.
+check_allowed_hosts_config reject "double-quoted list" '"backend other"' "quote characters are not allowed"
+check_allowed_hosts_config reject "single-quoted host" "'backend'" "quote characters are not allowed"
+check_allowed_hosts_config reject "partly quoted list" 'backend "other"' "quote characters are not allowed"
 check_allowed_hosts_config accept "hostnames with Unicode whitespace" $'\xc2\xa0backend other.example\xe3\x80\x80'
 
 echo "=== Test 6b: AllowPrivateIPsForAllowedHosts On - allowed private host succeeds (#168) ==="

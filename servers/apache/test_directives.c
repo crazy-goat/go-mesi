@@ -166,6 +166,15 @@ static const char *parse_allowed_hosts(mesi_config *conf, const char *arg) {
     if (!arg || !mesi_has_hostname_token(arg)) {
         return "MesiAllowedHosts must contain at least one hostname";
     }
+    // Reject quote characters (#532): the directive is AP_INIT_RAW_ARGS, so
+    // Apache does not unquote the line and `"backend other"` would store
+    // the hosts `"backend` and `other"`, which never match and silently
+    // block every include. Fail at config load instead; hosts are written
+    // unquoted, separated by spaces.
+    if (strchr(arg, '"') || strchr(arg, '\'')) {
+        return "MesiAllowedHosts: quote characters are not allowed in host names; "
+               "write the hosts unquoted, separated by spaces";
+    }
     while (*arg) {
         while (*arg && (*arg == ' ' || *arg == '\t')) arg++;
         host = arg;
@@ -804,6 +813,29 @@ TEST(whitespace_only_unicode) {
         const char *err = parse_allowed_hosts(&conf, values[i]);
 
         ASSERT_NOT_NULL(err);
+        ASSERT_EQ(conf.allowed_hosts->nelts, 0);
+    }
+}
+
+/* #532: the directive is RAW_ARGS, so quotes are not stripped by Apache;
+ * a quoted value is rejected instead of storing hosts with quote chars. */
+TEST(quoted_hostnames_rejected) {
+    const char *values[] = {
+        "\"backend\"",
+        "\"backend other\"",
+        "'backend'",
+        "backend \"other\"",
+        "backend 'other",
+        "\"",
+    };
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+        mesi_config conf;
+        init_config(&conf);
+
+        const char *err = parse_allowed_hosts(&conf, values[i]);
+
+        ASSERT_NOT_NULL(err);
+        ASSERT_STR_CONTAINS(err, "quote characters");
         ASSERT_EQ(conf.allowed_hosts->nelts, 0);
     }
 }
@@ -2994,6 +3026,7 @@ int main(int argc, char *argv[]) {
     RUN_TEST(whitespace_only_unicode);
     RUN_TEST(non_whitespace_runes_are_tokens);
     RUN_TEST(hostname_with_unicode_whitespace);
+    RUN_TEST(quoted_hostnames_rejected);
 
     printf("\nTesting set_block_private_ips():\n");
     RUN_TEST(block_private_on);
