@@ -1,3 +1,4 @@
+# hadolint ignore=DL3029 # amd64-only build, needs the platform pinned
 FROM --platform=linux/amd64 ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive

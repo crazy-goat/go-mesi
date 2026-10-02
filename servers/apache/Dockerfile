@@ -1,3 +1,4 @@
+# hadolint ignore=DL3029 # amd64-only build, needs the platform pinned
 FROM --platform=linux/amd64 ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -15,6 +16,7 @@ ARG GO_VERSION=1.23.0
 ARG GO_SHA256=905a297f19ead44780548933e0ff1a1b86e8327bb459e92f9c0012569f76f5e3
 ARG TARGETARCH
 
+# hadolint ignore=DL4006 # test image; a failed pipe fails the following checksum step
 RUN set -eux; \
     arch="${TARGETARCH:-amd64}"; \
     url="https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz"; \

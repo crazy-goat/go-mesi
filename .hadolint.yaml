@@ -1,25 +1,18 @@
 # hadolint configuration, used by bin/lint.sh.
 #
 # The Dockerfiles in this repository are test and build images, not
-# production images. The rules below ignore image-hygiene findings that
-# would need behavioural changes in images that only the Docker integration
-# suites exercise. Fixing them is tracked as a follow-up; every other rule
-# stays active.
+# production images. The rules below are ignored for all of them because
+# they match many lines and fixing them would change images that only the
+# Docker integration suites exercise. Fixing them is a follow-up; every
+# other rule stays active. One-off cases use inline `# hadolint ignore=`.
 ignored:
   # Pinning apt/apk packages and `go install` versions: test images track
   # the distribution; pinning needs a refresh process first.
   - DL3008
   - DL3018
   - DL3062
-  # Unpinned base images (`traefik:latest`, `alpine`) are intentional in tests.
-  - DL3006
-  - DL3007
   # `cd` in a RUN chain instead of WORKDIR; the chains are multi-step builds.
   - DL3003
-  # `FROM --platform=linux/amd64` is needed to build the amd64-only module.
-  - DL3029
-  # Style: consecutive RUN, recommends, wget progress, pipefail in builds.
+  # Style: no-install-recommends and wget progress output in test images.
   - DL3015
-  - DL3059
   - DL3047
-  - DL4006

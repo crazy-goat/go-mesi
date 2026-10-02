@@ -59,7 +59,8 @@ jobs:
 
       - name: Install clang-format
         run: |
-          pip install --user clang-format==23.1.2
+          pipx install clang-format==23.1.2
+          pipx ensurepath
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Download Go module dependencies
