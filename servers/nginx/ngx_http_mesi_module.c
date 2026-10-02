@@ -155,6 +155,7 @@ typedef struct {
 
 typedef struct {
   ngx_str_t accumulated;
+  size_t capacity; // bytes allocated at accumulated.data (>= accumulated.len)
   ngx_flag_t done;
 } ngx_http_html_head_filter_ctx_t;
 
@@ -402,9 +403,15 @@ static ngx_int_t ngx_http_html_mesi_head_filter(ngx_http_request_t *r) {
     }
     ctx->accumulated.len = 0;
     ctx->accumulated.data = NULL;
+    ctx->capacity = 0;
     ctx->done = 0;
     ngx_http_set_ctx(r, ctx, ngx_http_mesi_module);
   }
+
+  // The body filter copies bytes from buf->pos, so file-backed bufs
+  // (sendfile, proxy temp files) must be read into memory by the copy
+  // filter before they reach it.
+  r->filter_need_in_memory = 1;
 
   if (r == r->main) { /* Main request */
 
@@ -435,22 +442,46 @@ static ngx_int_t ngx_http_html_mesi_body_filter(ngx_http_request_t *r,
 
   for (cl = in; cl; cl = cl->next) {
     buf = cl->buf;
-    if (ngx_buf_size(buf) > 0 && !ctx->done) {
+    size_t size = ngx_buf_size(buf);
+    if (size > 0 && !ctx->done) {
       size_t old_len = ctx->accumulated.len;
-      size_t new_len = old_len + ngx_buf_size(buf);
+      size_t new_len = old_len + size;
 
-      u_char *new_data = ngx_palloc(r->pool, new_len);
-      if (new_data == NULL) {
-        return NGX_ERROR;
+      // Grow geometrically so a body split into many bufs is copied
+      // O(n) times in total, not O(n^2) (#483).
+      if (new_len > ctx->capacity) {
+        size_t new_cap = ctx->capacity ? ctx->capacity : ngx_pagesize;
+        while (new_cap < new_len) {
+          new_cap *= 2;
+        }
+
+        u_char *new_data = ngx_palloc(r->pool, new_cap);
+        if (new_data == NULL) {
+          return NGX_ERROR;
+        }
+
+        if (ctx->accumulated.data) {
+          ngx_memcpy(new_data, ctx->accumulated.data, old_len);
+          // Only large pool allocations are really freed; small ones
+          // return NGX_DECLINED and stay until the pool is destroyed.
+          ngx_pfree(r->pool, ctx->accumulated.data);
+        }
+
+        ctx->accumulated.data = new_data;
+        ctx->capacity = new_cap;
       }
 
-      if (ctx->accumulated.data) {
-        ngx_memcpy(new_data, ctx->accumulated.data, old_len);
-      }
-      ngx_memcpy(new_data + old_len, buf->pos, ngx_buf_size(buf));
-
-      ctx->accumulated.data = new_data;
+      ngx_memcpy(ctx->accumulated.data + old_len, buf->pos, size);
       ctx->accumulated.len = new_len;
+    }
+
+    // Mark the buf consumed. The upstream module only reuses a proxy
+    // buffer once the filters have drained it; leaving pos untouched
+    // made a proxied body larger than proxy_buffers stall until
+    // proxy_read_timeout and end with an empty reply (#483).
+    buf->pos = buf->last;
+    if (buf->in_file) {
+      buf->file_pos = buf->file_last;
     }
 
     if (buf->last_buf && !ctx->done) {
