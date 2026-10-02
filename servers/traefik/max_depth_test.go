@@ -65,14 +65,14 @@ func TestServeHTTPMaxDepthZeroPassthrough(t *testing.T) {
 	frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fragmentCalls++
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fragment"))
+		_, _ = w.Write([]byte("fragment"))
 	}))
 	defer frag.Close()
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><esi:include src="` + frag.URL + `/frag" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + frag.URL + `/frag" /></body></html>`))
 	})
 
 	p, err := New(context.Background(), next, &Config{MaxDepth: intPtr(0)}, "test")

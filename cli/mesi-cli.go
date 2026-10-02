@@ -3,11 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/bradfitz/gomemcache/memcache"
-	"github.com/crazy-goat/go-mesi/mesi"
-	"github.com/crazy-goat/go-mesi/mesi/cache_memcached"
-	"github.com/crazy-goat/go-mesi/mesi/cache_redis"
-	"github.com/redis/go-redis/v9"
 	"io"
 	"log"
 	"math"
@@ -16,6 +11,12 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/bradfitz/gomemcache/memcache"
+	"github.com/crazy-goat/go-mesi/mesi"
+	"github.com/crazy-goat/go-mesi/mesi/cache_memcached"
+	"github.com/crazy-goat/go-mesi/mesi/cache_redis"
+	"github.com/redis/go-redis/v9"
 )
 
 func isURL(input string) bool {

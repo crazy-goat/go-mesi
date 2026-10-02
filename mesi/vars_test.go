@@ -157,8 +157,8 @@ func TestParseVarsBlock(t *testing.T) {
 			expected: map[string]string{},
 		},
 		{
-			name:     "vars with whitespace",
-			input:    `<esi:vars>
+			name: "vars with whitespace",
+			input: `<esi:vars>
 	<esi:variable name="FOO" value="bar"/>
 </esi:vars>`,
 			expected: map[string]string{"FOO": "bar"},
@@ -211,8 +211,8 @@ Hello $(USER)!`,
 			expected: "\nHello Alice!",
 		},
 		{
-			name: "vars block produces no output",
-			input: `<esi:vars><esi:variable name="X" value="1"/></esi:vars>content`,
+			name:     "vars block produces no output",
+			input:    `<esi:vars><esi:variable name="X" value="1"/></esi:vars>content`,
 			config:   CreateDefaultConfig(),
 			expected: "content",
 		},
@@ -238,7 +238,7 @@ $(A) $(B)`,
 			expected: "\n",
 		},
 		{
-			name: "no variables defined",
+			name:     "no variables defined",
 			input:    `$(NOTHING)`,
 			config:   CreateDefaultConfig(),
 			expected: "",
@@ -358,7 +358,7 @@ func TestMESIParseVarsAndTemplatedURL(t *testing.T) {
 	config.BlockPrivateIPs = false
 	config.DefaultUrl = server.URL + "/"
 	config.Variables = map[string]string{
-		"BASE":   server.URL,
+		"BASE":    server.URL,
 		"SEGMENT": "data",
 	}
 

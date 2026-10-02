@@ -33,7 +33,7 @@ func TestNewProxy_InvalidBackendURL(t *testing.T) {
 func TestProxy_ContentTypeGating_HTMLProcessed(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte("Hello <!--esi World-->"))
+		_, _ = w.Write([]byte("Hello <!--esi World-->"))
 	}))
 	defer backend.Close()
 
@@ -61,7 +61,7 @@ func TestProxy_ContentTypeGating_HTMLProcessed(t *testing.T) {
 func TestProxy_ContentTypeGating_NonHTMLPassthrough(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("<esi:include src=\"http://example.com/test\"/>"))
+		_, _ = w.Write([]byte("<esi:include src=\"http://example.com/test\"/>"))
 	}))
 	defer backend.Close()
 
@@ -85,7 +85,7 @@ func TestProxy_ContentTypeGating_NonHTMLPassthrough(t *testing.T) {
 func TestProxy_ContentTypeGating_HTMLPassthroughOnNonEsi(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte("<html><body>no esi here</body></html>"))
+		_, _ = w.Write([]byte("<html><body>no esi here</body></html>"))
 	}))
 	defer backend.Close()
 
@@ -110,7 +110,7 @@ func TestProxy_ParseOnHeader_WithEdgeControl(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Edge-control", "dca=esi")
-		w.Write([]byte("Hello <!--esi World-->"))
+		_, _ = w.Write([]byte("Hello <!--esi World-->"))
 	}))
 	defer backend.Close()
 
@@ -138,7 +138,7 @@ func TestProxy_ParseOnHeader_WithEdgeControl(t *testing.T) {
 func TestProxy_ParseOnHeader_WithoutEdgeControl(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte("Hello <!--esi World-->"))
+		_, _ = w.Write([]byte("Hello <!--esi World-->"))
 	}))
 	defer backend.Close()
 
@@ -165,7 +165,7 @@ func TestProxy_SurrogateCapabilityHeader_Injected(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedHeaders = r.Header
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer backend.Close()
 
@@ -189,7 +189,7 @@ func TestProxy_SurrogateCapabilityHeader_NotOverwritten(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedHeaders = r.Header
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer backend.Close()
 
@@ -212,7 +212,7 @@ func TestProxy_SurrogateCapabilityHeader_NotOverwritten(t *testing.T) {
 func TestProxy_SurrogateControlHeader_InResponse(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer backend.Close()
 
@@ -236,7 +236,7 @@ func TestProxy_ContentLength_Recalculated(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html")
 		original := "Hello <!--esi World-->"
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(original)))
-		w.Write([]byte(original))
+		_, _ = w.Write([]byte(original))
 	}))
 	defer backend.Close()
 
@@ -272,7 +272,7 @@ func TestProxy_ContentLength_NonHTMLPreserved(t *testing.T) {
 		w.Header().Set("Content-Type", "text/plain")
 		body := "<esi:include src=\"http://example.com/test\"/>"
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-		w.Write([]byte(body))
+		_, _ = w.Write([]byte(body))
 	}))
 	defer backend.Close()
 
@@ -310,16 +310,16 @@ func TestProxy_ErrorStatus_Passthrough(t *testing.T) {
 			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/html")
 				w.WriteHeader(tt.code)
-				w.Write([]byte(tt.name))
+				_, _ = w.Write([]byte(tt.name))
 			}))
 			defer backend.Close()
 
 			config := mesi.CreateDefaultConfig()
 			config.Timeout = 5 * time.Second
 			proxy, err := NewProxy(backend.URL, config)
-	if err != nil {
-		t.Fatal(err)
-	}
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			req := httptest.NewRequest("GET", "/test", nil)
 			rec := httptest.NewRecorder()
@@ -336,7 +336,7 @@ func TestProxy_OriginalHeaders_Preserved(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("X-Custom-Header", "custom-value")
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer backend.Close()
 
@@ -358,7 +358,7 @@ func TestProxy_OriginalHeaders_Preserved(t *testing.T) {
 func TestProxy_DefaultUrl_SetFromHost(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer backend.Close()
 
@@ -413,7 +413,7 @@ func TestProxy_ConfigPreserved(t *testing.T) {
 func TestProxy_NoSurrogateControlOnNonHTML(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("plain text"))
+		_, _ = w.Write([]byte("plain text"))
 	}))
 	defer backend.Close()
 

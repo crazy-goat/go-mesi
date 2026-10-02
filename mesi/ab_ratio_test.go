@@ -8,10 +8,10 @@ import (
 
 func TestParseABValidRatio(t *testing.T) {
 	cases := []struct {
-		name   string
-		ratio  string
-		wantA  uint64
-		wantB  uint64
+		name  string
+		ratio string
+		wantA uint64
+		wantB uint64
 	}{
 		{"typical 70:30", "70:30", 70, 30},
 		{"trivial 50:50", "50:50", 50, 50},

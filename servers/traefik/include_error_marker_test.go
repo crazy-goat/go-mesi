@@ -48,7 +48,7 @@ func TestIncludeErrorMarkerServeHTTP(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><esi:include src="` + backend.URL + `/missing" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + backend.URL + `/missing" /></body></html>`))
 	})
 
 	config := CreateConfig()
@@ -74,7 +74,7 @@ func TestIncludeErrorMarkerNotRenderedOnSuccess(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body>no esi tags</body></html>`))
+		_, _ = w.Write([]byte(`<html><body>no esi tags</body></html>`))
 	})
 
 	config := CreateConfig()
@@ -105,7 +105,7 @@ func TestIncludeErrorMarkerEmptyString(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><esi:include src="` + backend.URL + `/missing" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + backend.URL + `/missing" /></body></html>`))
 	})
 
 	config := CreateConfig()

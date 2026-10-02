@@ -111,7 +111,7 @@ func initCacheClient(config mesi.EsiParserConfig, backend string, size int, ttl 
 		})
 		config.Cache = cache_redis.NewRedisCache(rdb, ttl)
 		config.CacheTTL = ttl
-		return config, func() { rdb.Close() }, nil
+		return config, func() { _ = rdb.Close() }, nil
 	default:
 		// For memory, memcached, and empty — no client lifecycle needed.
 		cfg, err := initCache(config, backend, size, ttl, redisAddr, redisPassword, redisDB, memcachedServers)

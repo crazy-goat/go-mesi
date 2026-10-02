@@ -192,7 +192,7 @@ func mcrFragmentServer(g *mcrGauge, hold time.Duration) *httptest.Server {
 		defer g.leave()
 		time.Sleep(hold)
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte("HELD-FRAG" + strings.TrimPrefix(r.URL.Path, "/hold/") + " Held"))
+		_, _ = w.Write([]byte("HELD-FRAG" + strings.TrimPrefix(r.URL.Path, "/hold/") + " Held"))
 	}))
 }
 
@@ -212,7 +212,7 @@ func mcrPage(frag *httptest.Server, n int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(body))
+		_, _ = w.Write([]byte(body))
 	}
 }
 

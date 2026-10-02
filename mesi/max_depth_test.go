@@ -175,13 +175,13 @@ func TestOverrideConfigAcceptsValidMaxDepth(t *testing.T) {
 		tokenVal  string
 		wantAfter uint
 	}{
-		{"parent unchanged when override wider", 5, "10", 5},       // 10+1=11 > 5, parent retained
-		{"parent unchanged when override equal", 5, "4", 5},        // 4+1=5 == 5, ">" branch false
+		{"parent unchanged when override wider", 5, "10", 5}, // 10+1=11 > 5, parent retained
+		{"parent unchanged when override equal", 5, "4", 5},  // 4+1=5 == 5, ">" branch false
 		{"parent clamped tighter to 2+1=3", 5, "2", 3},
-		{"max accepted boundary clamps to 10001", 5, "10000", 5},  // 10000+1=10001 > 5, parent retained
+		{"max accepted boundary clamps to 10001", 5, "10000", 5}, // 10000+1=10001 > 5, parent retained
 		{"parent clamped to depth+1=2 for depth=1", 3, "1", 2},
-		{"max-depth=0 reduces parent to depth+1=1", 4, "0", 1},     // historical "one more level" semantics
-		{"with whitespace", 3, "  2  ", 3},                          // 2+1=3 == 3 keeps parent
+		{"max-depth=0 reduces parent to depth+1=1", 4, "0", 1}, // historical "one more level" semantics
+		{"with whitespace", 3, "  2  ", 3},                     // 2+1=3 == 3 keeps parent
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

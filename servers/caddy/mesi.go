@@ -303,11 +303,11 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 			w.Header()[k] = v
 		}
 		w.WriteHeader(customWriter.StatusCode())
-		w.Write([]byte(processedResponse))
+		_, _ = w.Write([]byte(processedResponse))
 	} else {
 		w.Header().Set("Content-Length", strconv.Itoa(customWriter.Body().Len()))
 		w.WriteHeader(customWriter.StatusCode())
-		w.Write(customWriter.Body().Bytes())
+		_, _ = w.Write(customWriter.Body().Bytes())
 	}
 
 	return nil

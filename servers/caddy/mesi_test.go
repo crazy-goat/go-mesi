@@ -128,7 +128,7 @@ func TestServeHTTPWithSharedClient(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body><esi:include src=\"/fragment\" /></body></html>"))
+		_, _ = w.Write([]byte("<html><body><esi:include src=\"/fragment\" /></body></html>"))
 		return nil
 	})
 
@@ -157,7 +157,7 @@ func TestServeHTTPWithoutSharedClient(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>no esi</body></html>"))
+		_, _ = w.Write([]byte("<html><body>no esi</body></html>"))
 		return nil
 	})
 
@@ -184,7 +184,7 @@ func TestNonHTMLContentType(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 		return nil
 	})
 
@@ -259,8 +259,8 @@ func TestSharedTransportImplementsRoundTripper(t *testing.T) {
 		t.Fatalf("Provision() returned error: %v", err)
 	}
 
-	var rt http.RoundTripper = m.sharedTransport
-	if rt == nil {
+	var _ http.RoundTripper = m.sharedTransport
+	if m.sharedTransport == nil {
 		t.Error("sharedTransport should implement http.RoundTripper")
 	}
 }
@@ -379,7 +379,7 @@ func TestCacheBackendServeHTTP(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>cached content</body></html>"))
+		_, _ = w.Write([]byte("<html><body>cached content</body></html>"))
 		return nil
 	})
 
@@ -412,7 +412,7 @@ func TestCacheBackendServeHTTPNoCache(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>no cache</body></html>"))
+		_, _ = w.Write([]byte("<html><body>no cache</body></html>"))
 		return nil
 	})
 
@@ -621,7 +621,7 @@ func TestCacheKeyTemplateDefaultAbsent(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>no template</body></html>"))
+		_, _ = w.Write([]byte("<html><body>no template</body></html>"))
 		return nil
 	})
 
@@ -655,7 +655,7 @@ func TestCacheKeyTemplateUrlSubstitution(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html")
 		// Return non-ESI content to avoid real network fetch
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>content</body></html>"))
+		_, _ = w.Write([]byte("<html><body>content</body></html>"))
 		return nil
 	})
 
@@ -685,7 +685,7 @@ func TestCacheKeyTemplateSubstitutesHeaders(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>content</body></html>"))
+		_, _ = w.Write([]byte("<html><body>content</body></html>"))
 		return nil
 	})
 
@@ -716,7 +716,7 @@ func TestCacheKeyTemplateSubstitutesCookies(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>content</body></html>"))
+		_, _ = w.Write([]byte("<html><body>content</body></html>"))
 		return nil
 	})
 
@@ -747,7 +747,7 @@ func TestCacheKeyTemplateUnknownPlaceholder(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>content</body></html>"))
+		_, _ = w.Write([]byte("<html><body>content</body></html>"))
 		return nil
 	})
 
@@ -778,7 +778,7 @@ func TestCacheKeyTemplateWithoutCacheBackend(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>no cache</body></html>"))
+		_, _ = w.Write([]byte("<html><body>no cache</body></html>"))
 		return nil
 	})
 
@@ -808,7 +808,7 @@ func TestCacheKeyTemplateComplexPattern(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>complex template</body></html>"))
+		_, _ = w.Write([]byte("<html><body>complex template</body></html>"))
 		return nil
 	})
 
@@ -1098,7 +1098,7 @@ func TestRedisBackendServeHTTP(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>redis cached</body></html>"))
+		_, _ = w.Write([]byte("<html><body>redis cached</body></html>"))
 		return nil
 	})
 
@@ -1316,7 +1316,7 @@ func TestMemcachedBackendServeHTTP(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>memcached cached</body></html>"))
+		_, _ = w.Write([]byte("<html><body>memcached cached</body></html>"))
 		return nil
 	})
 
@@ -1496,7 +1496,7 @@ func TestMaxDepthDefaultUnset(t *testing.T) {
 	// ServeHTTP with ESI content should use default depth 5
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fragment"))
+		_, _ = w.Write([]byte("fragment"))
 	}))
 	defer fragmentServer.Close()
 
@@ -1504,7 +1504,7 @@ func TestMaxDepthDefaultUnset(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -1532,7 +1532,7 @@ func TestMaxDepthPassthrough(t *testing.T) {
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fragmentCallCount++
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fragment"))
+		_, _ = w.Write([]byte("fragment"))
 	}))
 	defer fragmentServer.Close()
 
@@ -1540,7 +1540,7 @@ func TestMaxDepthPassthrough(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -1573,13 +1573,13 @@ func TestMaxDepthExplicit(t *testing.T) {
 	// Fragment returns another ESI include (2 levels deep)
 	innerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("inner"))
+		_, _ = w.Write([]byte("inner"))
 	}))
 	defer innerServer.Close()
 
 	outerFragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<esi:include src="` + innerServer.URL + `/inner" />`))
+		_, _ = w.Write([]byte(`<esi:include src="` + innerServer.URL + `/inner" />`))
 	}))
 	defer outerFragmentServer.Close()
 
@@ -1587,7 +1587,7 @@ func TestMaxDepthExplicit(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -1663,7 +1663,7 @@ func TestMaxDepthIntegrationZeroPassthrough(t *testing.T) {
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fragmentCallCount++
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fragment"))
+		_, _ = w.Write([]byte("fragment"))
 	}))
 	defer fragmentServer.Close()
 
@@ -1671,7 +1671,7 @@ func TestMaxDepthIntegrationZeroPassthrough(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -1804,7 +1804,7 @@ func TestTimeoutServeHTTP(t *testing.T) {
 
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fragment"))
+		_, _ = w.Write([]byte("fragment"))
 	}))
 	defer fragmentServer.Close()
 
@@ -1812,7 +1812,7 @@ func TestTimeoutServeHTTP(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -1976,7 +1976,7 @@ func TestIncludeErrorMarkerServeHTTP(t *testing.T) {
 
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("fragment"))
+		_, _ = w.Write([]byte("fragment"))
 	}))
 	defer fragmentServer.Close()
 
@@ -1984,7 +1984,7 @@ func TestIncludeErrorMarkerServeHTTP(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -2103,7 +2103,7 @@ func TestDebugServeHTTP(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>debug test</body></html>"))
+		_, _ = w.Write([]byte("<html><body>debug test</body></html>"))
 		return nil
 	})
 
@@ -2265,7 +2265,7 @@ func TestAllowedHostsServeHTTP(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>allowed hosts test</body></html>"))
+		_, _ = w.Write([]byte("<html><body>allowed hosts test</body></html>"))
 		return nil
 	})
 
@@ -2440,7 +2440,7 @@ func TestMaxConcurrentRequestsServeHTTP(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>concurrent test</body></html>"))
+		_, _ = w.Write([]byte("<html><body>concurrent test</body></html>"))
 		return nil
 	})
 
@@ -2533,7 +2533,7 @@ func TestMaxConcurrentRequestsIntegrationLimitsConcurrency(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		atomic.AddInt32(&currentConcurrent, -1)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer fragmentServer.Close()
 
@@ -2547,7 +2547,7 @@ func TestMaxConcurrentRequestsIntegrationLimitsConcurrency(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(esiContent))
+		_, _ = w.Write([]byte(esiContent))
 		return nil
 	})
 
@@ -2785,7 +2785,7 @@ func TestMaxWorkersServeHTTP(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>max workers test</body></html>"))
+		_, _ = w.Write([]byte("<html><body>max workers test</body></html>"))
 		return nil
 	})
 
@@ -2907,14 +2907,14 @@ func TestMaxResponseSizeDefaultUnsetAllowsOverTenMB(t *testing.T) {
 	payload := "MesiPayload" + strings.Repeat("x", 10*1024*1024+1)
 	fragmentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(payload))
+		_, _ = w.Write([]byte(payload))
 	}))
 	defer fragmentServer.Close()
 
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><esi:include src="` + fragmentServer.URL + `/frag" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + fragmentServer.URL + `/frag" /></body></html>`))
 		return nil
 	})
 
@@ -3044,7 +3044,7 @@ func TestMaxResponseSizeServeHTTP(t *testing.T) {
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>max response size test</body></html>"))
+		_, _ = w.Write([]byte("<html><body>max response size test</body></html>"))
 		return nil
 	})
 
@@ -3177,7 +3177,7 @@ func serveBypassPage(t *testing.T, m *MesiMiddleware, fragURL string) *httptest.
 	handler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body><esi:include src=\"" + fragURL + "/frag\" /></body></html>"))
+		_, _ = w.Write([]byte("<html><body><esi:include src=\"" + fragURL + "/frag\" /></body></html>"))
 		return nil
 	})
 	req := httptest.NewRequest("GET", "http://example.com/", nil)
@@ -3194,7 +3194,7 @@ func serveBypassPage(t *testing.T, m *MesiMiddleware, fragURL string) *httptest.
 func TestAllowPrivateIPsForAllowedHostsBypassAllows(t *testing.T) {
 	m := newBypassTestMiddleware(t, []string{"127.0.0.1"}, true)
 	frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("FRAGMENT_OK"))
+		_, _ = w.Write([]byte("FRAGMENT_OK"))
 	}))
 	defer frag.Close()
 
@@ -3213,7 +3213,7 @@ func TestAllowPrivateIPsForAllowedHostsBypassAllows(t *testing.T) {
 func TestAllowPrivateIPsForAllowedHostsDisabledBlocks(t *testing.T) {
 	m := newBypassTestMiddleware(t, []string{"127.0.0.1"}, false)
 	frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("FRAGMENT_OK"))
+		_, _ = w.Write([]byte("FRAGMENT_OK"))
 	}))
 	defer frag.Close()
 
@@ -3236,7 +3236,7 @@ func TestAllowPrivateIPsForAllowedHostsDisabledBlocks(t *testing.T) {
 func TestAllowPrivateIPsForAllowedHostsUnlistedHostStillBlocked(t *testing.T) {
 	m := newBypassTestMiddleware(t, []string{"example.com"}, true)
 	frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("FRAGMENT_OK"))
+		_, _ = w.Write([]byte("FRAGMENT_OK"))
 	}))
 	defer frag.Close()
 
@@ -3260,7 +3260,7 @@ func TestAllowPrivateIPsForAllowedHostsUnlistedHostStillBlocked(t *testing.T) {
 func TestAllowPrivateIPsForAllowedHostsEmptyAllowlistNoBypass(t *testing.T) {
 	m := newBypassTestMiddleware(t, nil, true)
 	frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("FRAGMENT_OK"))
+		_, _ = w.Write([]byte("FRAGMENT_OK"))
 	}))
 	defer frag.Close()
 

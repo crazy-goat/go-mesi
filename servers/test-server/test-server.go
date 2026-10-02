@@ -74,7 +74,7 @@ func holdHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 	time.Sleep(time.Duration(millis) * time.Millisecond)
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(label + " Held " + strconv.Itoa(millis)))
+	_, _ = w.Write([]byte(label + " Held " + strconv.Itoa(millis)))
 }
 
 // maxGeneratedBytes caps /bytes/{size} (#210), mirroring
@@ -110,7 +110,7 @@ func bytesHandler(w http.ResponseWriter, r *http.Request) {
 		copy(body, marker)
 	}
 	w.Header().Set("Content-Type", "text/html")
-	w.Write(body)
+	_, _ = w.Write(body)
 }
 
 // bytesPageHandler serves /bytespage/{size} (#210): an HTML page whose
@@ -127,7 +127,7 @@ func bytesPageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(`<!DOCTYPE html>
+	_, _ = w.Write([]byte(`<!DOCTYPE html>
 <html lang="en">
 <head>
     <title>Bytes ESI</title>
@@ -155,7 +155,7 @@ func slowPageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(`<!DOCTYPE html>
+	_, _ = w.Write([]byte(`<!DOCTYPE html>
 <html lang="en">
 <head>
     <title>Slow ESI</title>
@@ -197,7 +197,7 @@ func deepPageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(`<!DOCTYPE html><html><body><h1>DEEP-PAGE</h1><esi:include src="http://test-server/deep/` + strconv.Itoa(depth) + `/` + strconv.Itoa(capValue) + `" /><p>AFTER-DEEP</p></body></html>`))
+	_, _ = w.Write([]byte(`<!DOCTYPE html><html><body><h1>DEEP-PAGE</h1><esi:include src="http://test-server/deep/` + strconv.Itoa(depth) + `/` + strconv.Itoa(capValue) + `" /><p>AFTER-DEEP</p></body></html>`))
 }
 
 // deepHandler serves /deep/{level}/{cap}. Each fragment is itself HTML and
@@ -225,7 +225,7 @@ func deepHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	body += `<section>LEVEL-` + levelText + `-END</section>`
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(body))
+	_, _ = w.Write([]byte(body))
 }
 
 // deepMarkerHandler serves stable HTML markers as distinct sibling jobs so
@@ -242,7 +242,7 @@ func deepMarkerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(`<section>LEVEL-` + strconv.Itoa(level) + `-MARKER-` + marker + `</section>`))
+	_, _ = w.Write([]byte(`<section>LEVEL-` + strconv.Itoa(level) + `-MARKER-` + marker + `</section>`))
 }
 
 func holdPageHandler(w http.ResponseWriter, r *http.Request) {
@@ -273,7 +273,7 @@ func holdPageHandler(w http.ResponseWriter, r *http.Request) {
 <p>After hold include</p>
 </body>
 </html>`)
-	w.Write([]byte(b.String()))
+	_, _ = w.Write([]byte(b.String()))
 }
 
 // trackHandler serves /track/reset (zero both counters) and /track/max
@@ -286,13 +286,13 @@ func trackHandler(w http.ResponseWriter, r *http.Request) {
 		trackPeak = 0
 		trackMu.Unlock()
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("reset"))
+		_, _ = w.Write([]byte("reset"))
 	case "max":
 		trackMu.Lock()
 		peak := strconv.Itoa(trackPeak)
 		trackMu.Unlock()
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(peak))
+		_, _ = w.Write([]byte(peak))
 	default:
 		http.NotFound(w, r)
 	}
@@ -305,16 +305,16 @@ func main() {
 	}
 
 	http.HandleFunc("/", echoHeaders(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(HtmlTemplate))
+		_, _ = w.Write([]byte(HtmlTemplate))
 	}))
 
 	http.HandleFunc("/esi", echoHeaders(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(HtmlIncludeTemplate))
+		_, _ = w.Write([]byte(HtmlIncludeTemplate))
 	}))
 
 	http.HandleFunc("/plain", echoHeaders(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(PlainTextTemplate))
+		_, _ = w.Write([]byte(PlainTextTemplate))
 	}))
 
 	http.HandleFunc("/hold/{millis}/{label}", holdHandler)

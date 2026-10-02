@@ -28,7 +28,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("cannot create temp gopath: %w", err)
 	}
-	defer os.RemoveAll(gopath)
+	defer func() { _ = os.RemoveAll(gopath) }()
 
 	if err := copyPluginSources(root, gopath); err != nil {
 		return fmt.Errorf("cannot copy plugin sources: %w", err)
@@ -41,7 +41,7 @@ func run() error {
 
 	_, err = i.Eval(`import "github.com/crazy-goat/go-mesi/mesi"`)
 	if err != nil {
-		return fmt.Errorf("Yaegi cannot import mesi package:\n  %v", err)
+		return fmt.Errorf("yaegi cannot import mesi package:\n  %v", err)
 	}
 
 	return nil
@@ -68,8 +68,8 @@ func copyPluginSources(root, gopath string) error {
 	srcDir := filepath.Join(gopath, "src", "github.com", "crazy-goat", "go-mesi")
 
 	entries := []struct {
-		src string
-		dst string
+		src          string
+		dst          string
 		skipPrefixes []string
 	}{
 		{
@@ -83,8 +83,8 @@ func copyPluginSources(root, gopath string) error {
 			},
 		},
 		{
-			src: filepath.Join(root, "middleware"),
-			dst: filepath.Join(srcDir, "middleware"),
+			src:          filepath.Join(root, "middleware"),
+			dst:          filepath.Join(srcDir, "middleware"),
 			skipPrefixes: nil,
 		},
 		{

@@ -120,14 +120,14 @@ func TestServeHTTPTimeoutAbortsSlowInclude(t *testing.T) {
 	frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(3 * time.Second)
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte("SLOW-FRAGMENT"))
+		_, _ = w.Write([]byte("SLOW-FRAGMENT"))
 	}))
 	defer frag.Close()
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><esi:include src="` + frag.URL + `/slow" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + frag.URL + `/slow" /></body></html>`))
 	})
 
 	p, err := New(context.Background(), next, &Config{Timeout: strPtr("1s")}, "test")
@@ -163,14 +163,14 @@ func TestServeHTTPTimeoutAllowsIncludeWithinBudget(t *testing.T) {
 	frag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte("FAST-FRAGMENT"))
+		_, _ = w.Write([]byte("FAST-FRAGMENT"))
 	}))
 	defer frag.Close()
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><esi:include src="` + frag.URL + `/fast" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + frag.URL + `/fast" /></body></html>`))
 	})
 
 	p, err := New(context.Background(), next, &Config{Timeout: strPtr("5s")}, "test")

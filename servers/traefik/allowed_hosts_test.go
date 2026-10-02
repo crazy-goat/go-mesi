@@ -46,7 +46,7 @@ func TestAllowedHostsServeHTTP(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>allowed hosts test</body></html>"))
+		_, _ = w.Write([]byte("<html><body>allowed hosts test</body></html>"))
 	})
 
 	config := CreateConfig()
@@ -71,7 +71,7 @@ func TestAllowedHostsAllowsConfiguredHost(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("FRAGMENT-BACKEND"))
+		_, _ = w.Write([]byte("FRAGMENT-BACKEND"))
 	}))
 	defer backend.Close()
 
@@ -83,7 +83,7 @@ func TestAllowedHostsAllowsConfiguredHost(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><esi:include src="` + backend.URL + `/fragment" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + backend.URL + `/fragment" /></body></html>`))
 	})
 
 	config := CreateConfig()
@@ -110,14 +110,14 @@ func TestAllowedHostsBlocksUnconfiguredHost(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("FRAGMENT-BACKEND"))
+		_, _ = w.Write([]byte("FRAGMENT-BACKEND"))
 	}))
 	defer backend.Close()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><esi:include src="` + backend.URL + `/fragment" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + backend.URL + `/fragment" /></body></html>`))
 	})
 
 	config := CreateConfig()
@@ -148,7 +148,7 @@ func TestAllowedHostsSuffixInjectionGuardServeHTTP(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><esi:include src="http://evil.com/fragment" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="http://evil.com/fragment" /></body></html>`))
 	})
 
 	config := CreateConfig()
@@ -179,7 +179,7 @@ func TestAllowedHostsMultipleHostsBlockUnlistedServeHTTP(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><esi:include src="http://c.internal/fragment" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="http://c.internal/fragment" /></body></html>`))
 	})
 
 	config := CreateConfig()
@@ -206,14 +206,14 @@ func TestAllowedHostsEmptyBackwardCompatible(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("FRAGMENT-BACKEND"))
+		_, _ = w.Write([]byte("FRAGMENT-BACKEND"))
 	}))
 	defer backend.Close()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<html><body><esi:include src="` + backend.URL + `/fragment" /></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + backend.URL + `/fragment" /></body></html>`))
 	})
 
 	config := CreateConfig()
@@ -243,7 +243,7 @@ func TestAllowedHostsEmptyBackwardCompatible(t *testing.T) {
 func TestAllowedHostsSubdomainMatching(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("FRAGMENT-BACKEND"))
+		_, _ = w.Write([]byte("FRAGMENT-BACKEND"))
 	}))
 	defer backend.Close()
 
@@ -274,12 +274,12 @@ func TestAllowedHostsSubdomainMatching(t *testing.T) {
 
 	input := `<html><body><esi:include src="http://sub.example.com/fragment" /></body></html>`
 	config := mesi.EsiParserConfig{
-		MaxDepth:           5,
-		Timeout:            10 * time.Second,
-		BlockPrivateIPs:    false,
-		AllowedHosts:       []string{"example.com"},
-		HTTPClient:         client,
-		DefaultUrl:         "http://example.com/",
+		MaxDepth:        5,
+		Timeout:         10 * time.Second,
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"example.com"},
+		HTTPClient:      client,
+		DefaultUrl:      "http://example.com/",
 	}
 
 	out := mesi.MESIParse(input, config)
@@ -294,7 +294,7 @@ func TestAllowedHostsSubdomainMatching(t *testing.T) {
 func TestAllowedHostsSuffixInjectionGuard(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("FRAGMENT-BACKEND"))
+		_, _ = w.Write([]byte("FRAGMENT-BACKEND"))
 	}))
 	defer backend.Close()
 
