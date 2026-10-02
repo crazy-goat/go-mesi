@@ -73,3 +73,7 @@ This uses `docker compose` to build a FrankenPHP image with the mesi module, sta
 - Non-HTML content bypass (text/plain, application/json)
 - Content-Length correctness
 - Content-Type preservation
+
+## Parent body limit
+
+`max_body_size` and `on_oversize` bound the size of the HTML page that the mesi handler buffers (#538). They are options of the Caddy module, see the [Caddy README](../caddy/README.md#max_body_size-and-on_oversize). Unit tests for the three cases (under the limit, over with `pass`, over with `error`) are in `servers/caddy/body_limit_test.go`.

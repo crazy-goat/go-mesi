@@ -17,6 +17,7 @@ import (
 	"github.com/crazy-goat/go-mesi/mesi/cache_redis"
 	"github.com/crazy-goat/go-mesi/middleware"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 func init() {
@@ -119,6 +120,19 @@ type MesiMiddleware struct {
 	// (see max_concurrent_requests for that).
 	MaxWorkers int `json:"max_workers,omitempty"`
 
+	// MaxBodySize limits the size (in bytes) of the parent HTML body that is
+	// buffered for ESI processing (#538). 0 or unset = unlimited (backward
+	// compatible). max_response_size stays the per-include cap.
+	MaxBodySize int64 `json:"max_body_size,omitempty"`
+
+	// OnOversize says what happens when the parent body is over
+	// MaxBodySize: "pass" (default) sends it unchanged without ESI
+	// processing and logs a warning; "error" logs an error and answers 502.
+	OnOversize string `json:"on_oversize,omitempty"`
+
+	onOversize middleware.OnOversize `json:"-"`
+	logger     *zap.Logger           `json:"-"`
+
 	sharedTransport *http.Transport  `json:"-"`
 	cache           mesi.Cache       `json:"-"`
 	cacheTTL        time.Duration    `json:"-"`
@@ -146,6 +160,17 @@ func validateMaxDepth(v int) error {
 
 // Provision implements caddy.Provisioner. Called once at config load.
 func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
+	m.logger = ctx.Logger()
+
+	if m.MaxBodySize < 0 {
+		return fmt.Errorf("max_body_size must be non-negative (0 = unlimited), got %d", m.MaxBodySize)
+	}
+	mode, err := middleware.ParseOnOversize(m.OnOversize)
+	if err != nil {
+		return err
+	}
+	m.onOversize = mode
+
 	if m.MaxDepth != nil {
 		if err := validateMaxDepth(*m.MaxDepth); err != nil {
 			return err
@@ -241,10 +266,15 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 	r.Header.Set("Surrogate-Capability", "ESI/1.0")
 
 	customWriter := middleware.NewResponseWriter(w)
+	customWriter.SetBodyLimit(m.MaxBodySize, m.onOversize, m.logOversize)
 
 	err := next.ServeHTTP(customWriter, r)
 	if err != nil {
 		return err
+	}
+
+	if customWriter.HandleOversize() {
+		return nil
 	}
 
 	contentType := customWriter.Header().Get("Content-Type")
@@ -313,6 +343,21 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 	return nil
 }
 
+// logOversize reports a parent body over max_body_size. A nil logger (the
+// module used without Provision) logs nothing.
+func (m *MesiMiddleware) logOversize(mode middleware.OnOversize, limit, size int64) {
+	if m.logger == nil {
+		return
+	}
+	if mode == middleware.OversizeError {
+		m.logger.Error("mesi: parent body is over max_body_size; answering 502 (on_oversize error)",
+			zap.Int64("max_body_size", limit), zap.Int64("size", size))
+		return
+	}
+	m.logger.Warn("mesi: parent body is over max_body_size; sending it unchanged without ESI processing (on_oversize pass)",
+		zap.Int64("max_body_size", limit), zap.Int64("size", size))
+}
+
 func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 	mesi := new(MesiMiddleware)
 	err := mesi.UnmarshalCaddyfile(h.Dispenser)
@@ -371,6 +416,26 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid max_response_size %q: %v", d.Val(), err)
 				}
 				m.MaxResponseSize = &v
+			case "max_body_size":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				v, err := strconv.ParseInt(d.Val(), 10, 64)
+				if err != nil {
+					return d.Errf("invalid max_body_size %q: %v", d.Val(), err)
+				}
+				if v < 0 {
+					return d.Errf("invalid max_body_size %q: must be non-negative (0 = unlimited)", d.Val())
+				}
+				m.MaxBodySize = v
+			case "on_oversize":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				if _, err := middleware.ParseOnOversize(d.Val()); err != nil {
+					return d.Err(err.Error())
+				}
+				m.OnOversize = d.Val()
 			case "shared_http_client":
 				m.SharedHTTPClient = true
 			case "block_private_ips":

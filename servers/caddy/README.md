@@ -349,3 +349,40 @@ mesi {
 - This limit applies to each individual include response, not the total page size.
 - Consider setting this to a reasonable value based on the largest expected
   include fragment in your application.
+
+### `max_body_size` and `on_oversize`
+
+Limit the size (in bytes) of the **parent** HTML body that the middleware
+buffers for ESI processing (#538). Without a limit a very large upstream HTML
+response is held completely in memory. `max_response_size` stays the cap of
+each individual include.
+
+```
+mesi {
+    max_body_size 1048576   # 1 MB
+    on_oversize pass        # or: error
+}
+```
+
+| `max_body_size` | Behaviour |
+|---|---|
+| `1–N` | HTML bodies larger than N bytes are handled as set by `on_oversize`. |
+| `0` or absent | Unlimited (the behaviour before #538). |
+
+| `on_oversize` | Behaviour when the parent body is over the limit |
+|---|---|
+| `pass` (default) | The body is sent to the client unchanged, without ESI processing, and a warning is logged. |
+| `error` | An error is logged and the client gets `502 Bad Gateway`. |
+
+**Notes:**
+- Only `text/html` responses are counted; other content types are not limited.
+- If `Content-Length` is known and over the limit, the decision is made at
+  once and nothing is buffered. Otherwise the size is checked while the body
+  is buffered: in `pass` mode the part buffered so far and the rest are
+  streamed to the client unchanged; in `error` mode the rest is dropped and
+  the client gets the 502 (the headers are held back until then, so unlike
+  nginx a 502 is always possible).
+- Values are plain integer bytes. Negative values and unknown `on_oversize`
+  values are rejected at config load.
+- The FrankenPHP integration uses this module, so the same directives apply.
+- JSON config names: `max_body_size`, `on_oversize`.

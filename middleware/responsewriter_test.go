@@ -203,3 +203,151 @@ func (m *mockConn) Read(b []byte) (n int, err error) {
 func (m *mockConn) Write(b []byte) (n int, err error) {
 	return len(b), nil
 }
+
+func htmlWriter(rec *httptest.ResponseRecorder) *ResponseWriter {
+	rec.Header().Set("Content-Type", "text/html; charset=utf-8")
+	return NewResponseWriter(rec)
+}
+
+func TestResponseWriter_BodyLimit_Under(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rw := htmlWriter(rec)
+	rw.SetBodyLimit(10, OversizePass, nil)
+
+	_, _ = rw.Write([]byte("12345"))
+	_, _ = rw.Write([]byte("67890"))
+
+	if rw.HandleOversize() {
+		t.Fatal("a body exactly at the limit must not be oversize")
+	}
+	if rw.Body().String() != "1234567890" {
+		t.Errorf("body = %q, want the buffered body", rw.Body().String())
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("nothing may be sent to the client yet, got %q", rec.Body.String())
+	}
+}
+
+func TestResponseWriter_BodyLimit_PassStreamed(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rw := htmlWriter(rec)
+	var got []int64
+	rw.SetBodyLimit(10, OversizePass, func(_ OnOversize, limit, size int64) { got = append(got, limit, size) })
+
+	rw.WriteHeader(http.StatusTeapot)
+	_, _ = rw.Write([]byte("123456"))
+	n, err := rw.Write([]byte("7890ABC"))
+	_, _ = rw.Write([]byte("DEF"))
+
+	if n != 7 || err != nil {
+		t.Errorf("Write = %d, %v; want 7, nil", n, err)
+	}
+	if !rw.HandleOversize() {
+		t.Fatal("expected oversize")
+	}
+	if rec.Code != http.StatusTeapot {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusTeapot)
+	}
+	if rec.Body.String() != "1234567890ABCDEF" {
+		t.Errorf("body = %q, want the whole body unchanged", rec.Body.String())
+	}
+	if len(got) != 2 || got[0] != 10 || got[1] != 13 {
+		t.Errorf("notify args = %v, want one call with limit 10 and size 13", got)
+	}
+}
+
+func TestResponseWriter_BodyLimit_PassKnownLength(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rw := htmlWriter(rec)
+	rec.Header().Set("Content-Length", "16")
+	rw.SetBodyLimit(10, OversizePass, nil)
+
+	rw.WriteHeader(http.StatusOK)
+	if rec.Body.Len() != 0 || !rw.committed {
+		t.Fatal("a known oversize length must be decided before any byte is buffered")
+	}
+	_, _ = rw.Write([]byte("1234567890ABCDEF"))
+
+	if !rw.HandleOversize() {
+		t.Fatal("expected oversize")
+	}
+	if rec.Body.String() != "1234567890ABCDEF" || rec.Header().Get("Content-Length") != "16" {
+		t.Errorf("body %q, Content-Length %q: want unchanged", rec.Body.String(), rec.Header().Get("Content-Length"))
+	}
+}
+
+func TestResponseWriter_BodyLimit_ErrorStreamed(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rw := htmlWriter(rec)
+	rec.Header().Set("X-Upstream", "1")
+	rw.SetBodyLimit(10, OversizeError, nil)
+
+	_, _ = rw.Write([]byte("123456"))
+	n, err := rw.Write([]byte("7890ABC"))
+
+	if n != 7 || err != nil {
+		t.Errorf("Write = %d, %v; want 7, nil (data dropped, no error)", n, err)
+	}
+	if rw.Body().Len() != 0 {
+		t.Errorf("buffer must be released, has %d bytes", rw.Body().Len())
+	}
+	if !rw.HandleOversize() {
+		t.Fatal("expected oversize")
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+	if rec.Header().Get("X-Upstream") != "" {
+		t.Error("upstream headers must not leak into the 502")
+	}
+}
+
+func TestResponseWriter_BodyLimit_ErrorKnownLength(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rw := htmlWriter(rec)
+	rec.Header().Set("Content-Length", "99")
+	rw.SetBodyLimit(10, OversizeError, nil)
+
+	rw.WriteHeader(http.StatusOK)
+	_, _ = rw.Write([]byte("whatever"))
+
+	if !rw.HandleOversize() || rec.Code != http.StatusBadGateway {
+		t.Fatalf("want 502, got %d", rec.Code)
+	}
+	if rec.Header().Get("Content-Length") == "99" {
+		t.Error("the upstream Content-Length must not stay on the 502")
+	}
+}
+
+func TestResponseWriter_BodyLimit_IgnoresNonHTMLAndUnlimited(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rec.Header().Set("Content-Type", "application/json")
+	rw := NewResponseWriter(rec)
+	rw.SetBodyLimit(3, OversizeError, nil)
+	_, _ = rw.Write([]byte("0123456789"))
+	if rw.HandleOversize() || rw.Body().Len() != 10 {
+		t.Error("non-HTML bodies are not limited")
+	}
+
+	rec = httptest.NewRecorder()
+	rw = htmlWriter(rec)
+	rw.SetBodyLimit(0, OversizeError, nil)
+	_, _ = rw.Write([]byte("0123456789"))
+	if rw.HandleOversize() || rw.Body().Len() != 10 {
+		t.Error("0 means unlimited")
+	}
+}
+
+func TestParseOnOversize(t *testing.T) {
+	for in, want := range map[string]OnOversize{"": OversizePass, "pass": OversizePass, "error": OversizeError} {
+		got, err := ParseOnOversize(in)
+		if err != nil || got != want {
+			t.Errorf("ParseOnOversize(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"drop", "Pass", " pass", "error "} {
+		if _, err := ParseOnOversize(in); err == nil {
+			t.Errorf("ParseOnOversize(%q) must fail", in)
+		}
+	}
+}
