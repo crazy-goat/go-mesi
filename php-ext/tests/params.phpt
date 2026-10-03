@@ -17,6 +17,6 @@ $result = \mesi\parse('<!--esi test-->', 100, 'http://localhost/');
 echo "depth100: [" . $result . "]\n";
 ?>
 --EXPECT--
-depth0: [test]
-depth1: [test]
-depth100: [test]
+depth0: [ test]
+depth1: [ test]
+depth100: [ test]
