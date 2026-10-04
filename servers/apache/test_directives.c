@@ -2619,7 +2619,8 @@ TEST(mrs_max_accepted) {
 TEST(mrs_max_plus_one_rejected) {
     /* Boundary: 9223372036854775807 (math.MaxInt64) — at this value
      * the core's MaxResponseSize+1 wraps negative and the include
-     * would silently render an EMPTY body. Rejected at config load. */
+     * used to silently render an EMPTY body (the core rejects it
+     * itself since #448). Rejected at config load. */
     mesi_config conf;
     init_config(&conf);
     const char *err = set_max_response_size(&conf, "9223372036854775807");

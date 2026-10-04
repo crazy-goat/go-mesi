@@ -228,13 +228,15 @@ func resolveTimeout(v *string) (time.Duration, error) {
 
 // maxMaxResponseSize is the upper bound for the `maxResponseSize`
 // plugin option: math.MaxInt64 - 1, the largest value for which the
-// core's `MaxResponseSize + 1` io.LimitReader bound stays positive —
-// at math.MaxInt64 it wraps negative, LimitedReader reports EOF
-// immediately, and the include would silently render an EMPTY body
-// instead of failing (#448). Mirrors libgomesi's
-// config.MaxMaxResponseSize, which lives in a separate module and is
-// unimportable here — the same keep-in-sync pattern as the CLI's local
-// maxMaxResponseSize (#186) and Apache's MESI_MAX_MAX_RESPONSE_SIZE.
+// core's `MaxResponseSize + 1` io.LimitReader bound stays positive.
+// The core now enforces the same bound itself and rejects math.MaxInt64
+// with *mesi.ErrInvalidMaxResponseSize (#448), so this literal mirrors
+// the core's exported mesi.MaxMaxResponseSize; it stays local so the
+// option is still rejected at config time, with the bound documented
+// where it is used. libgomesi's config.MaxMaxResponseSize is unreachable
+// from this module (Go's `internal` rule, not a module boundary), and
+// the CLI's local maxMaxResponseSize (#186) and Apache's
+// MESI_MAX_MAX_RESPONSE_SIZE are the same keep-in-sync pattern.
 const maxMaxResponseSize int64 = math.MaxInt64 - 1
 
 // resolveMaxResponseSize maps the `maxResponseSize` plugin option (see

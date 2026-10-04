@@ -157,8 +157,8 @@ control this limit.
   `max_response_size` (#201) and the CLI `-max-response-size` (#186)).
   The upper bound exists because the core computes
   `MaxResponseSize + 1` for its `io.LimitReader` (`mesi/fetch.go`): at
-  `math.MaxInt64` that wraps negative and the include would silently
-  render an empty body instead of failing (#448).
+  `math.MaxInt64` that wraps negative, which the core itself now
+  rejects before the request with `*mesi.ErrInvalidMaxResponseSize` (#448).
 - **Scope:** **per SINGLE include, not per page** — a page with 10
   includes each under the limit can total far more than the limit. An
   over-limit include **fails closed** through the include-error path
