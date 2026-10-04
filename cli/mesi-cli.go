@@ -42,9 +42,10 @@ func allowedHostsFromFlag(value string) []string {
 // cli module, so the bound is mirrored here (the same keep-in-sync pattern
 // as Apache's MESI_MAX_MAX_RESPONSE_SIZE). It is math.MaxInt64-1: the core
 // computes MaxResponseSize+1 for its io.LimitReader bound
-// (mesi/fetch.go:290), and at math.MaxInt64 that wraps negative, the
-// LimitedReader reports EOF immediately, and the include would silently
-// render an EMPTY body instead of failing the size check (#448).
+// (mesi/fetch.go), and at math.MaxInt64 that wraps negative and the
+// LimitedReader reports EOF immediately, which used to make the include
+// silently render an EMPTY body instead of failing the size check. The core
+// rejects that value itself since #448.
 const maxMaxResponseSize int64 = math.MaxInt64 - 1
 
 // validateMaxResponseSize rejects -max-response-size values outside

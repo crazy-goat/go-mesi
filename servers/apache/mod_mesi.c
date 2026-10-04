@@ -204,7 +204,8 @@ typedef struct {
 // int64 byte count the core feeds into io.LimitReader as
 // `MaxResponseSize + 1` (mesi/fetch.go) — at math.MaxInt64 that
 // bound wraps negative, LimitedReader returns EOF immediately and the
-// include would silently render an EMPTY body instead of failing, so
+// include used to silently render an EMPTY body instead of failing (the
+// core rejects that value itself since #448), so
 // the largest safe value is MaxInt64 - 1. apr_off_t is int64 on every
 // platform Apache 2.4 supports. Keep in sync with
 // libgomesi/internal/config/max_response_size.go.
@@ -1029,7 +1030,8 @@ static const char *set_timeout(cmd_parms *cmd, void *cfg, const char *arg) {
 // field at 0 — byte-identical to pre-#169 Apache behaviour. The
 // upper bound exists because the core computes MaxResponseSize+1 for
 // its io.LimitReader (mesi/fetch.go) — MaxInt64+1 wraps negative and
-// the include would silently render an empty body. Helper errors
+// the include used to silently render an empty body; the core
+// rejects that value itself since #448. Helper errors
 // already name MesiMaxResponseSize.
 static const char *set_max_response_size(cmd_parms *cmd, void *cfg, const char *arg) {
     mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);

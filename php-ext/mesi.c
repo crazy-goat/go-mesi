@@ -52,7 +52,8 @@ ZEND_END_ARG_INFO()
 /* Per-include response body cap in BYTES (#201). Matches libgomesi's
  * config.MaxMaxResponseSize (math.MaxInt64 - 1): the core computes
  * MaxResponseSize+1 for its io.LimitReader bound (mesi/fetch.go), which
- * wraps negative at MaxInt64 and would silently render an empty body.
+ * wraps negative at MaxInt64, which used to make the include silently
+ * render an empty body (the core rejects that value itself since #448).
  * 0 is the documented "unlimited" value (the core only limits when
  * MaxResponseSize > 0); the ABSENT key likewise means unlimited — the
  * value every positional Parse* path leaves (never the 10 MB of
@@ -743,8 +744,9 @@ PHP_FUNCTION(parse) {
  *                            BYTES, range [0, 9223372036854775806]
  *                            (math.MaxInt64 - 1 — the core computes
  *                            size+1 for its LimitReader bound, which
- *                            wraps negative at MaxInt64 and would
- *                            silently render an empty body). Absent =>
+ *                            wraps negative at MaxInt64, which used to
+ *                            silently render an empty body; the core
+ *                            rejects it since #448). Absent =>
  *                            0 = UNLIMITED — the value the positional
  *                            path always leaves (byte-identical to
  *                            previous behaviour; there is NO implicit

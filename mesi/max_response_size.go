@@ -6,8 +6,9 @@ import (
 )
 
 // MaxMaxResponseSize is the largest per-include response cap the core can
-// honour, i.e. the upper bound of the accepted range for
-// EsiParserConfig.MaxResponseSize.
+// honour, i.e. the upper bound of the range documented for
+// EsiParserConfig.MaxResponseSize (the core also still accepts a negative cap,
+// which means unlimited — see validateMaxResponseSize).
 //
 // The cap is derived from the way the core consumes the value. To tell an
 // at-the-limit body from an over-limit one, the fetch path reads
@@ -47,10 +48,17 @@ func (e *ErrInvalidMaxResponseSize) Error() string {
 //
 // Only the unrepresentable upper boundary is rejected: math.MaxInt64 is the
 // single int64 value above MaxMaxResponseSize. Zero keeps its documented
-// "unlimited" meaning (the fetch path only limits when MaxResponseSize > 0),
-// and a negative cap keeps its historical behaviour of falling into that same
-// unlimited branch — the integration entry points reject negatives before they
-// reach the core, so tightening that here is a separate, deliberate change.
+// "unlimited" meaning (the fetch path only limits when MaxResponseSize > 0).
+//
+// A negative cap keeps its historical behaviour of falling into that same
+// unlimited branch, so the range the core actually accepts is
+// [math.MinInt64, MaxMaxResponseSize] while [0, MaxMaxResponseSize] is the
+// range documented for configuration values. Rejecting negatives here would
+// change behaviour for existing Go callers, and it is not the same failure
+// class as the wrapped bound — a negative delivers the full body, exactly like
+// the documented `0`, instead of a silently wrong one — so the integration
+// entry points keep rejecting them (libgomesi, Apache, nginx, the CLI, Traefik,
+// RoadRunner) and the core decision is left to a separate, deliberate change.
 func validateMaxResponseSize(size int64) error {
 	if size <= MaxMaxResponseSize {
 		return nil
@@ -59,5 +67,25 @@ func validateMaxResponseSize(size int64) error {
 		Size: size,
 		Why: fmt.Sprintf("value must be at most %d (the fetch path reads MaxResponseSize+1 bytes to detect an over-limit body, and that bound overflows at %d)",
 			MaxMaxResponseSize, int64(math.MaxInt64)),
+	}
+}
+
+// parseScopeKey marks a context that belongs to an in-flight MESIParse render.
+// The render puts it on the context it derives, so the nested MESIParse calls
+// made for include bodies can tell that they are inside a render the caller
+// already reported on.
+type parseScopeKey struct{}
+
+// warnInvalidMaxResponseSize reports a cap that validateMaxResponseSize rejects
+// as a single max_response_size_invalid warning.
+//
+// It is a no-op for an accepted cap. MESIParse calls it once per render, so a
+// page with many includes reports one operator mistake once instead of once per
+// include — the same convention #329 uses for a rejected configuration value.
+// The fetch path itself (mesi/fetch.go) is the enforcement point and stays
+// silent; every include of such a render still fails with the typed error.
+func warnInvalidMaxResponseSize(config EsiParserConfig) {
+	if err := validateMaxResponseSize(config.MaxResponseSize); err != nil {
+		config.warn("max_response_size_invalid", "max_response_size", config.MaxResponseSize, "error", err.Error())
 	}
 }

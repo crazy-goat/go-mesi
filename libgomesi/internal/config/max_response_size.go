@@ -15,10 +15,12 @@ import (
 // the value is an int64 byte count that the core feeds into
 // `io.LimitReader(body, MaxResponseSize+1)` (mesi/fetch.go). At
 // math.MaxInt64 that expression wraps to a negative limit, the
-// LimitedReader reports EOF immediately, and the include would
+// LimitedReader reports EOF immediately, and the include used to
 // silently render an EMPTY body instead of hitting the size check —
 // so the cap is math.MaxInt64-1, the largest value for which the
-// core's +1 bound stays positive. The Apache-side type (apr_off_t,
+// core's +1 bound stays positive. The core rejects math.MaxInt64 itself
+// since #448 (mesi.MaxMaxResponseSize, *mesi.ErrInvalidMaxResponseSize);
+// this constant stays the entry-point guard for ParseJson. The Apache-side type (apr_off_t,
 // #169) is int64 on every platform Apache 2.4 supports.
 const MaxMaxResponseSize int64 = math.MaxInt64 - 1
 

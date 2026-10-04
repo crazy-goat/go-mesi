@@ -158,11 +158,10 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 	// io.ReadAll returns an empty slice with a nil error and the include
 	// silently renders an empty body. Failing loud here also means the error
 	// is reported for every include instead of being hidden behind a cache
-	// hit (#448). It goes out at warn severity, like the other rejected
-	// configuration value (#329), so the cause is not lost.
+	// hit (#448). The guard itself stays silent: MESIParse emits the single
+	// max_response_size_invalid warning per parse, the convention #329 uses
+	// for a rejected configuration value.
 	if err := validateMaxResponseSize(config.MaxResponseSize); err != nil {
-		config.warn("max_response_size_invalid", "url", requestedURL,
-			"max_response_size", config.MaxResponseSize, "error", err.Error())
 		return "", false, err
 	}
 

@@ -53,8 +53,9 @@
 // outside [0, MESI_MAX_MAX_RESPONSE_SIZE] are rejected at config
 // load. The upper bound is math.MaxInt64 - 1 — the core computes
 // MaxResponseSize + 1 for its io.LimitReader bound (mesi/fetch.go);
-// at MaxInt64 that wraps negative and the include would silently
-// render an empty body instead of failing (the #448 wrap). 0 is a
+// at MaxInt64 that wraps negative, which used to make the include
+// silently render an empty body instead of failing (the #448 wrap);
+// the core rejects that value itself since #448. 0 is a
 // LEGITIMATE configured value ("unlimited" — the core only limits
 // when MaxResponseSize > 0), so the unset sentinel must stay
 // distinguishable from it (see the merge comment below).
@@ -2137,7 +2138,8 @@ static char *ngx_http_mesi_set_max_response_size(ngx_conf_t *cf,
       // no intermediate can ever wrap off_t regardless of argument
       // length, and MaxInt64 (= cap + 1) / oversized digit strings
       // are rejected instead of wrapping the core's +1 LimitReader
-      // bound negative (which would silently render an empty body).
+      // bound negative (which used to silently render an empty body;
+      // the core rejects that value itself since #448).
       ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                          "value \"%V\" out of range in "
                          "\"mesi_max_response_size\" directive: must be "
