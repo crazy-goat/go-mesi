@@ -418,8 +418,8 @@ Semantics (identical to Apache's `MesiMaxResponseSize` #169 and libgomesi's
 
 - Integer **bytes**, range `[0, 9223372036854775806]` (`math.MaxInt64 - 1`
   — the core computes `MaxResponseSize + 1` for its `io.LimitReader` bound
-  (`mesi/fetch.go`); at `MaxInt64` that wraps negative and the include would
-  silently render an empty body).
+  (`mesi/fetch.go`); at `MaxInt64` that wraps negative, which the core itself
+  rejects before the request with `*mesi.ErrInvalidMaxResponseSize`, #448).
 - **Absent key → `0` → unlimited** — the value every positional
   `ParseWithConfig*` path leaves in `EsiParserConfig.MaxResponseSize`
   (byte-identical to previous behaviour). There is **no implicit 10 MB

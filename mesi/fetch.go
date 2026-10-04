@@ -152,6 +152,20 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 		return "", false, fmt.Errorf("%w", ErrTimeBudgetExceeded)
 	}
 
+	// Reject a cap the fetch path cannot enforce before any request is made.
+	// The over-limit check below reads MaxResponseSize+1 bytes, which wraps
+	// negative at math.MaxInt64; io.LimitedReader then reports EOF at once,
+	// io.ReadAll returns an empty slice with a nil error and the include
+	// silently renders an empty body. Failing loud here also means the error
+	// is reported for every include instead of being hidden behind a cache
+	// hit (#448). It goes out at warn severity, like the other rejected
+	// configuration value (#329), so the cause is not lost.
+	if err := validateMaxResponseSize(config.MaxResponseSize); err != nil {
+		config.warn("max_response_size_invalid", "url", requestedURL,
+			"max_response_size", config.MaxResponseSize, "error", err.Error())
+		return "", false, err
+	}
+
 	// One deadline for the whole fetch: every redirect hop request and the
 	// final response-body read share the same budget, so a chain of redirects
 	// cannot restart the timeout per hop (previously each hop got a fresh
@@ -306,7 +320,11 @@ func singleFetchUrlWithContext(requestedURL string, config EsiParserConfig, ctx 
 
 	var dataBytes []byte
 	if config.MaxResponseSize > 0 {
-		// Use LimitReader to cap response size.
+		// Use LimitReader to cap response size. The +1 gives one extra byte
+		// to distinguish "exactly at the limit" from "over the limit";
+		// validateMaxResponseSize above guarantees the bound cannot wrap to
+		// a negative N, which io.LimitedReader would turn into an immediate
+		// EOF and therefore an empty body.
 		limitedReader := io.LimitReader(content.Body, config.MaxResponseSize+1)
 		dataBytes, err = io.ReadAll(limitedReader)
 		if err != nil {

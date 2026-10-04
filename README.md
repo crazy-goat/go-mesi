@@ -108,6 +108,7 @@ Sets the maximum allowed size for HTTP response bodies (in bytes) when fetching 
 - Zero value: unlimited (backward compatible)
 - `CreateDefaultConfig()` sets `10 * 1024 * 1024` (10 MB)
 - Set to `0` explicitly for unlimited
+- Accepted range: `[0, 9223372036854775806]` (`mesi.MaxMaxResponseSize`). `math.MaxInt64` is rejected before the request is made, with a `*mesi.ErrInvalidMaxResponseSize` — the over-limit check reads `MaxResponseSize+1` bytes, and that bound overflows at `math.MaxInt64`, which used to make every include render an empty body instead of failing
 
 When a response exceeds the limit, an error is returned with the message: `response body exceeds maximum allowed size of X bytes`
 

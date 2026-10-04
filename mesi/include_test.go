@@ -1,6 +1,8 @@
 package mesi
 
 import (
+	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -188,6 +190,51 @@ func TestIncludeErrorMarkerCustom(t *testing.T) {
 	}
 	if err == nil {
 		t.Error("toString() expected error for unhandled include failure")
+	}
+}
+
+// TestIncludeMaxInt64ResponseCapFailsLoud covers #448 at the include level:
+// a MaxResponseSize the fetch path cannot enforce (math.MaxInt64 wraps the
+// MaxResponseSize+1 read bound negative) must surface as an include error with
+// a typed cause, never as a silently empty body.
+func TestIncludeMaxInt64ResponseCapFailsLoud(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("upstream body"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+	config.IncludeErrorMarker = "[ERR]"
+	config.MaxResponseSize = math.MaxInt64
+	log := &recordingLogger{}
+	config.Logger = log
+
+	token := &esiIncludeToken{Src: server.URL + "/include"}
+
+	data, _, err := token.toString(config)
+	if err == nil {
+		t.Fatal("toString() expected an error for math.MaxInt64 MaxResponseSize, got nil")
+	}
+	var typed *ErrInvalidMaxResponseSize
+	if !errors.As(err, &typed) {
+		t.Errorf("toString() error = %T (%v), want a *ErrInvalidMaxResponseSize in the chain", err, err)
+	}
+	if data != "[ERR]" {
+		t.Errorf("toString() = %q, want the IncludeErrorMarker %q", data, "[ERR]")
+	}
+	// The rejected value is reported through the logger, so the cause does not
+	// get lost between the rendered error marker and the operator.
+	if !log.containsMsg("max_response_size_invalid") {
+		t.Error("expected a max_response_size_invalid log entry")
+	}
+
+	// The rendered page must show the failure, not an empty body where the
+	// include was.
+	input := "before<esi:include src=\"" + server.URL + "/include\"></esi:include>after"
+	if got := MESIParse(input, config); got != "before[ERR]after" {
+		t.Errorf("MESIParse() = %q, want %q", got, "before[ERR]after")
 	}
 }
 
