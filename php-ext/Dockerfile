@@ -1,4 +1,6 @@
-FROM golang:1.23-bookworm AS libgomesi-build
+FROM golang:1.26-bookworm AS libgomesi-build
+
+ENV GOTOOLCHAIN=local
 
 WORKDIR /build
 
