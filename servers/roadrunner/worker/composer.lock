@@ -8,16 +8,16 @@
     "packages": [
         {
             "name": "composer/semver",
-            "version": "3.5.1",
+            "version": "3.5.2",
             "source": {
                 "type": "git",
                 "url": "https://github.com/composer/semver.git",
-                "reference": "528948210cc46f967a4b98e83b19e76f2b504993"
+                "reference": "9dfce66f1e97360ea5e6d3e38ab14277e4cc591e"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/composer/semver/zipball/528948210cc46f967a4b98e83b19e76f2b504993",
-                "reference": "528948210cc46f967a4b98e83b19e76f2b504993",
+                "url": "https://api.github.com/repos/composer/semver/zipball/9dfce66f1e97360ea5e6d3e38ab14277e4cc591e",
+                "reference": "9dfce66f1e97360ea5e6d3e38ab14277e4cc591e",
                 "shasum": ""
             },
             "require": {
@@ -69,7 +69,7 @@
             "support": {
                 "irc": "ircs://irc.libera.chat:6697/composer",
                 "issues": "https://github.com/composer/semver/issues",
-                "source": "https://github.com/composer/semver/tree/3.5.1"
+                "source": "https://github.com/composer/semver/tree/3.5.2"
             },
             "funding": [
                 {
@@ -81,7 +81,7 @@
                     "type": "github"
                 }
             ],
-            "time": "2026-10-05T13:12:12+00:00"
+            "time": "2026-10-22T15:37:26+00:00"
         },
         {
             "name": "google/protobuf",
@@ -1199,16 +1199,16 @@
         },
         {
             "name": "roadrunner/roadrunner",
-            "version": "v3.0.0",
+            "version": "v3.0.1",
             "source": {
                 "type": "git",
                 "url": "https://github.com/roadrunner-server/roadrunner.git",
-                "reference": "c8f9cfd9510b748238b2fc6dd009ad3726f09e36"
+                "reference": "ed89c2ec991f64b072297fcbee5ad7f058779199"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/roadrunner-server/roadrunner/zipball/c8f9cfd9510b748238b2fc6dd009ad3726f09e36",
-                "reference": "c8f9cfd9510b748238b2fc6dd009ad3726f09e36",
+                "url": "https://api.github.com/repos/roadrunner-server/roadrunner/zipball/ed89c2ec991f64b072297fcbee5ad7f058779199",
+                "reference": "ed89c2ec991f64b072297fcbee5ad7f058779199",
                 "shasum": ""
             },
             "type": "metapackage",
@@ -1236,7 +1236,7 @@
                 "chat": "https://discord.gg/V6EK4he",
                 "docs": "https://docs.roadrunner.dev/",
                 "issues": "https://github.com/roadrunner-server/roadrunner/issues",
-                "source": "https://github.com/roadrunner-server/roadrunner/tree/v3.0.0"
+                "source": "https://github.com/roadrunner-server/roadrunner/tree/v3.0.1"
             },
             "funding": [
                 {
@@ -1244,7 +1244,7 @@
                     "type": "github"
                 }
             ],
-            "time": "2026-10-09T12:52:49+00:00"
+            "time": "2026-10-21T19:33:12+00:00"
         },
         {
             "name": "roadrunner/worker",
@@ -1396,16 +1396,16 @@
         },
         {
             "name": "spiral/roadrunner-cli",
-            "version": "3.0.0",
+            "version": "3.0.1",
             "source": {
                 "type": "git",
                 "url": "https://github.com/roadrunner-php/cli.git",
-                "reference": "b570bde6d534b1b90a182f4bf6fca8120836594f"
+                "reference": "2e87a385801962403679f6c8751fda9af98afb9a"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/roadrunner-php/cli/zipball/b570bde6d534b1b90a182f4bf6fca8120836594f",
-                "reference": "b570bde6d534b1b90a182f4bf6fca8120836594f",
+                "url": "https://api.github.com/repos/roadrunner-php/cli/zipball/2e87a385801962403679f6c8751fda9af98afb9a",
+                "reference": "2e87a385801962403679f6c8751fda9af98afb9a",
                 "shasum": ""
             },
             "require": {
@@ -1420,6 +1420,8 @@
             },
             "require-dev": {
                 "jetbrains/phpstorm-attributes": "^1.2",
+                "llm/skills": "^1.14",
+                "roxblnfk/unpoly": "^1.8",
                 "spiral/code-style": "^2.3.1",
                 "spiral/dumper": "^3.3",
                 "testo/testo": "^0.10.55",
@@ -1470,7 +1472,7 @@
                     "type": "github"
                 }
             ],
-            "time": "2026-10-12T19:31:50+00:00"
+            "time": "2026-10-19T08:50:22+00:00"
         },
         {
             "name": "spiral/roadrunner-http",
@@ -2662,29 +2664,33 @@
         },
         {
             "name": "yiisoft/injector",
-            "version": "1.2.1",
+            "version": "1.2.2",
             "source": {
                 "type": "git",
                 "url": "https://github.com/yiisoft/injector.git",
-                "reference": "d3f718256b734933670ad11143cca724d340fc90"
+                "reference": "a3627145dc1d214d78d061dbef4f90773aadd747"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/yiisoft/injector/zipball/d3f718256b734933670ad11143cca724d340fc90",
-                "reference": "d3f718256b734933670ad11143cca724d340fc90",
+                "url": "https://api.github.com/repos/yiisoft/injector/zipball/a3627145dc1d214d78d061dbef4f90773aadd747",
+                "reference": "a3627145dc1d214d78d061dbef4f90773aadd747",
                 "shasum": ""
             },
             "require": {
-                "php": "7.4 - 8.5"
+                "php": "7.4 - 8.6"
             },
             "require-dev": {
                 "bamarni/composer-bin-plugin": "^1.8.3",
-                "maglnet/composer-require-checker": "^3.8 || ^4.2",
+                "ext-filter": "*",
+                "friendsofphp/php-cs-fixer": "^3.93",
                 "phpbench/phpbench": "^1.1",
+                "phpstan/phpstan": "^2.1",
                 "phpunit/phpunit": "^9.5",
                 "psr/container": "^1.0 || ^2.0",
-                "rector/rector": "^2.0.10",
+                "rector/rector": "^2.5.8",
+                "shipmonk/composer-dependency-analyser": "^1.8",
                 "spatie/phpunit-watcher": "^1.23",
+                "yiisoft/code-style": "^1.1",
                 "yiisoft/test-support": "^1.4 || ^3.1"
             },
             "suggest": {
@@ -2734,7 +2740,7 @@
                     "type": "opencollective"
                 }
             ],
-            "time": "2025-12-01T11:14:17+00:00"
+            "time": "2026-10-25T19:11:06+00:00"
         }
     ],
     "packages-dev": [],
