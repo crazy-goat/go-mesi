@@ -13,15 +13,13 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-ARG GO_VERSION=1.23.0
-ARG GO_SHA256=905a297f19ead44780548933e0ff1a1b86e8327bb459e92f9c0012569f76f5e3
-ARG TARGETARCH
+ARG GO_VERSION=1.26.10
+ARG GO_SHA256=ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5
 
 # test image; a failed pipe fails the following checksum step
 # hadolint ignore=DL4006
 RUN set -eux; \
-    arch="${TARGETARCH:-amd64}"; \
-    url="https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz"; \
+    url="https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"; \
     curl -fsSL -o /tmp/go.tgz "$url"; \
     echo "${GO_SHA256}  /tmp/go.tgz" | sha256sum -c -; \
     tar -C /usr/local -xzf /tmp/go.tgz; \
@@ -31,6 +29,7 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 ENV GOPATH="/root/go"
 ENV GODEBUG=netdns=cgo
 ENV GOARCH=amd64
+ENV GOTOOLCHAIN=local
 
 WORKDIR /build
 
