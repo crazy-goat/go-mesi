@@ -89,6 +89,7 @@ func captureStderr(t *testing.T, f func()) string {
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
 	}
+	defer func() { _ = read.Close() }()
 	original := os.Stderr
 	os.Stderr = write
 	defer func() { os.Stderr = original }()
@@ -99,7 +100,6 @@ func captureStderr(t *testing.T, f func()) string {
 	if err := write.Close(); err != nil {
 		t.Fatalf("close stderr pipe: %v", err)
 	}
-	defer read.Close()
 
 	var buf bytes.Buffer
 	if _, err := io.Copy(&buf, read); err != nil {
