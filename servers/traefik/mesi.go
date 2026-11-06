@@ -46,6 +46,16 @@ type Config struct {
 	BlockPrivateIPs                bool     `json:"blockPrivateIPs" yaml:"blockPrivateIPs"`
 	AllowedHosts                   []string `json:"allowedHosts" yaml:"allowedHosts"`
 	AllowPrivateIPsForAllowedHosts bool     `json:"allowPrivateIPsForAllowedHosts" yaml:"allowPrivateIPsForAllowedHosts"`
+	// Debug enables the core's verbose ESI diagnostics (parse, fetch and
+	// include events, e.g. "DEBUG parse_start ...") by setting
+	// mesi.EsiParserConfig.Debug. The core's default logger writes
+	// them synchronously to stderr, which Traefik captures in its own
+	// log stream (docker logs / the configured log output). Absent and
+	// false are equivalent — the core discards these events unless
+	// Debug is true, and this plugin exposes no custom logger.
+	// Debug output includes every include URL, so enable it only while
+	// diagnosing; it is not meant for production traffic.
+	Debug bool `json:"debug" yaml:"debug"`
 	// MaxResponseSize caps the HTTP response body size in bytes of a
 	// single <esi:include> fetch (per-SINGLE-include, not per page).
 	// 0 — the zero value and the absent option alike — is "unlimited"
@@ -445,6 +455,7 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			IncludeErrorMarker:             p.config.IncludeErrorMarker,
 			AllowedHosts:                   p.config.AllowedHosts,
 			AllowPrivateIPsForAllowedHosts: p.config.AllowPrivateIPsForAllowedHosts,
+			Debug:                          p.config.Debug,
 		}
 
 		if p.cache != nil {

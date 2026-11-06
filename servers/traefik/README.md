@@ -72,6 +72,39 @@ http:
           sharedHTTPClient: true
 ```
 
+## Debug Logging
+
+`debug: true` turns on the core parser diagnostics: parse, include and fetch
+events (`parse_start`, `include_start`, `fetch_start`, `fetch_done`,
+`fetch_error`, `include_failed`, …). The core writes them through its default
+logger to **stderr**, which Traefik captures in its own log stream (`docker
+logs`, journald, or whichever output the Traefik instance uses):
+
+```text
+2026-11-06T12:00:00Z DEBUG parse_start input_size=812 token_count=14
+2026-11-06T12:00:00Z DEBUG include_start src=http://backend/fragment fetch_mode= max_depth=5 timeout=10s
+2026-11-06T12:00:00Z DEBUG fetch_done url=http://backend/fragment duration=3.1ms status=200
+```
+
+- **Default / absent:** `false` — events are discarded and nothing is written.
+- **Scope:** every ESI parse of every `text/html` response handled by this
+  middleware instance. Non-HTML responses are never parsed, so they never log.
+- **Output:** synchronous stderr writes on the request path; expect extra I/O
+  under high traffic.
+- **Security:** every include URL is logged. Do not enable this in production
+  when URLs can carry tokens, session identifiers or other secrets, and prefer
+  temporarily enabling it while diagnosing an issue. For a permanent,
+  machine-readable signal use Traefik's access log instead.
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          debug: true
+```
+
 ## Timeout
 
 `timeout` bounds every `<esi:include>` fetch of a single page render —
@@ -444,6 +477,7 @@ http:
 | `maxBodySize` | int64 | `0` (unlimited) | Size cap in **bytes** for the **parent** HTML body that is buffered for ESI processing (#538); not the per-include `maxResponseSize`. Absent = unlimited. A negative value fails middleware creation. |
 | `onOversize` | string | `pass` | What happens when the parent body is over `maxBodySize`: `pass` sends it unchanged without ESI processing and logs a warning, `error` logs an error and answers `502 Bad Gateway`. Other values fail middleware creation. |
 | `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
+| `debug` | bool | `false` | Enable verbose core diagnostics (`parse_start`, `include_*`, `fetch_*`) on stderr, captured in Traefik's logs. Absent and `false` are equivalent. Logs include every include URL — avoid in production |
 | `includeErrorMarker` | string | `""` | String rendered for failed includes (empty = silent) |
 | `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis`, `memcached` |
 | `cacheTTL` | string | `""` | Cache TTL as Go duration (e.g., `"60s"`, `"5m"`) |
