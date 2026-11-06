@@ -1,0 +1,51 @@
+# Traefik Parse-On-Header Configuration Example
+#
+# Makes ESI processing conditional on the upstream response carrying
+# `Edge-control: dca=esi`.
+#
+#   - Default / absent: false — every text/html response is parsed
+#     (backward compatible).
+#   - When true, only text/html responses with the header are parsed.
+#     Everything else — other content types and HTML without the
+#     header — is passed through unchanged, byte for byte, without
+#     fetching includes or adding a Surrogate-Control header.
+#   - The header value is matched case-insensitively and may be a
+#     comma-separated list, matching mesi.IsEsiResponse:
+#       Edge-control: dca=esi
+#       Edge-control: no-cache, DCA=ESI
+#   - The flag also reaches EsiParserConfig.ParseOnHeader, so a fetched
+#     fragment is parsed only when its own response carries the header.
+#   - maxBodySize only bounds pages that are actually parsed. Unparsed
+#     pages are still buffered in full by the shared response writer,
+#     so the cap is not a memory guard for them (same as the proxy).
+#   - Known cache caveat: with a cache backend enabled, the core cache
+#     stores only the fragment body and a cache hit loses the ESI
+#     signal, so nested includes in a signalling fragment stay raw on
+#     cached requests. Do not combine a cache backend with
+#     parseOnHeader until the core caches the signal.
+#
+# Usage: include this in Traefik's dynamic configuration. The backend
+# (or a Traefik headers middleware) must add `Edge-control: dca=esi`
+# to the responses that should be parsed.
+
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          # Only opt-in pages are parsed; everything else is proxied
+          # through untouched.
+          parseOnHeader: true
+
+  routers:
+    my-app:
+      middlewares:
+        - mesi
+      service: my-app
+      rule: Host(`example.com`)
+
+  services:
+    my-app:
+      loadBalancer:
+        servers:
+          - url: http://backend:8080

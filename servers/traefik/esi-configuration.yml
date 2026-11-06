@@ -96,6 +96,35 @@ http:
       service: test-server
       rule: Host(`debug.domain.com`)
 
+    # Parse-on-header fixtures (#191): /esiheader carries
+    # `Edge-control: dca=esi`, while / does not. The explicit false route
+    # pins that the option is decoded and stays backward compatible.
+    parseonheader:
+      middlewares:
+        - mesi-parse-on-header
+      entrypoints:
+        - http
+      service: test-server
+      rule: Host(`parseonheader.domain.com`)
+
+    parseonheaderfalse:
+      middlewares:
+        - mesi-parse-on-header-false
+      entrypoints:
+        - http
+      service: test-server
+      rule: Host(`parseonheaderfalse.domain.com`)
+
+    # Body-limit scoping fixture (#191): the cap applies only to pages
+    # that carry the ESI signal.
+    parseonheaderbody:
+      middlewares:
+        - mesi-parse-on-header-body
+      entrypoints:
+        - http
+      service: test-server
+      rule: Host(`parseonheaderbody.domain.com`)
+
   services:
     test-server:
       loadBalancer:
@@ -155,3 +184,20 @@ http:
       plugin:
         mesi:
           debug: true
+
+    mesi-parse-on-header:
+      plugin:
+        mesi:
+          parseOnHeader: true
+
+    mesi-parse-on-header-false:
+      plugin:
+        mesi:
+          parseOnHeader: false
+
+    mesi-parse-on-header-body:
+      plugin:
+        mesi:
+          parseOnHeader: true
+          maxBodySize: 10
+          onOversize: error
