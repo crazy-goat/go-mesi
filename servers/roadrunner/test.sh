@@ -250,6 +250,61 @@ else
     exit 1
 fi
 
+echo "--- ParseOnHeader Tests (#194) ---"
+
+PARSE_HEADER_PAGE='<html><body>PARSE-HEADER<esi:include src="http://127.0.0.1:9090/fragment" /></body></html>'
+
+echo "=== Test 16: parse_on_header true parses signalled HTML ==="
+start_rr -block-private-ips=false -parse-on-header
+for MODE in esi upper list; do
+    RESPONSE=$(curl -fsS "http://localhost:9090/parse-header/$MODE")
+    if echo "$RESPONSE" | grep -q "FRAGMENT_OK" \
+        && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+        echo "PASS: Edge-control mode $MODE enabled ESI processing"
+    else
+        echo "FAIL: Edge-control mode $MODE did not enable ESI processing"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+done
+
+echo "=== Test 17: parse_on_header true without Edge-control passes through unchanged ==="
+HEADERS=$(curl -sD - -o "$TEST_DIR/parse-header-body.txt" http://localhost:9090/parse-header/none)
+RESPONSE=$(cat "$TEST_DIR/parse-header-body.txt")
+if [ "$RESPONSE" = "$PARSE_HEADER_PAGE" ] \
+    && ! echo "$RESPONSE" | grep -q "FRAGMENT_OK" \
+    && ! echo "$HEADERS" | grep -qi "Surrogate-Control" \
+    && [ "$(echo "$HEADERS" | grep -i '^Content-Length:' | awk '{print $2}' | tr -d '\r')" = "${#PARSE_HEADER_PAGE}" ]; then
+    echo "PASS: unsignalled HTML was sent byte for byte without Surrogate-Control"
+else
+    echo "FAIL: unsignalled HTML was changed or carried a surrogate header"
+    echo "Response: $RESPONSE"
+    echo "Headers: $HEADERS"
+    exit 1
+fi
+
+echo "=== Test 18: parse_on_header true leaves non-HTML untouched ==="
+RESPONSE=$(curl -fsS http://localhost:9090/plain)
+if [ "$RESPONSE" = 'plain text with <esi:include src="http://example.com/test" /> tags' ]; then
+    echo "PASS: non-HTML response passed through unchanged"
+else
+    echo "FAIL: non-HTML response was modified"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 19: absent parse_on_header always parses HTML ==="
+start_rr -block-private-ips=false
+RESPONSE=$(curl -fsS http://localhost:9090/parse-header/none)
+if echo "$RESPONSE" | grep -q "FRAGMENT_OK" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: absent parse_on_header still parsed unsignalled HTML"
+else
+    echo "FAIL: absent parse_on_header did not parse unsignalled HTML"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
 echo "--- Max Concurrent Requests Tests (#218) ---"
 
 # The fixture host and fragment listener are both loopback because rrtest serves
