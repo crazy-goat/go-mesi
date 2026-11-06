@@ -245,6 +245,57 @@ if ($path === '/debug-absent') {
     return true;
 }
 
+// include_error_marker (#221): a deterministic connection-refused include
+// (127.0.0.1:1 — nothing listens there) proves the marker is rendered in
+// place of a failed include. block_private_ips=false is required for the
+// loopback dial to be attempted at all, so the only failure mode is the
+// refused connection. onerror="continue" and a fallback body always take
+// priority over the marker.
+if ($path === '/include-error-marker') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>marker test</p><esi:include src="http://127.0.0.1:1/frag" />',
+        5,
+        $backend,
+        ['block_private_ips' => false, 'include_error_marker' => '<!-- MESI_ERROR_MARKER -->']
+    );
+    return true;
+}
+
+if ($path === '/include-error-marker-onerror') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>marker onerror</p><esi:include src="http://127.0.0.1:1/frag" onerror="continue" />',
+        5,
+        $backend,
+        ['block_private_ips' => false, 'include_error_marker' => '<!-- MESI_ERROR_MARKER -->']
+    );
+    return true;
+}
+
+if ($path === '/include-error-marker-fallback') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>marker fallback</p><esi:include src="http://127.0.0.1:1/frag">fallback body</esi:include>',
+        5,
+        $backend,
+        ['block_private_ips' => false, 'include_error_marker' => '<!-- MESI_ERROR_MARKER -->']
+    );
+    return true;
+}
+
+// Key absent: silent, legacy positional path (pre-#221 behaviour).
+if ($path === '/include-error-marker-absent') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>marker absent</p><esi:include src="http://127.0.0.1:1/frag" />',
+        5,
+        $backend,
+        ['block_private_ips' => false]
+    );
+    return true;
+}
+
 // max_response_size (#201): fragment bodies come from a DEDICATED
 // size-serving server spawned by test.sh on 127.0.0.1:18082 (php -S is
 // single-threaded — the include must never be served by this process, same
