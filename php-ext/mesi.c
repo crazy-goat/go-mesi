@@ -304,21 +304,23 @@ static void mesi_resolve_parse_json(void) {
 /*
  * build_parse_json_blob renders the fully-resolved per-parse configuration
  * into the JSON blob libgomesi's ParseJson accepts (#167). Only called when
- * the `timeout`, `max_response_size`, `max_concurrent_requests` or
- * `max_workers` key is present (those are what route a call through
- * ParseJson; Apache #167/#169/#170/#171 used_parse_json pattern). Every
+ * the `timeout`, `max_response_size`, `max_concurrent_requests`,
+ * `max_workers` or `debug` key is present (those are what route a call
+ * through ParseJson; Apache #167/#169/#170/#171/#173 used_parse_json
+ * pattern). Every
  * other key mirrors exactly what the positional ParseWithConfigCtx path
  * would pass, so behaviour is identical except for the keys the blob
  * carries. timeoutSeconds travels in SECONDS ("timeoutSeconds":N) — the
  * nanosecond conversion happens Go-side in config.ResolveTimeout (deviation
  * from issue #181's nanosecond sketch) — maxResponseSize in BYTES
  * ("maxResponseSize":N), maxConcurrentRequests as a count
- * ("maxConcurrentRequests":N), maxWorkers as a count ("maxWorkers":N); ALL
- * FOUR keys are rendered ONLY when their PHP key was explicitly set
+ * ("maxConcurrentRequests":N), maxWorkers as a count ("maxWorkers":N) and
+ * debug as a JSON boolean ("debug":true|false); ALL FIVE keys are rendered
+ * ONLY when their PHP key was explicitly set
  * (per-key conditional rendering, like Apache's build_parse_json_config),
  * so a timeout-only call gains no maxResponseSize / maxConcurrentRequests
- * / maxWorkers key, a max_workers-only call keeps the positional 30s
- * timeout, unlimited size and unlimited fetch slots — an absent key
+ * / maxWorkers / debug key, a max_workers-only call keeps the positional
+ * 30s timeout, unlimited size and unlimited fetch slots — an absent key
  * resolves to the same documented default the positional path uses Go-side
  * (30s / 0 = unlimited / 0 = unlimited / 0 = the library-default pool).
  * cacheKeyTemplate and requestCtx are included only when a template is
@@ -338,6 +340,7 @@ static char *build_parse_json_blob(zend_long depth, const char *default_url,
                                    int max_response_size_set, long max_response_size,
                                    int max_concurrent_requests_set, long max_concurrent_requests,
                                    int max_workers_set, long max_workers,
+                                   int debug_set, int debug,
                                    const char *tmpl, const char *ctx_json) {
     int has_tmpl = (tmpl != NULL && tmpl[0] != '\0');
     int has_ctx = (has_tmpl && ctx_json != NULL && ctx_json[0] != '\0');
@@ -362,6 +365,8 @@ static char *build_parse_json_blob(zend_long depth, const char *default_url,
     if (max_concurrent_requests_set && !mesi_appendf(out, cap, &pos, ",\"maxConcurrentRequests\":%ld", max_concurrent_requests))
         goto fail;
     if (max_workers_set && !mesi_appendf(out, cap, &pos, ",\"maxWorkers\":%ld", max_workers))
+        goto fail;
+    if (debug_set && !mesi_appendf(out, cap, &pos, ",\"debug\":%s", debug ? "true" : "false"))
         goto fail;
     if (has_tmpl) {
         if (!mesi_appendf(out, cap, &pos, ",\"cacheKeyTemplate\":")) goto fail;
@@ -682,6 +687,26 @@ PHP_FUNCTION(parse) {
  *                            keeps serving all other parses. Absent =>
  *                            false (no bypass). A non-boolean value is
  *                            rejected with E_WARNING.
+ *   debug:                   bool. When true, the core parser's debug
+ *                            logger is enabled (mesi.EsiParserConfig.Debug)
+ *                            and emits DEBUG parse/include/fetch events —
+ *                            including include URLs — to stderr, which PHP
+ *                            captures in its error log/error output; output
+ *                            is NEVER sent to the client. Absent => false
+ *                            (silent, byte-identical to previous behaviour).
+ *                            STRICT boolean: only true/false are accepted;
+ *                            integer 0/1, strings ("true"), null, floats and
+ *                            arrays are rejected with E_WARNING naming
+ *                            `debug` and the function returns false — a typo
+ *                            must never silently flip logging on or off.
+ *                            When present the call is routed through
+ *                            libgomesi's ParseJson entry point (#167) as
+ *                            {"debug":true|false}; an absent key keeps the
+ *                            exact ParseWithConfigCtx path. If the loaded
+ *                            libgomesi predates ParseJson, an E_WARNING
+ *                            reports debug as ignored (the parser stays
+ *                            silent, the pre-#216 behaviour) and the
+ *                            positional path runs — never a crash.
  *   cache_key_template:      string. Cache key template with placeholders
  *                            ${url}, ${header:Name}, ${cookie:Name}.
  *                            Empty/absent => default URL-only key
@@ -874,6 +899,27 @@ PHP_FUNCTION(parse) {
  *                            (the library-default NumCPU*4 pool
  *                            applies, the pre-#211 behaviour) and the
  *                            positional path runs — never a crash.
+ *   max_body_size:            optional integer. Caps the PARENT body in
+ *                            BYTES before ESI processing. Absent or 0 =
+ *                            unlimited (byte-identical to the legacy
+ *                            path). Negatives and non-integers (string
+ *                            "10", float 1.5, bool, null, array) are
+ *                            rejected with E_WARNING naming the option and
+ *                            parse_with_config() returns false. PHP has
+ *                            already allocated the body as a string, so
+ *                            this cannot reduce PHP-side memory — it only
+ *                            avoids parsing huge bodies and gives the
+ *                            caller a deterministic outcome. This is
+ *                            input handling in the extension, NOT parser
+ *                            config: it does not route through ParseJson
+ *                            and adds no blob key.
+ *   on_oversize:              optional string, "pass" (default) or
+ *                            "error", used only when max_body_size is a
+ *                            positive limit. "pass" returns the input body
+ *                            unchanged without ESI processing and emits an
+ *                            E_WARNING; "error" emits an E_WARNING and
+ *                            returns false. Unknown values and non-strings
+ *                            are rejected with E_WARNING naming the option.
  *
  * Validation strictly mirrors libgomesi's InitCacheWithConfig contract —
  * we detect the same bad inputs libgomesi would silently ignore or silently
@@ -961,6 +1007,28 @@ PHP_FUNCTION(parse_with_config) {
      * #171 pattern). */
     long max_workers = 0;
     int max_workers_set = 0;
+
+    /* max_body_size / on_oversize (#538): bound the PARENT body that is
+     * handed to ESI processing. PHP has already allocated the body as a
+     * string before this function runs, so the limit cannot reduce
+     * PHP-side memory — it avoids ESI parsing of huge bodies and gives
+     * the caller a deterministic outcome. Absent or 0 = unlimited
+     * (byte-identical to the legacy path); on_oversize defaults to
+     * "pass" (return the input unchanged, no ESI processing). These are
+     * input-handling options of the extension, NOT parser config: they
+     * never route the call through ParseJson and add no blob key. */
+    long max_body_size = 0;
+    const char *on_oversize = "pass";
+
+    /* debug: core parser debug logging (mesi.EsiParserConfig.Debug).
+     * Absent => false (silent — the pre-#216 behaviour, byte-identical to
+     * every positional Parse* path). debug_set distinguishes "explicit key"
+     * from "absent" so the blob only renders the key when set — and like
+     * timeout/max_response_size/max_concurrent_requests/max_workers, only
+     * an explicit value routes the call through ParseJson (#216; Apache
+     * #173 pattern). */
+    int debug = 0;
+    int debug_set = 0;
 
     if (config != NULL && Z_TYPE_P(config) == IS_ARRAY) {
         zval *val;
@@ -1527,6 +1595,75 @@ PHP_FUNCTION(parse_with_config) {
             max_workers_set = 1;
         }
 
+        /* max_body_size: PARENT body cap in bytes, range [0, LONG_MAX].
+         * Absent or 0 = unlimited (byte-identical to the legacy path).
+         * Strict validation: an explicit non-integer (string "10", float
+         * 1.5, bool, null, array) or negative value emits E_WARNING and
+         * the call returns false — never a silent coercion. Unlike
+         * max_response_size there is no transport-derived upper cap: the
+         * value only gates this extension's own strlen() comparison. */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "max_body_size",
+                                 sizeof("max_body_size") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) != IS_LONG) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): max_body_size must be a non-negative "
+                                 "integer (bytes; 0 = unlimited)");
+                RETURN_FALSE;
+            }
+            long v = Z_LVAL_P(val);
+            if (v < 0) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): max_body_size %ld is invalid "
+                                 "(must be >= 0; 0 = unlimited)",
+                                 v);
+                RETURN_FALSE;
+            }
+            max_body_size = v;
+        }
+
+        /* on_oversize: what to do when the parent body exceeds
+         * max_body_size. "pass" (default) returns the input unchanged
+         * without ESI processing; "error" returns false. Unknown or
+         * non-string values are rejected loudly. */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "on_oversize",
+                                 sizeof("on_oversize") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) != IS_STRING) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): on_oversize must be a string "
+                                 "(\"pass\" or \"error\")");
+                RETURN_FALSE;
+            }
+            const char *mode = Z_STRVAL_P(val);
+            if (strcmp(mode, "pass") != 0 && strcmp(mode, "error") != 0) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): on_oversize '%s' is invalid "
+                                 "(allowed: \"pass\", \"error\")",
+                                 mode);
+                RETURN_FALSE;
+            }
+            on_oversize = mode;
+        }
+
+        /* debug: core parser diagnostics (mesi.EsiParserConfig.Debug).
+         * STRICT boolean: only true/false are accepted. Integer 0/1,
+         * string "true"/"false", null, floats, arrays and every other
+         * type are rejected with E_WARNING naming the option and the
+         * function returns false — a typo must never silently flip
+         * debug logging on or off. Absent => false (silent, the
+         * pre-#216 behaviour). */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "debug", sizeof("debug") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) != IS_TRUE && Z_TYPE_P(val) != IS_FALSE) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): debug must be a boolean (true/false)");
+                RETURN_FALSE;
+            }
+            debug = (Z_TYPE_P(val) == IS_TRUE);
+            debug_set = 1;
+        }
+
         /* Backend-specific requirements: redis requires addr; memcached
          * requires servers. Detected after per-key parsing so a stray
          * key doesn't by itself trigger the error. */
@@ -1541,6 +1678,34 @@ PHP_FUNCTION(parse_with_config) {
                              "mesi\\parse_with_config(): cache_memcached_servers is required for "
                              "cache_backend='memcached' and must contain at least one host:port entry");
             RETURN_FALSE;
+        }
+    }
+
+    /* Parent body size limit (#538). PHP has already materialised the body
+     * as a string before parse_with_config() runs, so this cannot reduce
+     * PHP-side memory; it avoids ESI parsing of an oversized body and makes
+     * the outcome deterministic. There is no Content-Length in this API, so
+     * the decision uses the actual body length (strlen — the parser itself
+     * receives a NUL-terminated C string, so bytes after an embedded NUL
+     * are not part of the processed body). Only an explicit positive limit
+     * does anything; absent/0 is the unlimited legacy path. */
+    if (max_body_size > 0) {
+        size_t body_len = strlen(input);
+        if (body_len > (size_t)max_body_size) {
+            if (strcmp(on_oversize, "error") == 0) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): input body size %zu exceeds "
+                                 "max_body_size %ld (on_oversize=error)",
+                                 body_len, max_body_size);
+                RETURN_FALSE;
+            }
+            php_error_docref(NULL, E_WARNING,
+                             "mesi\\parse_with_config(): input body size %zu exceeds "
+                             "max_body_size %ld; returning it unchanged without ESI "
+                             "processing (on_oversize=pass)",
+                             body_len, max_body_size);
+            RETVAL_STRINGL(input, input_len);
+            return;
         }
     }
 
@@ -1735,32 +1900,33 @@ PHP_FUNCTION(parse_with_config) {
     }
 
     /* #181 `timeout` / #201 `max_response_size` / #206
-     * `max_concurrent_requests` / #211 `max_workers` keys: when any of
-     * the four is explicitly set, route the whole parse through
+     * `max_concurrent_requests` / #211 `max_workers` / #216 `debug` keys:
+     * when any of them is explicitly set, route the whole parse through
      * libgomesi's ParseJson entry point so timeoutSeconds /
-     * maxResponseSize / maxConcurrentRequests / maxWorkers reach the
-     * core (each option independently forces the routing — Apache
-     * #167/#169/#170/#171 pattern). The blob carries every other resolved
-     * option (depth, default URL, allowed hosts, SSRF flags, optional
-     * cache key template + request context), so behaviour matches the
-     * positional path exactly except for the keys it carries — and each
+     * maxResponseSize / maxConcurrentRequests / maxWorkers / debug reach
+     * the core (each option independently forces the routing — Apache
+     * #167/#169/#170/#171/#173 pattern). The blob carries every other
+     * resolved option (depth, default URL, allowed hosts, SSRF flags,
+     * optional cache key template + request context), so behaviour matches
+     * the positional path exactly except for the keys it carries — and each
      * key is only rendered when its PHP key was set (a timeout-only call
-     * gains no maxResponseSize/maxConcurrentRequests/maxWorkers key, a
-     * max_workers-only call keeps the positional 30s timeout, unlimited
-     * size and unlimited fetch slots). When the loaded libgomesi predates
-     * ParseJson (resolved at module init, see mesi_resolve_parse_json),
-     * fall through to the positional path with a per-key E_WARNING — each
-     * set option is ignored (positional default applies: 30s / unlimited
-     * size / unlimited fetches / the library-default NumCPU*4 pool),
-     * never a crash and never a silently wrong config. Absent keys keep
-     * the exact pre-#181/pre-#201/pre-#206/pre-#211 positional path
+     * gains no maxResponseSize/maxConcurrentRequests/maxWorkers/debug key,
+     * a debug-only call keeps the positional 30s timeout, unlimited size,
+     * unlimited fetch slots and the library-default pool). When the loaded
+     * libgomesi predates ParseJson (resolved at module init, see
+     * mesi_resolve_parse_json), fall through to the positional path with a
+     * per-key E_WARNING — each set option is ignored (positional default
+     * applies: 30s / unlimited size / unlimited fetches / the
+     * library-default NumCPU*4 pool / parser silent), never a crash and
+     * never a silently wrong config. Absent keys keep the exact
+     * pre-#181/pre-#201/pre-#206/pre-#211/pre-#216 positional path
      * (byte-identical behaviour: default 30s, unlimited size, unlimited
-     * fetches, library-default pool). */
+     * fetches, library-default pool, silent parser). */
     char *result = NULL;
     int used_parse_json = 0;
     char *parse_json_blob = NULL;
 
-    if (timeout_set || max_response_size_set || max_concurrent_requests_set || max_workers_set) {
+    if (timeout_set || max_response_size_set || max_concurrent_requests_set || max_workers_set || debug_set) {
         mesi_resolve_parse_json();
         if (g_parse_json != NULL) {
             parse_json_blob = build_parse_json_blob(
@@ -1771,6 +1937,7 @@ PHP_FUNCTION(parse_with_config) {
                 max_response_size_set, max_response_size,
                 max_concurrent_requests_set, max_concurrent_requests,
                 max_workers_set, max_workers,
+                debug_set, debug,
                 tmpl_for_ctx,
                 ctx_json && *ctx_json ? ctx_json : (char *)"");
             if (parse_json_blob == NULL) {
@@ -1778,9 +1945,9 @@ PHP_FUNCTION(parse_with_config) {
                 php_error_docref(NULL, E_WARNING,
                                  "mesi\\parse_with_config(): failed to render parse config JSON "
                                  "(timeout=%ld, max_response_size=%ld, max_concurrent_requests=%ld, "
-                                 "max_workers=%ld)",
+                                 "max_workers=%ld, debug=%d)",
                                  timeout_seconds, max_response_size, max_concurrent_requests,
-                                 max_workers);
+                                 max_workers, debug);
                 RETURN_FALSE;
             }
             used_parse_json = 1;
@@ -1815,6 +1982,12 @@ PHP_FUNCTION(parse_with_config) {
                                  "(library default NumCPU*4 worker pool applies, the "
                                  "pre-#211 behaviour). Upgrade libgomesi.so.");
             }
+            if (debug_set) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): debug is set but libgomesi lacks "
+                                 "ParseJson; debug ignored (parser stays silent, the pre-#216 "
+                                 "behaviour). Upgrade libgomesi.so.");
+            }
         }
     }
 
@@ -1835,9 +2008,9 @@ PHP_FUNCTION(parse_with_config) {
             php_error_docref(NULL, E_WARNING,
                              "mesi\\parse_with_config(): libgomesi rejected the parse config "
                              "(timeout=%ld, max_response_size=%ld, max_concurrent_requests=%ld, "
-                             "max_workers=%ld)",
+                             "max_workers=%ld, debug=%d)",
                              timeout_seconds, max_response_size, max_concurrent_requests,
-                             max_workers);
+                             max_workers, debug);
         } else {
             php_error_docref(NULL, E_WARNING, "mesi\\parse_with_config(): invalid max_depth");
         }
