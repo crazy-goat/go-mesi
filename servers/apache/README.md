@@ -298,6 +298,46 @@ MesiCacheTTL 60
   EnableMesi On
   MesiDebug On
   ```
+- `MesiParseOnHeader on|off` — Process ESI only when the upstream HTML
+  response signals it (`mesi.EsiParserConfig.ParseOnHeader`;
+  `RSRC_CONF`, server context; example: `MesiParseOnHeader On` next to
+  `EnableMesi On`). Default: **Off** — every `text/html` response is
+  parsed, byte-identical to previous behaviour. When `On`, a response is
+  buffered and parsed only when its `Edge-control` header carries
+  `dca=esi` — case-insensitive, comma-separated value list, the same
+  contract as `mesi.IsEsiResponse` and Caddy's `parse_on_header` (for
+  example `Edge-control: no-cache, dca=esi` matches; `max-age=60` does
+  not). Every other HTML response is passed through byte for byte with
+  its upstream headers: the check runs **before** body accumulation, so
+  the page is not buffered, is not limited by `MesiMaxBodySize`, and the
+  module does not add its `Surrogate-Capability: ESI/1.0` header.
+  Non-HTML responses are unaffected. The flag is also sent to libgomesi
+  through `ParseJson` as the additive `{"parseOnHeader":true|false}`
+  key, so a fetched HTML fragment is parsed only when its own response
+  signals ESI (a non-signalling fragment is left untouched even inside a
+  signalling page). An unset directive omits the key entirely, keeping
+  the always-parse default of every positional `Parse*` entry point.
+  A vhost's value overrides the global one; unset vhosts inherit it
+  (`-1` sentinel), and an explicit `Off` overrides an inherited `On`.
+  Nested-fragment behaviour requires a `libgomesi.so` exporting
+  `ParseJson` — older builds log `MesiParseOnHeader set but libgomesi
+  lacks ParseJson; MesiParseOnHeader ignored for fetched fragments (...)`,
+  while the top-level response filter still honours the directive.
+  **Cache caveat:** the core cache stores only the fragment body, and a
+  cache hit reports no ESI signal, so with `MesiCacheBackend` enabled a
+  signalling fragment is parsed on the first request but its nested
+  includes stay raw on later cached requests — do not combine the two,
+  or avoid nested includes in fragments (the same caveat as Caddy's
+  `parse_on_header`). **Deviation from the feature request:** #172
+  proposed a `Surrogate-Control: content="ESI/1.0"` substring check; the
+  implementation uses the repository's established request contract,
+  `Edge-control: dca=esi` (the same as the core, Caddy, CLI and proxy),
+  so every integration agrees on the signal.
+
+  ```apache
+  EnableMesi On
+  MesiParseOnHeader On
+  ```
 - `MesiAllowedHosts host1 host2 …` — Space-separated list of hostnames
   allowed in `<esi:include src=…>`. Matches `isURLSafe` from libgomesi.
   A value without any hostname (empty, or only ASCII or Unicode whitespace
@@ -404,7 +444,10 @@ docker compose up --build
 ## How It Works
 
 1. Registers as output filter in Apache's filter chain.
-2. Intercepts responses with `Content-Type: text/html`.
+2. Intercepts responses with `Content-Type: text/html`. With
+   `MesiParseOnHeader On`, only a response whose `Edge-control` header
+   carries `dca=esi` is intercepted; every other HTML response is passed
+   through before buffering starts (and without `Surrogate-Capability`).
 3. Adds `Surrogate-Capability: ESI/1.0` header.
 4. Buffers response body until complete.
 5. Calls `InitCache(...)` from libgomesi once per worker process when
@@ -412,10 +455,10 @@ docker compose up --build
    `MesiCacheTTL`/`MesiCacheSize`).
 6. Processes the buffered body through `libgomesi.ParseJson()` when
    `MesiTimeout`, `MesiMaxResponseSize`, `MesiMaxConcurrentRequests`,
-   `MesiMaxWorkers` or `MesiDebug` is set (the JSON blob carries
-   whichever of those five directives are configured plus depth, base
-   URL, SSRF flags and, when configured, the cache key template +
-   request context), through
+   `MesiMaxWorkers`, `MesiDebug` or `MesiParseOnHeader` is set (the JSON
+   blob carries whichever of those six directives are configured plus
+   depth, base URL, SSRF flags and, when configured, the cache key
+   template + request context), through
    `libgomesi.ParseWithConfigCtx()` when only
    `MesiCacheKeyTemplate` is set (headers/cookies from the incoming
    request are serialised as JSON context for `mesi.BuildCacheKey`),
