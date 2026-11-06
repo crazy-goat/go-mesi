@@ -48,6 +48,7 @@ http:
 | `on_oversize` | string | `"pass"` | What happens when the parent body is over `max_body_size`: `"pass"` sends it unchanged without ESI processing and logs a warning, `"error"` logs an error and answers `502 Bad Gateway`. Other values are rejected. |
 | `max_concurrent_requests` | int | `0` (unlimited) | Maximum concurrent ESI include HTTP fetches within one page render. Includes beyond the cap wait for a slot and are not dropped; negative values and values above `999999999` are rejected. |
 | `max_workers` | int | `0` (`runtime.NumCPU()*4`) | Maximum token-processing drain-pool workers per `MESIParse` call. Each nested parse creates its own pool and inherits the cap; negative values and values above `999999999` are rejected. |
+| `debug` | bool | `false` | Enable verbose ESI diagnostics (parse progress, include fetches, cache read/write errors). The core's default logger writes them to stderr, so they appear wherever the `rr` process's stderr goes. Absent and explicit `false` both keep logging off. |
 | `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
 | `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`, `"memcached"`. |
 | `cache_size` | int | `10000` | Max entries for memory cache backend. |
@@ -156,6 +157,25 @@ http:
     mesi:
       max_workers: 8
 ```
+
+#### Debug logging
+
+`debug: true` turns on the core's verbose ESI diagnostics: parsing progress,
+each `<esi:include>` fetch (URL, status, duration), timeouts, SSRF decisions
+and cache read/write errors. The core's default logger writes these lines to
+**stderr**, so they appear wherever the `rr` process's stderr goes; no
+separate log target has to be configured. Absent and explicit `false` both
+keep debug logging off.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      debug: true
+```
+
+Debug lines can contain include URLs and upstream error details. Enable the
+option only while diagnosing a problem, not in production.
 
 #### Shared HTTP Client
 Enables TCP connection reuse across ESI includes. The shared client uses an SSRF-safe transport that blocks private IPs.
