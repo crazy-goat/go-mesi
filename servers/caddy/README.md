@@ -140,9 +140,20 @@ mesi {
   `Edge-Control` and `Edge-control` are the same header to `http.Header.Get`.
 - The flag is also passed to `EsiParserConfig.ParseOnHeader`, so a fetched
   fragment is parsed only when its own response carries the header.
-- A page that is not signalled is not buffered for `max_body_size` either,
-  because it is never parsed. This is the same behaviour as the standalone
-  proxy's `--parse-on-header`.
+- `max_body_size` only bounds pages that are actually parsed. An unsignalled
+  page is exempt from the cap (`middleware.ResponseWriter.LimitOnlyIf`), but it
+  is still buffered in full by the shared response writer, so the directive does
+  **not** protect memory for pages that are not parsed. This matches the
+  standalone proxy's `--parse-on-header`; a streaming pass-through in
+  `middleware.ResponseWriter` is a follow-up (#253).
+- **Known cache caveat:** with `cache_backend` enabled, a fragment served from
+  cache is not re-parsed even when the origin signalled ESI. The core cache
+  stores only the body, and `mesi/fetch.go` returns `isEsiResponse=false` on a
+  cache hit, so a signalling fragment can be parsed on the first request and
+  left with raw `<esi:include>` tags on later (cached) requests. Do not combine
+  `cache_backend` with `parse_on_header` until the core caches the ESI signal
+  together with the body, or make sure fragments do not contain nested
+  includes.
 - Responses without the header keep their upstream headers and
   `Content-Length`; the middleware adds no `Surrogate-Control`.
 
@@ -406,7 +417,9 @@ mesi {
 **Notes:**
 - Only `text/html` responses are counted; other content types are not limited.
   With `parse_on_header`, only pages that carry `Edge-control: dca=esi` are
-  counted, because the others are never parsed.
+  counted, because the others are never parsed. The exempt pages are still
+  buffered in full by the shared response writer, so this limit does not bound
+  their memory use (see `parse_on_header` above).
 - If `Content-Length` is known and over the limit, the decision is made at
   once and nothing is buffered. Otherwise the size is checked while the body
   is buffered: in `pass` mode the part buffered so far and the rest are

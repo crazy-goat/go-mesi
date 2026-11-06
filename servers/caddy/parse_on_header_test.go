@@ -248,3 +248,58 @@ func TestParseOnHeaderNestedFragmentFollowsHeader(t *testing.T) {
 		})
 	}
 }
+
+// TestParseOnHeaderCachedFragmentLosesEsiSignal pins a known limitation, not
+// desired behaviour. The core cache stores only the fragment body, and a cache
+// hit returns isEsiResponse=false (mesi/fetch.go), so a signalling fragment is
+// parsed on the first request and left with raw nested includes on the second.
+// This test exists so that the core fix (caching the ESI signal with the body)
+// is noticed here: when it lands, update this test and the "Known cache
+// caveat" in servers/caddy/README.md instead of preserving the old output.
+func TestParseOnHeaderCachedFragmentLosesEsiSignal(t *testing.T) {
+	var deepestCalls int
+	deepest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deepestCalls++
+		_, _ = w.Write([]byte("DeepestText"))
+	}))
+	t.Cleanup(deepest.Close)
+
+	var middleCalls int
+	middle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		middleCalls++
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Edge-Control", "dca=esi")
+		_, _ = w.Write([]byte(`<esi:include src="` + deepest.URL + `" />`))
+	}))
+	t.Cleanup(middle.Close)
+
+	blockPrivateIPs := false
+	m := &MesiMiddleware{
+		ParseOnHeader:   true,
+		BlockPrivateIPs: &blockPrivateIPs,
+		CacheBackend:    "memory",
+	}
+	if err := m.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	page := esiPage(middle.URL)
+	first := servePage(t, m, page, "dca=esi")
+	if !strings.Contains(first.Body.String(), "DeepestText") {
+		t.Fatalf("first (cache miss) request must parse the signalling fragment, got %q", first.Body.String())
+	}
+
+	second := servePage(t, m, page, "dca=esi")
+	if middleCalls != 1 {
+		t.Errorf("middle fragment calls = %d, want 1 (second request must be a cache hit)", middleCalls)
+	}
+	if strings.Contains(second.Body.String(), "DeepestText") {
+		t.Fatal("the core now carries the ESI signal through cache hits: remove this pinned limitation and update the cache caveat in the README/features/CHANGELOG")
+	}
+	if !strings.Contains(second.Body.String(), "esi:include") {
+		t.Errorf("documented limitation: the cached fragment must keep its raw nested include, got %q", second.Body.String())
+	}
+	if deepestCalls != 1 {
+		t.Errorf("deepest fragment calls = %d, want 1", deepestCalls)
+	}
+}

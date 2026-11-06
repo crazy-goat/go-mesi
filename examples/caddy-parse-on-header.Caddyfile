@@ -2,16 +2,25 @@
 #
 # With parse_on_header, a text/html response is parsed only when it carries
 # `Edge-control: dca=esi` (case-insensitive, comma-separated list allowed).
-# Every other response is sent through unchanged and is not buffered for
-# max_body_size. Without the directive, every text/html response is parsed,
-# which is the backward-compatible default.
+# Every other response is sent through unchanged. Without the directive,
+# every text/html response is parsed, which is the backward-compatible
+# default.
+#
+# Note: max_body_size only bounds the pages that ARE parsed. An unsignalled
+# page is exempt from the cap, but the shared response writer still buffers
+# it in full, so max_body_size is not a memory guard for those pages.
+#
+# Note: do not combine parse_on_header with a cache_backend. The core cache
+# does not store the ESI signal, so a signalling fragment served from cache
+# is not re-parsed and its nested <esi:include> tags stay raw.
 
 http://:8080 {
     mesi {
         parse_on_header
 
         # Optional: bound the pages that ARE parsed. Unsignalled pages are
-        # not counted because they are never buffered for ESI.
+        # exempt from this cap, but they are still buffered; see the notes
+        # above.
         max_body_size 1048576
         on_oversize pass
     }
