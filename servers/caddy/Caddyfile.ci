@@ -9,3 +9,13 @@
     }
     reverse_proxy test-server:80
 }
+
+# Same backend, parse_on_header enabled. Kept on a separate listener so the
+# suite can compare the directive being absent (above) with it being present.
+:8081 {
+    mesi {
+        block_private_ips false
+        parse_on_header
+    }
+    reverse_proxy test-server:80
+}
