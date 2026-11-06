@@ -33,6 +33,10 @@ services:
       # 8098 = MesiDebug On, 8099 = MesiDebug Off (#173).
       - "${APACHE_PORT_8098:-8098}:8098"
       - "${APACHE_PORT_8099:-8099}:8099"
+      # 8100 = MesiParseOnHeader On, 8101 = Off, 8102 = On + body limit (#172).
+      - "${APACHE_PORT_8100:-8100}:8100"
+      - "${APACHE_PORT_8101:-8101}:8101"
+      - "${APACHE_PORT_8102:-8102}:8102"
     environment:
       - MESI_FORCE_FLATTEN_ERROR=${MESI_FORCE_FLATTEN_ERROR:-}
     volumes:
