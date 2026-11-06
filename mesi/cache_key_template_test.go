@@ -181,6 +181,42 @@ func TestBuildCacheKey_NonCanonicalHeaderKeys(t *testing.T) {
 	}
 }
 
+// TestBuildCacheKey_DuplicateHeaderKeyTieBreak pins the deterministic choice
+// between header keys that differ only in case. Neither key is the canonical
+// form ("X-A") nor the exact queried name ("x-a"), so resolution has to fall
+// through to the lexicographically-smallest-equal-folding-key stage. Without
+// that tie-break the value would depend on Go's randomized map iteration order.
+func TestBuildCacheKey_DuplicateHeaderKeyTieBreak(t *testing.T) {
+	r := httptest.NewRequest("GET", "http://example.com/", nil)
+	r.Header["x-A"] = []string{"1"}
+	r.Header["X-a"] = []string{"2"}
+
+	// "X-a" < "x-A" bytewise, so the "X-a" value wins.
+	const want = "2"
+	for i := 0; i < 1000; i++ {
+		if got := BuildCacheKey("/frag", "${header:x-a}", r); got != want {
+			t.Fatalf("iteration %d: expected %q, got %q", i, want, got)
+		}
+	}
+}
+
+// TestBuildCacheKey_DuplicateCookieNameTieBreak is the cookie counterpart of
+// TestBuildCacheKey_DuplicateHeaderKeyTieBreak: no cookie name matches exactly,
+// so the lexicographically smallest equal-folding name ("SESSION") wins over
+// the first one in Cookie-header order ("Session").
+func TestBuildCacheKey_DuplicateCookieNameTieBreak(t *testing.T) {
+	r := httptest.NewRequest("GET", "http://example.com/", nil)
+	r.Header.Set("Cookie", "other=1; Session=First; SESSION=Second")
+
+	// "SESSION" < "Session" bytewise, so the "SESSION" value wins.
+	const want = "Second"
+	for i := 0; i < 1000; i++ {
+		if got := BuildCacheKey("/frag", "${cookie:session}", r); got != want {
+			t.Fatalf("iteration %d: expected %q, got %q", i, want, got)
+		}
+	}
+}
+
 func TestBuildCacheKey_AdjacentPlaceholders(t *testing.T) {
 	r := httptest.NewRequest("GET", "http://example.com/", nil)
 	r.Header.Set("A", "1")
