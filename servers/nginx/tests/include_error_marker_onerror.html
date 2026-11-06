@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>ESI Include Error Marker with onerror</title>
+</head>
+<body>
+    <!-- onerror="continue" must win over IncludeErrorMarker: a failed
+         include disappears instead of rendering the marker. -->
+    <esi:include src="http://backend:8000/missing-include-error-marker-228.txt" onerror="continue" />
+    <p>After onerror include</p>
+</body>
+</html>

@@ -187,6 +187,18 @@ typedef struct {
                                             // value routes the parse through
                                             // ParseJson with
                                             // {"parseOnHeader":true|false}
+  ngx_str_t include_error_marker;           // Raw HTML rendered in place of a
+                                            // failed <esi:include> with no
+                                            // onerror="continue" and no
+                                            // fallback body (#228). ngx_str_t's
+                                            // data == NULL is the UNSET sentinel
+                                            // (ngx_pcalloc zeroes it); an
+                                            // explicit empty value is a
+                                            // non-NULL data with len == 0.
+                                            // Unset keeps the legacy positional
+                                            // path; set (even empty) routes the
+                                            // parse through ParseJson with
+                                            // {"includeErrorMarker":"…"}.
 } ngx_http_mesi_loc_conf_t;
 
 typedef struct {
@@ -339,6 +351,17 @@ static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("mesi_parse_on_header"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
      ngx_conf_set_flag_slot, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, parse_on_header), NULL},
+
+    // Include error marker (#228). ngx_conf_set_str_slot is enough: it
+    // stores the token verbatim and its duplicate check keys off
+    // field->data, which stays NULL until the directive is set. That
+    // NULL is our UNSET sentinel (an explicit `mesi_include_error_marker ""`
+    // stores a non-NULL, zero-length value), so the merge can tell
+    // "not configured" (legacy positional path) from "configured but
+    // silent" (ParseJson with {"includeErrorMarker":""}).
+    {ngx_string("mesi_include_error_marker"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, include_error_marker), NULL},
 
     {ngx_string("mesi_cache_backend"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
@@ -1269,10 +1292,11 @@ static char *build_request_ctx_json(ngx_http_request_t *r, ngx_str_t *template,
 // defaultUrl, allowedHosts, blockPrivateIPs,
 // allowPrivateIPsForAllowedHosts, cacheKeyTemplate, requestCtx,
 // timeoutSeconds, maxResponseSize, maxConcurrentRequests,
-// maxWorkers, debug, parseOnHeader). Only called when mesi_timeout,
-// mesi_max_response_size, mesi_max_concurrent_requests, mesi_max_workers,
-// mesi_debug or mesi_parse_on_header is set (those are what route a
-// request through ParseJson, #184/#208/#214/#219/#223/#188 — mirror of
+// maxWorkers, debug, parseOnHeader, includeErrorMarker). Only called when
+// mesi_timeout, mesi_max_response_size, mesi_max_concurrent_requests,
+// mesi_max_workers, mesi_debug, mesi_parse_on_header or
+// mesi_include_error_marker is set (those are what route a request through
+// ParseJson, #184/#208/#214/#219/#223/#188/#228 — mirror of
 // Apache's build_parse_json_config + used_parse_json pattern from #167).
 // Every other key mirrors exactly what the legacy positional path
 // would pass, so behaviour is identical except for the values the
@@ -1302,6 +1326,12 @@ static char *build_request_ctx_json(ngx_http_request_t *r, ngx_str_t *template,
 // ("parseOnHeader":true or false), so an unset directive omits the key and
 // keeps the always-parse positional-path default (#188), matching Apache
 // #172.
+// includeErrorMarker is rendered only when mesi_include_error_marker is
+// configured, including the explicit-empty form ("includeErrorMarker":"")
+// which means "configured but silent" (#228). The marker is raw HTML
+// inserted verbatim into the response by the core, so the operator owns
+// its safety (never carry error text, URLs, host names or IPs); only the
+// JSON string encoding is ours, via mesi_json_append_str.
 // The key prefixes are local arrays so sizeof()-1 measures them —
 // hand-counted JSON lengths are a classic off-by-one; two passes
 // (measure, then write) keep the allocation exact because nginx pools
@@ -1322,6 +1352,7 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
   static const char pfx_maxw[] = ",\"maxWorkers\":";
   static const char pfx_debug[] = ",\"debug\":";
   static const char pfx_poh[] = ",\"parseOnHeader\":";
+  static const char pfx_marker[] = ",\"includeErrorMarker\":";
   static const char pfx_tmpl[] = ",\"cacheKeyTemplate\":";
   static const char pfx_ctx[] = ",\"requestCtx\":";
 
@@ -1331,6 +1362,7 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
   int has_maxw = lcf->max_workers != NGX_CONF_UNSET;
   int has_debug = lcf->debug != NGX_CONF_UNSET;
   int has_poh = lcf->parse_on_header != NGX_CONF_UNSET;
+  int has_marker = lcf->include_error_marker.data != NULL;
   int has_tmpl = lcf->cache_key_template.len > 0;
   int has_ctx = has_tmpl && ctx_json != NULL && ctx_json[0] != '\0';
   const char *block_str = lcf->block_private_ips ? "true" : "false";
@@ -1369,6 +1401,11 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
   }
   if (has_poh) {
     total += sizeof(pfx_poh) - 1 + (lcf->parse_on_header ? 4 : 5);
+  }
+  if (has_marker) {
+    total += sizeof(pfx_marker) - 1 + 2 +
+             mesi_json_escaped_len(lcf->include_error_marker.data,
+                                   lcf->include_error_marker.len);
   }
   if (has_tmpl) {
     total += sizeof(pfx_tmpl) - 1 + 2 +
@@ -1449,6 +1486,12 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
     w += sizeof(pfx_poh) - 1;
     ngx_memcpy(w, poh_str, poh_len);
     w += poh_len;
+  }
+  if (has_marker) {
+    ngx_memcpy(w, pfx_marker, sizeof(pfx_marker) - 1);
+    w += sizeof(pfx_marker) - 1;
+    mesi_json_append_str(&w, lcf->include_error_marker.data,
+                         lcf->include_error_marker.len);
   }
   if (has_tmpl) {
     ngx_memcpy(w, pfx_tmpl, sizeof(pfx_tmpl) - 1);
@@ -1691,13 +1734,15 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   char *message = NULL;
 
   // mesi_timeout / mesi_max_response_size / mesi_max_concurrent_requests
-  // / mesi_max_workers / mesi_debug / mesi_parse_on_header routing
-  // (#184/#208/#214/#219/#223/#188): when any of the six directives is
-  // set, the whole parse is routed through libgomesi's ParseJson entry
-  // point (the #167 schema) so {"timeoutSeconds":N},
+  // / mesi_max_workers / mesi_debug / mesi_parse_on_header /
+  // mesi_include_error_marker routing
+  // (#184/#208/#214/#219/#223/#188/#228): when any of the seven
+  // directives is set, the whole parse is routed through libgomesi's
+  // ParseJson entry point (the #167 schema) so {"timeoutSeconds":N},
   // {"maxResponseSize":N}, {"maxConcurrentRequests":N}, {"maxWorkers":N},
-  // {"debug":true|false} and/or {"parseOnHeader":true|false} reach the
-  // core — the same used_parse_json pattern Apache has used since #167.
+  // {"debug":true|false}, {"parseOnHeader":true|false} and/or
+  // {"includeErrorMarker":"…"} reach the core — the same used_parse_json
+  // pattern Apache has used since #167.
   // The blob carries every other resolved setting (depth, base URL, SSRF
   // flags, optional cache key template + request context), so behaviour
   // matches the legacy positional path exactly except for those values.
@@ -1705,7 +1750,8 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   // legacy chain below with a logged per-request warning naming each set
   // directive — the directives are ignored (30s / unlimited / unlimited /
   // library-default NumCPU*4 pool / parser silent / fragments always
-  // parsed apply), never a crash and never a silently wrong config.
+  // parsed / failed includes silent apply), never a crash and never a
+  // silently wrong config.
   // used_parse_json distinguishes "not attempted" from "ParseJson
   // returned NULL" — a NULL must NOT fall back silently; it fails the
   // request closed below (config errors are already logged Go-side).
@@ -1714,7 +1760,8 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
                    lcf->max_concurrent_requests != NGX_CONF_UNSET ||
                    lcf->max_workers != NGX_CONF_UNSET ||
                    lcf->debug != NGX_CONF_UNSET ||
-                   lcf->parse_on_header != NGX_CONF_UNSET;
+                   lcf->parse_on_header != NGX_CONF_UNSET ||
+                   lcf->include_error_marker.data != NULL;
   int used_parse_json = 0;
   if (configured) {
     if (EsiParseJson != NULL) {
@@ -1778,6 +1825,12 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
                       "fetched fragments (the top-level head filter still "
                       "honours it; nested includes always parse, the "
                       "pre-#188 behaviour)");
+      }
+      if (lcf->include_error_marker.data != NULL) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "mesi: mesi_include_error_marker is set but libgomesi "
+                      "lacks ParseJson — mesi_include_error_marker ignored "
+                      "(failed includes stay silent, the pre-#228 behaviour)");
       }
     }
   }
@@ -2628,6 +2681,12 @@ static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
   // Same sentinel rule as debug (#188): 0 is a valid configured value
   // (explicit off), so only NGX_CONF_UNSET can mean "inherit / legacy".
   conf->parse_on_header = NGX_CONF_UNSET;
+  // include_error_marker needs no explicit sentinel: ngx_pcalloc zeroes
+  // the struct, and an ngx_str_t with data == NULL is what
+  // ngx_conf_set_str_slot / ngx_conf_merge_str_value treat as "unset".
+  // An explicit `mesi_include_error_marker ""` stores a non-NULL
+  // zero-length value, so "unset" and "configured but silent" stay
+  // distinguishable (#228).
   return conf;
 }
 
@@ -2741,6 +2800,18 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   // mesi_debug).
   ngx_conf_merge_value(conf->parse_on_header, prev->parse_on_header,
                        NGX_CONF_UNSET);
+  // include_error_marker (#228): data == NULL is the unset sentinel, so
+  // an unset child inherits its parent's marker and keeps the legacy
+  // positional path when the parent is unset too. Deliberately NOT
+  // ngx_conf_merge_str_value(..., "") — that macro's default would
+  // replace the NULL sentinel with a non-NULL empty string, making an
+  // unset directive look configured and routing every parse through
+  // ParseJson. An explicit empty marker survives the merge (non-NULL,
+  // len 0) and clears an inherited marker without reactivating the
+  // parent's output.
+  if (conf->include_error_marker.data == NULL) {
+    conf->include_error_marker = prev->include_error_marker;
+  }
   // Empty (unset) = URL-only DefaultCacheKey (backward compatible); an
   // explicitly empty value keeps the same meaning.
   ngx_conf_merge_str_value(conf->cache_key_template, prev->cache_key_template, "");
