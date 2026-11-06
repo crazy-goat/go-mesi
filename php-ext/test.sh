@@ -576,6 +576,65 @@ else
     exit 1
 fi
 
+echo ""
+echo "=== Test 29: under and at the exact max_body_size boundary still process ESI (#538) ==="
+for ROUTE in max-body-size-under max-body-size-exact; do
+    RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/"$ROUTE")
+    if echo "$RESPONSE" | grep -q "body limit test" \
+       && echo "$RESPONSE" | grep -q "Hurray: Esi included!" \
+       && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+        echo "PASS: $ROUTE processed the body (rejects only len > cap)"
+    else
+        echo "FAIL: $ROUTE did not process the body"
+        echo "Response: ${RESPONSE:0:300}"
+        [ "${CI:-}" != "true" ] && docker compose down
+        exit 1
+    fi
+done
+
+echo ""
+echo "=== Test 30: over max_body_size with on_oversize=pass returns the body unchanged (#538) ==="
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/max-body-size-over-pass)
+if echo "$RESPONSE" | grep -q "body limit test" \
+   && echo "$RESPONSE" | grep -q '<esi:include' \
+   && ! echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
+    echo "PASS: oversized body passed through unchanged (raw tag kept, include not fetched)"
+else
+    echo "FAIL: on_oversize=pass did not return the input unchanged"
+    echo "Response: ${RESPONSE:0:300}"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 31: over max_body_size with on_oversize=error returns false (#538) ==="
+RESPONSE=$(curl -s -w '\n%{http_code}' http://localhost:"$TEST_PORT"/max-body-size-over-error)
+BODY=${RESPONSE%$'\n'*}
+CODE=${RESPONSE##*$'\n'}
+if [ "$CODE" = "500" ] && [ "$BODY" = "BODY-ERROR" ]; then
+    echo "PASS: oversized body with on_oversize=error produced false + E_WARNING"
+else
+    echo "FAIL: on_oversize=error did not fail the parse (status=$CODE, body=${BODY:0:100})"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 32: absent and explicit 0 max_body_size are unlimited (#538) ==="
+for ROUTE in max-body-size-absent max-body-size-zero; do
+    RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/"$ROUTE")
+    if echo "$RESPONSE" | grep -q "body limit test" \
+       && echo "$RESPONSE" | grep -q "Hurray: Esi included!" \
+       && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+        echo "PASS: $ROUTE processed the body (unlimited)"
+    else
+        echo "FAIL: $ROUTE did not behave as unlimited"
+        echo "Response: ${RESPONSE:0:300}"
+        [ "${CI:-}" != "true" ] && docker compose down
+        exit 1
+    fi
+done
+
 if [ -n "$DEBUG_PID" ]; then
     kill "$DEBUG_PID" 2>/dev/null || true
     wait "$DEBUG_PID" 2>/dev/null || true
@@ -583,7 +642,7 @@ fi
 [ -n "$DEBUG_ERR" ] && rm -f "$DEBUG_ERR"
 
 echo ""
-echo "=== Test 29: include_error_marker renders for a failed include (#221) ==="
+echo "=== Test 33: include_error_marker renders for a failed include (#221) ==="
 RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/include-error-marker)
 if echo "$RESPONSE" | grep -q "marker test" \
    && echo "$RESPONSE" | grep -q "<!-- MESI_ERROR_MARKER -->" \
@@ -597,7 +656,7 @@ else
 fi
 
 echo ""
-echo "=== Test 30: include_error_marker suppressed by onerror=\"continue\" (#221) ==="
+echo "=== Test 34: include_error_marker suppressed by onerror=\"continue\" (#221) ==="
 RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/include-error-marker-onerror)
 if echo "$RESPONSE" | grep -q "marker onerror" \
    && ! echo "$RESPONSE" | grep -q "MESI_ERROR_MARKER" \
@@ -611,7 +670,7 @@ else
 fi
 
 echo ""
-echo "=== Test 31: include_error_marker suppressed by a fallback body (#221) ==="
+echo "=== Test 35: include_error_marker suppressed by a fallback body (#221) ==="
 RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/include-error-marker-fallback)
 if echo "$RESPONSE" | grep -q "marker fallback" \
    && echo "$RESPONSE" | grep -q "fallback body" \
@@ -626,7 +685,7 @@ else
 fi
 
 echo ""
-echo "=== Test 32: include_error_marker absent stays silent (#221) ==="
+echo "=== Test 36: include_error_marker absent stays silent (#221) ==="
 RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/include-error-marker-absent)
 if echo "$RESPONSE" | grep -q "marker absent" \
    && ! echo "$RESPONSE" | grep -q "MESI_ERROR_MARKER" \
