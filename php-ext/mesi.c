@@ -148,10 +148,12 @@ static void mesi_cache_state_record(const char *backend, long size, long ttl,
  */
 
 /*
- * Validation helpers — keep inputs deterministic. We reject any byte that
- * would force JSON escaping rather than escape it at runtime, so a hostile
- * password never injects JSON keys. The trade-off (no `"`, no `\\`, no
- * control chars in user-supplied values) matches Apache mod_mesi.c.
+ * Validation helpers — keep inputs deterministic. For host/password-style
+ * options we reject any byte that would force JSON escaping rather than
+ * escape it at runtime, so a hostile password never injects JSON keys. The
+ * trade-off (no `"`, no `\\`, no control chars in user-supplied values)
+ * matches Apache mod_mesi.c. include_error_marker is the deliberate
+ * exception: it is raw HTML and is escaped by mesi_json_append_str.
  */
 /* Rejects max_depth outside [0, MESI_MAX_MAX_DEPTH]. 0 is passthrough.
  * Emits E_WARNING and returns 1 when invalid so both parse() and
@@ -204,11 +206,12 @@ static int mesi_putc(char *dst, size_t cap, size_t *pos, char c) {
 }
 
 /* Append a JSON-escaped string (no surrounding quotes) into dst at *pos.
- * We never expect to escape because callers pass only "safe" strings —
- * this is a defence-in-depth caller-side guarantee, not a runtime path.
- * If a byte outside the safe set appears (e.g. control char slipped past
- * upstream), we encode \u00XX as a deterministic fallback so the JSON
- * is still valid. */
+ * Most callers pass only "safe" strings (hosts, passwords, templates) whose
+ * validators already reject quotes/backslashes/control characters, but
+ * include_error_marker is deliberately raw HTML and can contain any of
+ * them, so this escape path is a real runtime path, not just
+ * defence-in-depth. Bytes outside the safe set are encoded as \\u00XX, so
+ * the JSON is always valid. */
 static int mesi_json_append_escape(char *dst, size_t cap, size_t *pos, const char *src) {
     for (const unsigned char *p = (const unsigned char *)src; *p; p++) {
         if (*p == '"') {
@@ -305,9 +308,9 @@ static void mesi_resolve_parse_json(void) {
  * build_parse_json_blob renders the fully-resolved per-parse configuration
  * into the JSON blob libgomesi's ParseJson accepts (#167). Only called when
  * the `timeout`, `max_response_size`, `max_concurrent_requests`,
- * `max_workers` or `debug` key is present (those are what route a call
- * through ParseJson; Apache #167/#169/#170/#171/#173 used_parse_json
- * pattern). Every
+ * `max_workers`, `debug` or `include_error_marker` key is present (those
+ * are what route a call through ParseJson; Apache #167/#169/#170/#171/
+ * #173/#165 used_parse_json pattern). Every
  * other key mirrors exactly what the positional ParseWithConfigCtx path
  * would pass, so behaviour is identical except for the keys the blob
  * carries. timeoutSeconds travels in SECONDS ("timeoutSeconds":N) — the
@@ -315,17 +318,23 @@ static void mesi_resolve_parse_json(void) {
  * from issue #181's nanosecond sketch) — maxResponseSize in BYTES
  * ("maxResponseSize":N), maxConcurrentRequests as a count
  * ("maxConcurrentRequests":N), maxWorkers as a count ("maxWorkers":N) and
- * debug as a JSON boolean ("debug":true|false); ALL FIVE keys are rendered
+ * debug as a JSON boolean ("debug":true|false); ALL SIX keys are rendered
  * ONLY when their PHP key was explicitly set
  * (per-key conditional rendering, like Apache's build_parse_json_config),
  * so a timeout-only call gains no maxResponseSize / maxConcurrentRequests
- * / maxWorkers / debug key, a max_workers-only call keeps the positional
- * 30s timeout, unlimited size and unlimited fetch slots — an absent key
+ * / maxWorkers / debug / includeErrorMarker key, a max_workers-only call
+ * keeps the positional 30s timeout, unlimited size and unlimited fetch
+ * slots — an absent key
  * resolves to the same documented default the positional path uses Go-side
  * (30s / 0 = unlimited / 0 = unlimited / 0 = the library-default pool).
  * cacheKeyTemplate and requestCtx are included only when a template is
  * active (backend configured), mirroring tmpl_for_ctx/ctx_json on the
  * positional path.
+ *
+ * includeErrorMarker is JSON-escaped via mesi_json_append_str like every
+ * other string: the marker is raw public HTML and may legitimately contain
+ * quotes, backslashes and control characters (unlike the host/password
+ * validators, it must NOT be rejected for them).
  *
  * Strings are escaped via mesi_json_append_str (default_url is caller
  * input and may contain '"'; allowed_hosts validation only rules out
@@ -341,11 +350,12 @@ static char *build_parse_json_blob(zend_long depth, const char *default_url,
                                    int max_concurrent_requests_set, long max_concurrent_requests,
                                    int max_workers_set, long max_workers,
                                    int debug_set, int debug,
+                                   int include_error_marker_set, const char *include_error_marker,
                                    const char *tmpl, const char *ctx_json) {
     int has_tmpl = (tmpl != NULL && tmpl[0] != '\0');
     int has_ctx = (has_tmpl && ctx_json != NULL && ctx_json[0] != '\0');
     /* Worst case 6 output bytes per input byte (\\u00XX) + fixed keys. */
-    size_t cap = 360 + strlen(default_url) * 6 + strlen(allowed_hosts) * 6 + (has_tmpl ? strlen(tmpl) * 6 : 0) + (has_ctx ? strlen(ctx_json) : 0);
+    size_t cap = 360 + strlen(default_url) * 6 + strlen(allowed_hosts) * 6 + (has_tmpl ? strlen(tmpl) * 6 : 0) + (has_ctx ? strlen(ctx_json) : 0) + (include_error_marker_set ? strlen(include_error_marker) * 6 : 0);
     char *out = (char *)malloc(cap);
     if (out == NULL) return NULL;
     size_t pos = 0;
@@ -368,6 +378,10 @@ static char *build_parse_json_blob(zend_long depth, const char *default_url,
         goto fail;
     if (debug_set && !mesi_appendf(out, cap, &pos, ",\"debug\":%s", debug ? "true" : "false"))
         goto fail;
+    if (include_error_marker_set) {
+        if (!mesi_appendf(out, cap, &pos, ",\"includeErrorMarker\":")) goto fail;
+        if (!mesi_json_append_str(out, cap, &pos, include_error_marker)) goto fail;
+    }
     if (has_tmpl) {
         if (!mesi_appendf(out, cap, &pos, ",\"cacheKeyTemplate\":")) goto fail;
         if (!mesi_json_append_str(out, cap, &pos, tmpl)) goto fail;
@@ -707,6 +721,42 @@ PHP_FUNCTION(parse) {
  *                            reports debug as ignored (the parser stays
  *                            silent, the pre-#216 behaviour) and the
  *                            positional path runs — never a crash.
+ *   include_error_marker:    string. Raw HTML rendered in place of a
+ *                            failed <esi:include> that has neither
+ *                            onerror="continue" nor a fallback body
+ *                            (mesi.EsiParserConfig.IncludeErrorMarker).
+ *                            Empty string = configured but SILENT;
+ *                            absent = byte-identical to the pre-#221
+ *                            behaviour (the include is replaced with
+ *                            nothing). onerror="continue" and fallback
+ *                            bodies always take priority, so the marker
+ *                            never overrides them. STRICT type: only a
+ *                            string is accepted; integers, floats, bools,
+ *                            null, arrays and objects are rejected with
+ *                            E_WARNING
+ *                            naming `include_error_marker` and the function
+ *                            returns false. An embedded NUL byte is also
+ *                            rejected: the value crosses as a NUL-terminated
+ *                            C string, so accepting it would silently
+ *                            truncate the marker. Unlike the host/password
+ *                            options this value is NOT restricted by
+ *                            mesi_is_safe_string — quotes, backslashes and
+ *                            control characters are valid raw HTML and are
+ *                            JSON-escaped by mesi_json_append_str. When
+ *                            present the call is routed through libgomesi's
+ *                            ParseJson entry point (#167) as
+ *                            {"includeErrorMarker":"…"}; an absent key
+ *                            keeps the exact ParseWithConfigCtx path. If
+ *                            the loaded libgomesi predates ParseJson, an
+ *                            E_WARNING reports the marker as ignored
+ *                            (failed includes stay silent, the pre-#165
+ *                            behaviour) and the positional path runs —
+ *                            never a crash.
+ *                            **Security:** the marker is inserted into the
+ *                            public response VERBATIM (it is raw HTML, not
+ *                            escaped). Never put internal error details,
+ *                            upstream URLs, host names or IP addresses in
+ *                            it.
  *   cache_key_template:      string. Cache key template with placeholders
  *                            ${url}, ${header:Name}, ${cookie:Name}.
  *                            Empty/absent => default URL-only key
@@ -1029,6 +1079,17 @@ PHP_FUNCTION(parse_with_config) {
      * #173 pattern). */
     int debug = 0;
     int debug_set = 0;
+
+    /* include_error_marker: raw HTML rendered for a failed include with
+     * neither onerror="continue" nor a fallback body (see the doc comment
+     * above). Empty string = configured but silent; absent = the legacy
+     * positional path, byte-identical to pre-#221 behaviour.
+     * include_error_marker_set distinguishes "explicit key" from "absent"
+     * so the blob only renders the key when set — and, like the other
+     * optional keys, only an explicit value routes the call through
+     * ParseJson (#221; Apache #165 pattern). */
+    const char *include_error_marker = "";
+    int include_error_marker_set = 0;
 
     if (config != NULL && Z_TYPE_P(config) == IS_ARRAY) {
         zval *val;
@@ -1664,6 +1725,34 @@ PHP_FUNCTION(parse_with_config) {
             debug_set = 1;
         }
 
+        /* include_error_marker: raw HTML for failed includes.
+         * STRICT string: every non-string type is rejected with
+         * E_WARNING naming the option and the function returns false.
+         * Embedded NUL bytes are rejected too — the value crosses as a
+         * NUL-terminated C string, so accepting them would silently
+         * truncate the marker (the same fail-loud contract as the other
+         * options). Quotes, backslashes and control characters are
+         * legitimate raw HTML and are JSON-escaped later. Empty string
+         * = configured but silent; absent keeps the positional path. */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "include_error_marker",
+                                 sizeof("include_error_marker") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) != IS_STRING) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): include_error_marker must be a string");
+                RETURN_FALSE;
+            }
+            const char *marker = Z_STRVAL_P(val);
+            if (strlen(marker) != Z_STRLEN_P(val)) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): include_error_marker must not contain "
+                                 "NUL bytes");
+                RETURN_FALSE;
+            }
+            include_error_marker = marker;
+            include_error_marker_set = 1;
+        }
+
         /* Backend-specific requirements: redis requires addr; memcached
          * requires servers. Detected after per-key parsing so a stray
          * key doesn't by itself trigger the error. */
@@ -1900,33 +1989,38 @@ PHP_FUNCTION(parse_with_config) {
     }
 
     /* #181 `timeout` / #201 `max_response_size` / #206
-     * `max_concurrent_requests` / #211 `max_workers` / #216 `debug` keys:
+     * `max_concurrent_requests` / #211 `max_workers` / #216 `debug` /
+     * #221 `include_error_marker` keys:
      * when any of them is explicitly set, route the whole parse through
      * libgomesi's ParseJson entry point so timeoutSeconds /
-     * maxResponseSize / maxConcurrentRequests / maxWorkers / debug reach
+     * maxResponseSize / maxConcurrentRequests / maxWorkers / debug /
+     * includeErrorMarker reach
      * the core (each option independently forces the routing — Apache
-     * #167/#169/#170/#171/#173 pattern). The blob carries every other
+     * #167/#169/#170/#171/#173/#165 pattern). The blob carries every other
      * resolved option (depth, default URL, allowed hosts, SSRF flags,
      * optional cache key template + request context), so behaviour matches
      * the positional path exactly except for the keys it carries — and each
      * key is only rendered when its PHP key was set (a timeout-only call
-     * gains no maxResponseSize/maxConcurrentRequests/maxWorkers/debug key,
+     * gains no maxResponseSize/maxConcurrentRequests/maxWorkers/debug/
+     * includeErrorMarker key,
      * a debug-only call keeps the positional 30s timeout, unlimited size,
      * unlimited fetch slots and the library-default pool). When the loaded
      * libgomesi predates ParseJson (resolved at module init, see
      * mesi_resolve_parse_json), fall through to the positional path with a
      * per-key E_WARNING — each set option is ignored (positional default
      * applies: 30s / unlimited size / unlimited fetches / the
-     * library-default NumCPU*4 pool / parser silent), never a crash and
+     * library-default NumCPU*4 pool / parser silent / failed includes
+     * silent), never a crash and
      * never a silently wrong config. Absent keys keep the exact
-     * pre-#181/pre-#201/pre-#206/pre-#211/pre-#216 positional path
+     * pre-#181/pre-#201/pre-#206/pre-#211/pre-#216/pre-#221 positional path
      * (byte-identical behaviour: default 30s, unlimited size, unlimited
-     * fetches, library-default pool, silent parser). */
+     * fetches, library-default pool, silent parser, silent failed
+     * includes). */
     char *result = NULL;
     int used_parse_json = 0;
     char *parse_json_blob = NULL;
 
-    if (timeout_set || max_response_size_set || max_concurrent_requests_set || max_workers_set || debug_set) {
+    if (timeout_set || max_response_size_set || max_concurrent_requests_set || max_workers_set || debug_set || include_error_marker_set) {
         mesi_resolve_parse_json();
         if (g_parse_json != NULL) {
             parse_json_blob = build_parse_json_blob(
@@ -1938,6 +2032,7 @@ PHP_FUNCTION(parse_with_config) {
                 max_concurrent_requests_set, max_concurrent_requests,
                 max_workers_set, max_workers,
                 debug_set, debug,
+                include_error_marker_set, include_error_marker,
                 tmpl_for_ctx,
                 ctx_json && *ctx_json ? ctx_json : (char *)"");
             if (parse_json_blob == NULL) {
@@ -1945,9 +2040,9 @@ PHP_FUNCTION(parse_with_config) {
                 php_error_docref(NULL, E_WARNING,
                                  "mesi\\parse_with_config(): failed to render parse config JSON "
                                  "(timeout=%ld, max_response_size=%ld, max_concurrent_requests=%ld, "
-                                 "max_workers=%ld, debug=%d)",
+                                 "max_workers=%ld, debug=%d, include_error_marker_set=%d)",
                                  timeout_seconds, max_response_size, max_concurrent_requests,
-                                 max_workers, debug);
+                                 max_workers, debug, include_error_marker_set);
                 RETURN_FALSE;
             }
             used_parse_json = 1;
@@ -1988,6 +2083,13 @@ PHP_FUNCTION(parse_with_config) {
                                  "ParseJson; debug ignored (parser stays silent, the pre-#216 "
                                  "behaviour). Upgrade libgomesi.so.");
             }
+            if (include_error_marker_set) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): include_error_marker is set but "
+                                 "libgomesi lacks ParseJson; include_error_marker ignored "
+                                 "(failed includes stay silent, the pre-#165 behaviour). "
+                                 "Upgrade libgomesi.so.");
+            }
         }
     }
 
@@ -2008,9 +2110,9 @@ PHP_FUNCTION(parse_with_config) {
             php_error_docref(NULL, E_WARNING,
                              "mesi\\parse_with_config(): libgomesi rejected the parse config "
                              "(timeout=%ld, max_response_size=%ld, max_concurrent_requests=%ld, "
-                             "max_workers=%ld, debug=%d)",
+                             "max_workers=%ld, debug=%d, include_error_marker_set=%d)",
                              timeout_seconds, max_response_size, max_concurrent_requests,
-                             max_workers, debug);
+                             max_workers, debug, include_error_marker_set);
         } else {
             php_error_docref(NULL, E_WARNING, "mesi\\parse_with_config(): invalid max_depth");
         }
