@@ -104,6 +104,52 @@ func TestParseConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestParseConfigIncludeErrorMarker(t *testing.T) {
+	t.Run("absent is silent", func(t *testing.T) {
+		c, err := ParseConfigFromJSON([]byte(`{}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		if c.IncludeErrorMarker != "" {
+			t.Errorf("IncludeErrorMarker = %q, want empty (silent)", c.IncludeErrorMarker)
+		}
+	})
+
+	t.Run("explicit empty is silent", func(t *testing.T) {
+		c, err := ParseConfigFromJSON([]byte(`{"includeErrorMarker":""}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		if c.IncludeErrorMarker != "" {
+			t.Errorf("IncludeErrorMarker = %q, want empty (silent)", c.IncludeErrorMarker)
+		}
+	})
+
+	t.Run("explicit marker preserved", func(t *testing.T) {
+		const marker = `<!-- ESI include failed: "x" \ y -->`
+		c, err := ParseConfigFromJSON([]byte(`{"includeErrorMarker":"<!-- ESI include failed: \"x\" \\ y -->"}`))
+		if err != nil {
+			t.Fatalf("ParseConfigFromJSON = %v", err)
+		}
+		if c.IncludeErrorMarker != marker {
+			t.Errorf("IncludeErrorMarker = %q, want %q", c.IncludeErrorMarker, marker)
+		}
+	})
+
+	t.Run("non-string rejected", func(t *testing.T) {
+		for _, blob := range []string{
+			`{"includeErrorMarker":1}`,
+			`{"includeErrorMarker":true}`,
+			`{"includeErrorMarker":["x"]}`,
+			`{"includeErrorMarker":{"x":"y"}}`,
+		} {
+			if _, err := ParseConfigFromJSON([]byte(blob)); err == nil {
+				t.Errorf("ParseConfigFromJSON(%s) = nil error, want type error (fail loud)", blob)
+			}
+		}
+	})
+}
+
 func TestParseConfigExplicitValues(t *testing.T) {
 	c, err := ParseConfigFromJSON([]byte(`{
 		"maxDepth": 3,
@@ -118,7 +164,8 @@ func TestParseConfigExplicitValues(t *testing.T) {
 		"timeoutSeconds": 7,
 		"maxResponseSize": 2048,
 		"maxConcurrentRequests": 5,
-		"maxWorkers": 4
+		"maxWorkers": 4,
+		"includeErrorMarker": "<!-- ESI include failed -->"
 	}`))
 	if err != nil {
 		t.Fatalf("ParseConfigFromJSON = %v", err)
@@ -151,6 +198,9 @@ func TestParseConfigExplicitValues(t *testing.T) {
 	}
 	if len(c.RequestCtx) == 0 {
 		t.Error("requestCtx not preserved")
+	}
+	if c.IncludeErrorMarker != "<!-- ESI include failed -->" {
+		t.Errorf("IncludeErrorMarker = %q, want %q", c.IncludeErrorMarker, "<!-- ESI include failed -->")
 	}
 
 	maxResp, err := c.ResolvedMaxResponseSize()
