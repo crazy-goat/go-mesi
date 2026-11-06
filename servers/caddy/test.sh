@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 HTTP_PORT=${CADDY_HTTP_PORT:-18080}
+PARSE_ON_HEADER_PORT=${CADDY_PARSE_ON_HEADER_PORT:-18081}
 
 docker compose up -d --build
 
@@ -103,6 +104,59 @@ if echo "$CT" | grep -q "text/html"; then
 else
     echo "FAIL: Content-Type missing or wrong"
     echo "Content-Type: $CT"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 8: parse_on_header with Edge-control processes ESI ==="
+RESPONSE=$(curl -s http://localhost:"$PARSE_ON_HEADER_PORT"/returnEsi)
+if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
+    echo "PASS: parse_on_header processed a signalled page"
+else
+    echo "FAIL: parse_on_header did not process a signalled page"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 9: parse_on_header without Edge-control passes through ==="
+RESPONSE=$(curl -s http://localhost:"$PARSE_ON_HEADER_PORT"/returnNonEsiHeader)
+if echo "$RESPONSE" | grep -q "<esi:include" && ! echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
+    echo "PASS: parse_on_header left an unsignalled page unchanged"
+else
+    echo "FAIL: parse_on_header processed a page without Edge-control"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+HEADERS=$(curl -s -D - -o /dev/null http://localhost:"$PARSE_ON_HEADER_PORT"/returnNonEsiHeader)
+if echo "$HEADERS" | grep -qi "^Surrogate-Control"; then
+    echo "FAIL: a bypassed page must not get Surrogate-Control"
+    echo "Headers: $HEADERS"
+    docker compose down
+    exit 1
+else
+    echo "PASS: no Surrogate-Control on a bypassed page"
+fi
+
+echo "=== Test 10: parse_on_header absent still parses HTML without Edge-control ==="
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/returnNonEsiHeader)
+if echo "$RESPONSE" | grep -q "Hurray: Esi included!"; then
+    echo "PASS: the directive absent keeps the always-parse behaviour"
+else
+    echo "FAIL: HTML without Edge-control was not parsed without the directive"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 11: parse_on_header leaves non-HTML untouched ==="
+RESPONSE=$(curl -s http://localhost:"$PARSE_ON_HEADER_PORT"/plain)
+if echo "$RESPONSE" | grep -q "esi:include"; then
+    echo "PASS: non-HTML response bypassed ESI processing"
+else
+    echo "FAIL: non-HTML response was processed"
+    echo "Response: $RESPONSE"
     docker compose down
     exit 1
 fi
