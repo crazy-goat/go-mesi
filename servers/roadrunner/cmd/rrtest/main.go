@@ -26,6 +26,7 @@ func main() {
 	maxResponseSize := flag.Int64("max-response-size", 0, "Maximum bytes per ESI include response (0 = unlimited)")
 	maxConcurrentRequests := flag.Int("max-concurrent-requests", 0, "Maximum concurrent ESI include fetches (0 = unlimited)")
 	maxWorkers := flag.Int("max-workers", 0, "Maximum token-processing workers per ESI parse (0 = library default)")
+	parseOnHeader := flag.Bool("parse-on-header", false, "Parse text/html only when the response carries Edge-control: dca=esi")
 	debug := flag.Bool("debug", false, "Enable ESI debug logging to stderr")
 	flag.Parse()
 
@@ -39,6 +40,7 @@ func main() {
 	config.MaxResponseSize = *maxResponseSize
 	config.MaxConcurrentRequests = *maxConcurrentRequests
 	config.MaxWorkers = *maxWorkers
+	config.ParseOnHeader = *parseOnHeader
 	config.Debug = *debug
 	config.BlockPrivateIPs = blockPrivateIPs
 	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
@@ -191,6 +193,24 @@ func main() {
 	mux.HandleFunc("/plain", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte(`plain text with <esi:include src="http://example.com/test" /> tags`))
+	})
+	// /parse-header/{mode} exercises parse_on_header: "esi", "upper" and
+	// "list" signal ESI with different spellings; "none" does not.
+	mux.HandleFunc("/parse-header/{mode}", func(w http.ResponseWriter, r *http.Request) {
+		switch r.PathValue("mode") {
+		case "esi":
+			w.Header().Set("Edge-control", "dca=esi")
+		case "upper":
+			w.Header().Set("Edge-control", "DCA=ESI")
+		case "list":
+			w.Header().Set("Edge-control", "no-cache, dca=esi")
+		case "none":
+		default:
+			http.Error(w, "unknown mode", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>PARSE-HEADER<esi:include src="http://127.0.0.1:9090/fragment" /></body></html>`))
 	})
 	// /fragment is the loopback include target; /allowed serves a page that
 	// includes it via an absolute URL on the same listener. The hostname is

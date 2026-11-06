@@ -38,6 +38,7 @@ http:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `max_depth` | int | `5` | Maximum ESI nesting depth. Set to `0` to disable ESI processing. |
+| `parse_on_header` | bool | `false` | Parse `text/html` only when the response carries `Edge-control: dca=esi` (case-insensitive, comma-separated list allowed). Without the header the response is passed through unchanged. Absent and `false` keep the historical always-parse behaviour. |
 | `shared_http_client` | bool | `false` | Reuse a single HTTP client for all ESI includes (SSRF-safe, connection pooling). |
 | `block_private_ips` | bool | `true` | Block ESI includes to private/reserved IPs (loopback, RFC 1918, CGNAT, link-local, cloud metadata `169.254.169.254`, benchmark/documentation ranges) at dial time. Set `false` to allow internal includes (e.g. service meshes). |
 | `allowed_hosts` | array | `[]` | Host whitelist restricting which ESI include destinations are fetched. Exact or subdomain-suffix match with a `.` boundary (rejects suffix injection); case-insensitive; ports ignored. Empty list = all hosts allowed (subject to `block_private_ips`). The whitelist check runs by hostname before the dial-time private-IP check and does NOT bypass it. |
@@ -58,6 +59,35 @@ http:
 | `cache_redis_password` | string | `""` | Redis AUTH password. |
 | `cache_redis_db` | int | `0` | Redis database number. |
 | `cache_memcached_servers` | array | `[]` | Memcached server addresses (host:port). |
+
+#### Parse on header
+
+`parse_on_header: true` makes ESI processing conditional on the upstream
+response. Only `text/html` responses carrying `Edge-control: dca=esi`
+(case-insensitive, comma-separated value list, matching `mesi.IsEsiResponse`)
+are parsed; every other response is passed through byte for byte with its
+upstream headers and without `Surrogate-Control`. The flag is also passed to
+`mesi.EsiParserConfig.ParseOnHeader`, so a fetched fragment is parsed only
+when its own response signals ESI. Absent and explicit `false` keep the
+historical behaviour of parsing every `text/html` response.
+
+`max_body_size` only bounds pages that are parsed: an unsignalled page is
+exempt from the cap (`middleware.ResponseWriter.LimitOnlyIf`), but the shared
+response writer still buffers it in full, so the cap is not a memory guard for
+unparsed pages.
+
+> **Known cache caveat:** with `cache_backend` enabled, the core cache stores
+> only the fragment body and a cache hit returns `isEsiResponse=false`
+> (`mesi/fetch.go`), so a signalling fragment is parsed on the first request
+> and its nested includes stay raw on later cached requests. Do not combine
+> `cache_backend` with `parse_on_header` until the core caches the ESI signal.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      parse_on_header: true
+```
 
 #### Per-include timeout
 

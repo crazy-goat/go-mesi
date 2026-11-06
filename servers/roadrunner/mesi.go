@@ -55,7 +55,13 @@ type Config struct {
 	// MaxDepth limits ESI nesting. A nil pointer is "unset" (default 5).
 	// Explicit 0 is passthrough (disable ESI), matching Caddy / Apache #166
 	// and the README. Valid range is [0, mesi.MaxMaxDepth].
-	MaxDepth                       *int     `mapstructure:"max_depth"`
+	MaxDepth *int `mapstructure:"max_depth"`
+	// ParseOnHeader makes ESI processing conditional on the upstream response
+	// carrying `Edge-control: dca=esi` (case-insensitive, comma-separated
+	// value list, same as the core's IsEsiResponse). Without the header an
+	// HTML response is passed through unchanged. Absent and false keep the
+	// historical always-parse behaviour for text/html responses.
+	ParseOnHeader                  bool     `mapstructure:"parse_on_header"`
 	SharedHTTPClient               bool     `mapstructure:"shared_http_client"`
 	CacheBackend                   string   `mapstructure:"cache_backend"`
 	CacheSize                      int      `mapstructure:"cache_size"`
@@ -271,6 +277,11 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 		customWriter := middleware.NewResponseWriter(w)
 		if r.Method != http.MethodHead { // a HEAD Content-Length has no body behind it
 			customWriter.SetBodyLimit(p.config.MaxBodySize, p.onOversize, logOversize)
+			if p.config.ParseOnHeader {
+				// Without the header the page is not parsed, so it is not
+				// buffered for ESI either.
+				customWriter.LimitOnlyIf(esiOnHeader)
+			}
 		}
 
 		next.ServeHTTP(customWriter, r)
@@ -281,9 +292,14 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 
 		contentType := customWriter.Header().Get("Content-Type")
 		if strings.HasPrefix(contentType, "text/html") {
+			if p.config.ParseOnHeader && !esiOnHeader(customWriter.Header()) {
+				writeRawResponse(w, customWriter)
+				return
+			}
 			config := mesi.EsiParserConfig{
 				Context:                        r.Context(),
 				MaxDepth:                       uint(p.maxDepth()),
+				ParseOnHeader:                  p.config.ParseOnHeader,
 				DefaultUrl:                     middleware.GetDefaultUrl(r),
 				Timeout:                        p.timeoutBudget(),
 				BlockPrivateIPs:                p.blockPrivateIPs,
@@ -326,11 +342,33 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 			w.WriteHeader(customWriter.StatusCode())
 			_, _ = w.Write([]byte(processedResponse))
 		} else {
-			w.Header().Set("Content-Length", strconv.Itoa(customWriter.Body().Len()))
-			w.WriteHeader(customWriter.StatusCode())
-			_, _ = w.Write(customWriter.Body().Bytes())
+			writeRawResponse(w, customWriter)
 		}
 	})
+}
+
+// esiOnHeader reports whether the response opted into ESI processing with
+// `Edge-control: dca=esi`. Header names are case-insensitive (http.Header.Get)
+// and the value may be a comma-separated list, matching mesi.IsEsiResponse.
+func esiOnHeader(h http.Header) bool {
+	for _, part := range strings.Split(strings.ToLower(h.Get("Edge-control")), ",") {
+		if strings.TrimSpace(part) == "dca=esi" {
+			return true
+		}
+	}
+	return false
+}
+
+// writeRawResponse copies the buffered response through unchanged. It is used
+// for non-HTML responses and for HTML responses that are not parsed because
+// parse_on_header is on and the upstream did not send `Edge-control: dca=esi`.
+func writeRawResponse(w http.ResponseWriter, customWriter *middleware.ResponseWriter) {
+	for k, v := range customWriter.Header() {
+		w.Header()[k] = v
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(customWriter.Body().Len()))
+	w.WriteHeader(customWriter.StatusCode())
+	_, _ = w.Write(customWriter.Body().Bytes())
 }
 
 func logOversize(mode middleware.OnOversize, limit, size int64) {
