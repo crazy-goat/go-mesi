@@ -26,6 +26,21 @@ const HtmlIncludeTemplate = "Hurray: Esi included!"
 
 const PlainTextTemplate = `plain text with <esi:include src="http://test-server/esi" /> tags`
 
+// esiHeaderPage serves HtmlTemplate with `Edge-control: dca=esi`, so a parser
+// configured with ParseOnHeader processes it.
+func esiHeaderPage(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Header().Set("Edge-control", "dca=esi")
+	_, _ = w.Write([]byte(HtmlTemplate))
+}
+
+// esiNoHeaderPage serves HtmlTemplate without `Edge-control`, so a parser
+// configured with ParseOnHeader must leave it untouched.
+func esiNoHeaderPage(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	_, _ = w.Write([]byte(HtmlTemplate))
+}
+
 func echoHeaders(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if sc := r.Header.Get("Surrogate-Capability"); sc != "" {
@@ -329,6 +344,9 @@ func main() {
 	http.HandleFunc("/esi", echoHeaders(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(HtmlIncludeTemplate))
 	}))
+
+	http.HandleFunc("/returnEsi", echoHeaders(esiHeaderPage))
+	http.HandleFunc("/returnNonEsiHeader", echoHeaders(esiNoHeaderPage))
 
 	http.HandleFunc("/plain", echoHeaders(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
