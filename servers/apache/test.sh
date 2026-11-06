@@ -24,6 +24,7 @@ APACHE_PORT_8095=${APACHE_PORT_8095:-8095}
 APACHE_PORT_8096=${APACHE_PORT_8096:-8096}
 APACHE_PORT_8097=${APACHE_PORT_8097:-8097}
 APACHE_PORT_8098=${APACHE_PORT_8098:-8098}
+APACHE_PORT_8099=${APACHE_PORT_8099:-8099}
 
 docker compose up -d --wait
 
@@ -1055,6 +1056,44 @@ else
     exit 1
 fi
 
+echo "=== Test 49a: MesiIncludeErrorMarker config parsing (#165) ==="
+# The directive is AP_INIT_RAW_ARGS and parses exactly one
+# ap_getword_conf() token. `""` is a real, explicitly configured empty
+# value that clears an inherited marker; a missing argument,
+# whitespace-only value, trailing tokens or a marker containing spaces
+# without quotes fail config load. -c applies the directive after the
+# main config, so mod_mesi is already loaded. Each reject case names its
+# expected message (grep -q "" would match any failure).
+check_include_error_marker_config() {
+    local expect="$1" label="$2" value="$3" msg="${4:-}" out
+    if out=$(docker compose exec -T apache sh -c '. /etc/apache2/envvars && exec apache2 -t -c "MesiIncludeErrorMarker $1"' sh "$value" 2>&1); then
+        if [ "$expect" = "reject" ]; then
+            echo "FAIL: MesiIncludeErrorMarker $label was accepted by apache2 -t"
+            echo "Output: $out"
+            docker compose down
+            exit 1
+        fi
+        echo "PASS: MesiIncludeErrorMarker $label accepted"
+    else
+        if [ "$expect" = "accept" ] || ! echo "$out" | grep -q "$msg"; then
+            echo "FAIL: MesiIncludeErrorMarker $label: unexpected apache2 -t result (expected $expect, message /$msg/)"
+            echo "Output: $out"
+            docker compose down
+            exit 1
+        fi
+        echo "PASS: MesiIncludeErrorMarker $label rejected at config load"
+    fi
+}
+check_include_error_marker_config accept "quoted marker with spaces" '"<!-- ESI include failed -->"'
+check_include_error_marker_config accept "unquoted single token" '<!--marker-->'
+check_include_error_marker_config accept "explicit empty" '""'
+check_include_error_marker_config accept "explicit empty (single quotes)" "''"
+check_include_error_marker_config reject "missing argument" '' "requires exactly one argument"
+check_include_error_marker_config reject "whitespace-only argument" '   ' "requires exactly one argument"
+check_include_error_marker_config reject "unquoted marker containing spaces" '<!-- ESI include failed -->' "takes exactly one argument"
+check_include_error_marker_config reject "trailing argument" '"<!-- ESI include failed -->" extra' "takes exactly one argument"
+check_include_error_marker_config reject "trailing empty argument" '"" ""' "takes exactly one argument"
+
 echo "=== Test 50: MesiIncludeErrorMarker renders on a failed include (#165) ==="
 R=$(curl -s http://localhost:"$APACHE_PORT_8098"/include-error-marker.html)
 if echo "$R" | grep -qF '<!-- ESI include failed -->' \
@@ -1068,16 +1107,33 @@ else
     exit 1
 fi
 
-echo "=== Test 51: MesiIncludeErrorMarker unset — failed include stays silent (#165) ==="
-# Same page on the default *:80 vhost (no directive): the failed
-# include must keep the historical empty output.
+echo "=== Test 51: MesiIncludeErrorMarker explicit empty clears the inherited global marker (#165) ==="
+# The default *:80 vhost sets `MesiIncludeErrorMarker ""`: it inherits
+# the global marker and clears it, so a failed include keeps the
+# historical empty output. This is the functional pin for the explicit
+# empty form that TAKE1 used to reject at config load.
 R=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker.html)
 if ! echo "$R" | grep -qF '<!-- ESI include failed -->' \
     && echo "$R" | grep -q "After include-error marker" \
     && ! echo "$R" | grep -q '<esi:include'; then
-    echo "PASS: unset marker kept the failed include silent"
+    echo "PASS: explicit empty cleared the inherited marker"
 else
-    echo "FAIL: unset MesiIncludeErrorMarker did not stay silent"
+    echo "FAIL: explicit empty MesiIncludeErrorMarker did not stay silent"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 51a: MesiIncludeErrorMarker unset vhost inherits the global marker (#165) ==="
+# Vhost 8099 sets no marker: the NULL merge keeps the global value, so
+# the same failed include renders it.
+R=$(curl -s http://localhost:"$APACHE_PORT_8099"/include-error-marker.html)
+if echo "$R" | grep -qF '<!-- ESI include failed -->' \
+    && echo "$R" | grep -q "After include-error marker" \
+    && ! echo "$R" | grep -q '<esi:include'; then
+    echo "PASS: unset vhost inherited the global marker"
+else
+    echo "FAIL: unset vhost did not inherit the global marker"
     echo "$R" | head -c 500
     docker compose down
     exit 1

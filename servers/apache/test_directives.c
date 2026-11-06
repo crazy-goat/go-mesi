@@ -313,14 +313,89 @@ static const char *set_max_depth(mesi_config *conf, const char *arg) {
 }
 
 /* MesiIncludeErrorMarker — mirrors set_include_error_marker in
- * mod_mesi.c (#165). NULL (unset) and "" (explicit) both render
- * nothing; the non-NULL empty pointer is what lets a vhost clear an
- * inherited marker. */
-static const char *set_include_error_marker(mesi_config *conf, const char *arg) {
-    if (!arg) {
-        return "MesiIncludeErrorMarker requires an argument (use \"\" for silent)";
+ * mod_mesi.c (#165). The directive is AP_INIT_RAW_ARGS, so the module
+ * receives the raw argument text and parses one ap_getword_conf()
+ * token: quotes are stripped, `""` is a non-NULL empty value that lets
+ * a vhost clear an inherited marker, and a missing argument or any
+ * trailing token is an error. parse_conf_word() below mirrors the
+ * single-token subset of ap_getword_conf(); the real Apache parser is
+ * exercised by the `apache2 -t` cases in test.sh. */
+static int conf_space(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' ||
+           c == '\f';
+}
+
+/* Mirrors the single-token subset of Apache's ap_getword_conf():
+ * skip leading ASCII whitespace, strip one layer of '...' or "..."
+ * quotes (honouring \\ and \" / \' escapes inside them), then skip
+ * trailing whitespace. The caller still has to reject missing input
+ * (empty *line) and trailing tokens (non-empty *line afterwards). */
+static const char *parse_conf_word(const char **line) {
+    const char *str = *line, *strend;
+    char *res;
+    char quote;
+
+    while (conf_space(*str)) {
+        ++str;
     }
-    conf->include_error_marker = arg;
+    if (!*str) {
+        *line = str;
+        return "";
+    }
+
+    if ((quote = *str) == '"' || quote == '\'') {
+        strend = str + 1;
+        while (*strend && *strend != quote) {
+            if (*strend == '\\' && strend[1] &&
+                (strend[1] == quote || strend[1] == '\\')) {
+                strend += 2;
+            } else {
+                ++strend;
+            }
+        }
+        res = apr_palloc(pool, (apr_size_t)(strend - str));
+        char *w = res;
+        for (const char *s = str + 1; s < strend; ++s) {
+            if (*s == '\\' && s + 1 < strend &&
+                (s[1] == quote || s[1] == '\\')) {
+                *w++ = *++s;
+            } else {
+                *w++ = *s;
+            }
+        }
+        *w = '\0';
+        if (*strend == quote) {
+            ++strend;
+        }
+    } else {
+        strend = str;
+        while (*strend && !conf_space(*strend)) {
+            ++strend;
+        }
+        res = apr_pstrndup(pool, str, (apr_size_t)(strend - str));
+    }
+
+    while (conf_space(*strend)) {
+        ++strend;
+    }
+    *line = strend;
+    return res;
+}
+
+static const char *set_include_error_marker(mesi_config *conf, const char *raw) {
+    const char *p = raw;
+    while (p && *p && conf_space(*p)) {
+        p++;
+    }
+    if (!p || *p == '\0') {
+        return "MesiIncludeErrorMarker requires exactly one argument";
+    }
+    const char *rest = p;
+    const char *marker = parse_conf_word(&rest);
+    if (*rest != '\0') {
+        return "MesiIncludeErrorMarker takes exactly one argument";
+    }
+    conf->include_error_marker = marker;
     return NULL;
 }
 
@@ -2401,33 +2476,71 @@ TEST(include_error_marker_default_unset) {
     ASSERT_NULL(conf.include_error_marker);
 }
 
-TEST(include_error_marker_set) {
+TEST(include_error_marker_set_unquoted) {
     mesi_config conf;
     init_config(&conf);
 
-    const char *err = set_include_error_marker(&conf, "<!-- ESI include failed -->");
+    const char *err = set_include_error_marker(&conf, "<!--marker-->");
+    ASSERT_NULL(err);
+    ASSERT_STR_EQ(conf.include_error_marker, "<!--marker-->");
+}
+
+TEST(include_error_marker_set_quoted_spaces) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err =
+        set_include_error_marker(&conf, "\"<!-- ESI include failed -->\"");
     ASSERT_NULL(err);
     ASSERT_STR_EQ(conf.include_error_marker, "<!-- ESI include failed -->");
 }
 
 TEST(include_error_marker_empty_stored) {
-    /* Explicit "" is stored as a non-NULL pointer so it can clear an
-     * inherited marker; it renders nothing (same as unset). */
+    /* Explicit "" reaches the setter as a quoted-empty raw argument
+     * (Apache's TAKE1 parser would reject it before the setter), and is
+     * stored as a non-NULL pointer so it can clear an inherited marker;
+     * it renders nothing (same as unset). */
     mesi_config conf;
     init_config(&conf);
     conf.include_error_marker = "<!-- parent -->";
 
-    const char *err = set_include_error_marker(&conf, "");
+    const char *err = set_include_error_marker(&conf, "\"\"");
     ASSERT_NULL(err);
     ASSERT_NOT_NULL(conf.include_error_marker);
     ASSERT_STR_EQ(conf.include_error_marker, "");
 }
 
-TEST(include_error_marker_null_rejected) {
+TEST(include_error_marker_empty_single_quotes) {
+    mesi_config conf;
+    init_config(&conf);
+    conf.include_error_marker = "<!-- parent -->";
+
+    const char *err = set_include_error_marker(&conf, "''");
+    ASSERT_NULL(err);
+    ASSERT_NOT_NULL(conf.include_error_marker);
+    ASSERT_STR_EQ(conf.include_error_marker, "");
+}
+
+TEST(include_error_marker_missing_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    conf.include_error_marker = "<!-- keep -->";
+
+    ASSERT_NOT_NULL(set_include_error_marker(&conf, ""));
+    ASSERT_NOT_NULL(set_include_error_marker(&conf, " \t "));
+    ASSERT_NOT_NULL(set_include_error_marker(&conf, NULL));
+    /* A rejected directive must not overwrite the configured marker. */
+    ASSERT_STR_EQ(conf.include_error_marker, "<!-- keep -->");
+}
+
+TEST(include_error_marker_trailing_rejected) {
     mesi_config conf;
     init_config(&conf);
 
-    ASSERT_NOT_NULL(set_include_error_marker(&conf, NULL));
+    ASSERT_NOT_NULL(
+        set_include_error_marker(&conf, "\"<!-- ESI include failed -->\" extra"));
+    ASSERT_NOT_NULL(set_include_error_marker(&conf, "\"\" \"\""));
+    ASSERT_NULL(conf.include_error_marker);
 }
 
 TEST(merge_include_error_marker_child_overrides) {
@@ -3490,9 +3603,12 @@ int main(int argc, char *argv[]) {
 
     printf("\nTesting MesiIncludeErrorMarker (#165):\n");
     RUN_TEST(include_error_marker_default_unset);
-    RUN_TEST(include_error_marker_set);
+    RUN_TEST(include_error_marker_set_unquoted);
+    RUN_TEST(include_error_marker_set_quoted_spaces);
     RUN_TEST(include_error_marker_empty_stored);
-    RUN_TEST(include_error_marker_null_rejected);
+    RUN_TEST(include_error_marker_empty_single_quotes);
+    RUN_TEST(include_error_marker_missing_rejected);
+    RUN_TEST(include_error_marker_trailing_rejected);
     RUN_TEST(merge_include_error_marker_child_overrides);
     RUN_TEST(merge_include_error_marker_child_inherits);
     RUN_TEST(merge_include_error_marker_child_empty_clears);

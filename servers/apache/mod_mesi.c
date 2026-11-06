@@ -1006,21 +1006,47 @@ static const char *parse_nonneg_off(apr_pool_t *pool, const char *arg,
 
 // MesiIncludeErrorMarker — raw HTML rendered in place of a failed
 // <esi:include> that has neither onerror="continue" nor a fallback body
-// (#165). AP_INIT_TAKE1, server context. Unset (NULL) and explicit ""
+// (#165). AP_INIT_RAW_ARGS, server context. Unset (NULL) and explicit ""
 // both mean silent (the pre-#165 behaviour); an explicit empty value is
 // still stored as a non-NULL pointer so a vhost can clear a marker
-// inherited from the global config. The value is inserted into the
-// response verbatim and is JSON-escaped by json_string() when it
-// travels through ParseJson, so quotes/backslashes/control characters
-// cannot break the config blob.
+// inherited from the global config.
+//
+// RAW_ARGS + ap_getword_conf() rather than TAKE1: Apache's TAKE1 parser
+// rejects an empty word before the setter runs, so the documented
+// `MesiIncludeErrorMarker ""` (explicit clear) could never load.
+// ap_getword_conf() strips one layer of quotes and returns a non-NULL
+// empty string for `""`, while a genuinely missing argument is reported
+// below. Exactly one token is accepted; a marker containing spaces must
+// be quoted, and trailing tokens (`"" extra`) fail config load instead of
+// being silently folded into the marker. The value is inserted into the
+// response verbatim and is JSON-escaped by json_string() when it travels
+// through ParseJson, so quotes/backslashes/control characters cannot
+// break the config blob.
 static const char *set_include_error_marker(cmd_parms *cmd, void *cfg, const char *arg) {
     mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
-    if (!arg) {
-        return "MesiIncludeErrorMarker requires an argument (use \"\" for silent)";
+    const char *p = arg;
+    // Apache trims config lines, but skip any leading whitespace anyway
+    // so a whitespace-only value is reported as missing, not as an empty
+    // marker (the same ASCII whitespace set ap_getword_conf() uses).
+    while (p && *p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\v' || *p == '\f')) {
+        p++;
     }
-    // The arg lives in Apache's config pool; store it directly (same
-    // lifetime as the server config).
-    conf->include_error_marker = arg;
+    if (!p || *p == '\0') {
+        return "MesiIncludeErrorMarker requires exactly one argument "
+               "(quote a marker containing spaces; use \"\" for explicit silent)";
+    }
+    const char *rest = p;
+    const char *marker = ap_getword_conf(cmd->pool, &rest);
+    // ap_getword_conf() already skipped whitespace after the token: a
+    // non-empty rest is a trailing argument. `"" ""` is rejected too,
+    // because the second (empty) token is still present in the raw line.
+    if (*rest != '\0') {
+        return "MesiIncludeErrorMarker takes exactly one argument "
+               "(quote a marker containing spaces; use \"\" for explicit silent)";
+    }
+    // `marker` lives in cmd->pool; store it directly (same lifetime as
+    // the server config). It is non-NULL even for `""`.
+    conf->include_error_marker = marker;
     return NULL;
 }
 
@@ -2224,7 +2250,7 @@ static void register_hooks(apr_pool_t *p) {
 static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("EnableMesi", set_enable_mesi, NULL, RSRC_CONF, "Enable or disable the Mesi module"),
     AP_INIT_TAKE1("MesiMaxDepth", set_max_depth, NULL, RSRC_CONF, "Maximum ESI nesting depth (0..10000). Unset=5. 0=passthrough"),
-    AP_INIT_TAKE1("MesiIncludeErrorMarker", set_include_error_marker, NULL, RSRC_CONF, "Raw HTML rendered for a failed ESI include with no onerror/fallback (empty=silent, default)"),
+    AP_INIT_RAW_ARGS("MesiIncludeErrorMarker", set_include_error_marker, NULL, RSRC_CONF, "Raw HTML rendered for a failed ESI include with no onerror/fallback (quote values with spaces; \"\" = explicitly silent; unset = inherit)"),
     AP_INIT_TAKE1("MesiTimeout", set_timeout, NULL, RSRC_CONF, "ESI processing timeout per include in seconds (1..86400). Unset=30"),
     AP_INIT_TAKE1("MesiMaxResponseSize", set_max_response_size, NULL, RSRC_CONF, "Maximum ESI include response body size in bytes (0=unlimited). Unset=unlimited"),
     AP_INIT_TAKE1("MesiMaxBodySize", set_max_body_size, NULL, RSRC_CONF, "Maximum parent response body size in bytes buffered for ESI processing (0=unlimited). Unset=unlimited"),

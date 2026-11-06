@@ -90,7 +90,13 @@ MesiCacheTTL 60
 - `MesiIncludeErrorMarker <marker>` — Raw HTML rendered in place of a
   failed `<esi:include>` when the tag has neither `onerror="continue"`
   nor a fallback body (`RSRC_CONF`, server context; example:
-  `MesiIncludeErrorMarker "<!-- ESI include failed -->"`). Unset or an
+  `MesiIncludeErrorMarker "<!-- ESI include failed -->"`). The
+  directive takes exactly one Apache config token: a marker containing
+  spaces must be quoted (as above), and `MesiIncludeErrorMarker ""` is a
+  real empty value, not a missing argument. A bare directive, a
+  whitespace-only value or trailing extra tokens
+  (`MesiIncludeErrorMarker "x" y`, `MesiIncludeErrorMarker "" ""`)
+  fail config load. Unset or an
   explicit empty value (`MesiIncludeErrorMarker ""`) keeps the
   historical silent behaviour: the failed include is replaced with
   nothing. `onerror="continue"` and fallback tag bodies always take
