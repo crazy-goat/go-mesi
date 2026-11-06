@@ -2,10 +2,12 @@ package mesi
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/quick"
@@ -65,31 +67,89 @@ type concurrentTest struct {
 	expectedMax        int64
 }
 
+// countingTransport measures concurrency from the client side: a request is
+// in flight from the start of RoundTrip until its response body is closed.
+// That interval matches when singleFetchUrlWithContext holds a
+// MaxConcurrentRequests semaphore slot (the slot is released after the deferred
+// body close, so the decrement always happens before the next request can
+// acquire the freed slot).
+//
+// Measuring server-side handler overlap instead is not deterministic: with
+// fetch-mode="concurrent" the slower Src/Alt request is cancelled by design,
+// its semaphore slot is released immediately, but the handler that ignores
+// r.Context() keeps running (and stays counted) until it returns. A subsequent
+// request can then start before that zombie handler finishes, so the server
+// observes three overlapping handlers while only two clients ever held a slot.
+type countingTransport struct {
+	rt  http.RoundTripper
+	cur atomic.Int64
+	max atomic.Int64
+}
+
+func (ct *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	inFlight := ct.cur.Add(1)
+	for {
+		observed := ct.max.Load()
+		if inFlight <= observed || ct.max.CompareAndSwap(observed, inFlight) {
+			break
+		}
+	}
+
+	resp, err := ct.rt.RoundTrip(r)
+	if err != nil {
+		ct.cur.Add(-1)
+		return resp, err
+	}
+	resp.Body = &countedBody{ReadCloser: resp.Body, done: func() { ct.cur.Add(-1) }}
+	return resp, nil
+}
+
+// countedBody releases the in-flight count exactly once, when the fetch closes
+// the response body.
+type countedBody struct {
+	io.ReadCloser
+	once sync.Once
+	done func()
+}
+
+func (b *countedBody) Close() error {
+	b.once.Do(b.done)
+	return b.ReadCloser.Close()
+}
+
 func runConcurrentTest(t *testing.T, tc concurrentTest) {
 	t.Run(tc.name, func(t *testing.T) {
-		var maxConcurrent int64
-		var current atomic.Int64
+		// Handlers hold until expectedMax of them are running, so the measured
+		// overlap does not depend on a sleep being long enough. The fallback
+		// timeout only fires when the bound under test is broken (for example
+		// when everything is serialised), and then the lower-bound assertion
+		// below fails instead of hanging the test.
+		var arrived atomic.Int64
+		released := make(chan struct{})
+		var releaseOnce sync.Once
+		release := func() { releaseOnce.Do(func() { close(released) }) }
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			inc := current.Add(1)
-			old := atomic.LoadInt64(&maxConcurrent)
-			if inc > old {
-				atomic.CompareAndSwapInt64(&maxConcurrent, old, inc)
+			if arrived.Add(1) >= tc.expectedMax {
+				release()
 			}
-
-			time.Sleep(100 * time.Millisecond)
-
-			current.Add(-1)
+			select {
+			case <-released:
+			case <-time.After(2 * time.Second):
+			}
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("content"))
 		}))
 		defer server.Close()
+
+		transport := &countingTransport{rt: http.DefaultTransport}
 
 		config := CreateDefaultConfig()
 		config.MaxConcurrentRequests = tc.maxConcurrent
 		config.DefaultUrl = server.URL + "/"
 		config.MaxDepth = 1
 		config.BlockPrivateIPs = false
+		config.HTTPClient = &http.Client{Transport: transport}
 
 		var input string
 		for i := 0; i < tc.tokenCount; i++ {
@@ -102,8 +162,12 @@ func runConcurrentTest(t *testing.T, tc concurrentTest) {
 
 		MESIParse(input, config)
 
-		if atomic.LoadInt64(&maxConcurrent) > tc.expectedMax {
-			t.Errorf("Max concurrent = %d, expected <= %d", atomic.LoadInt64(&maxConcurrent), tc.expectedMax)
+		got := transport.max.Load()
+		if got > tc.expectedMax {
+			t.Errorf("Max concurrent = %d, expected <= %d", got, tc.expectedMax)
+		}
+		if got != tc.expectedMax {
+			t.Errorf("Max concurrent = %d, expected the measurement to reach %d", got, tc.expectedMax)
 		}
 	})
 }
