@@ -72,6 +72,10 @@ typedef struct {
      * a storable configured value — the same "library default" — so
      * the sentinel must stay -1. */
     int max_workers;
+    /* Include-error marker (#165). NULL = unset, non-NULL (possibly "")
+     * = explicitly configured; non-NULL empty clears an inherited
+     * marker and renders nothing. */
+    const char *include_error_marker;
 } mesi_config;
 
 /* Sentinel/constant values copied from mod_mesi.c */
@@ -306,6 +310,54 @@ static const char *set_max_depth(mesi_config *conf, const char *arg) {
     }
     conf->max_depth = v;
     return NULL;
+}
+
+/* MesiIncludeErrorMarker — mirrors set_include_error_marker in
+ * mod_mesi.c (#165). NULL (unset) and "" (explicit) both render
+ * nothing; the non-NULL empty pointer is what lets a vhost clear an
+ * inherited marker. */
+static const char *set_include_error_marker(mesi_config *conf, const char *arg) {
+    if (!arg) {
+        return "MesiIncludeErrorMarker requires an argument (use \"\" for silent)";
+    }
+    conf->include_error_marker = arg;
+    return NULL;
+}
+
+/* json_string — copied verbatim from mod_mesi.c. Renders s as a
+ * quoted JSON string for the ParseJson blob: '"' / '\\' escaped,
+ * bytes < 0x20 as \u00XX. Used to pin marker escaping (quotes,
+ * backslashes, control characters) without a real HTTP request. */
+static const char *json_string(apr_pool_t *pool_arg, const char *s) {
+    if (!s) {
+        s = "";
+    }
+    apr_size_t len = strlen(s);
+    char *buf = apr_palloc(pool_arg, len * 6 + 3);
+    char *w = buf;
+    *w++ = '"';
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p == '"') {
+            *w++ = '\\';
+            *w++ = '"';
+        } else if (*p == '\\') {
+            *w++ = '\\';
+            *w++ = '\\';
+        } else if (*p < 0x20) {
+            static const char hex[] = "0123456789abcdef";
+            *w++ = '\\';
+            *w++ = 'u';
+            *w++ = '0';
+            *w++ = '0';
+            *w++ = hex[(*p >> 4) & 0xf];
+            *w++ = hex[*p & 0xf];
+        } else {
+            *w++ = (char)*p;
+        }
+    }
+    *w++ = '"';
+    *w = '\0';
+    return buf;
 }
 
 /* MesiTimeout — mirrors set_timeout in mod_mesi.c (#167). Uses
@@ -709,6 +761,7 @@ static void init_config(mesi_config *conf) {
     conf->on_oversize = -1;
     conf->max_concurrent_requests = -1;
     conf->max_workers = -1;
+    conf->include_error_marker = NULL;
 }
 
 static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merged) {
@@ -744,6 +797,9 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
     merged->max_workers = (add->max_workers != -1)
                               ? add->max_workers
                               : base->max_workers;
+    merged->include_error_marker = add->include_error_marker
+                                       ? add->include_error_marker
+                                       : base->include_error_marker;
 }
 
 /* Test cases */
@@ -2337,6 +2393,88 @@ TEST(merge_max_depth_child_zero_overrides) {
     ASSERT_EQ(merged.max_depth, 0);
 }
 
+/* --- MesiIncludeErrorMarker directive tests (#165) --- */
+
+TEST(include_error_marker_default_unset) {
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(conf.include_error_marker);
+}
+
+TEST(include_error_marker_set) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_include_error_marker(&conf, "<!-- ESI include failed -->");
+    ASSERT_NULL(err);
+    ASSERT_STR_EQ(conf.include_error_marker, "<!-- ESI include failed -->");
+}
+
+TEST(include_error_marker_empty_stored) {
+    /* Explicit "" is stored as a non-NULL pointer so it can clear an
+     * inherited marker; it renders nothing (same as unset). */
+    mesi_config conf;
+    init_config(&conf);
+    conf.include_error_marker = "<!-- parent -->";
+
+    const char *err = set_include_error_marker(&conf, "");
+    ASSERT_NULL(err);
+    ASSERT_NOT_NULL(conf.include_error_marker);
+    ASSERT_STR_EQ(conf.include_error_marker, "");
+}
+
+TEST(include_error_marker_null_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NOT_NULL(set_include_error_marker(&conf, NULL));
+}
+
+TEST(merge_include_error_marker_child_overrides) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.include_error_marker = NULL;
+    add.include_error_marker = "<!-- add -->";
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_STR_EQ(merged.include_error_marker, "<!-- add -->");
+}
+
+TEST(merge_include_error_marker_child_inherits) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.include_error_marker = "<!-- base -->";
+    add.include_error_marker = NULL;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_STR_EQ(merged.include_error_marker, "<!-- base -->");
+}
+
+TEST(merge_include_error_marker_child_empty_clears) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.include_error_marker = "<!-- base -->";
+    add.include_error_marker = "";
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_NOT_NULL(merged.include_error_marker);
+    ASSERT_STR_EQ(merged.include_error_marker, "");
+}
+
+TEST(include_error_marker_json_escapes) {
+    /* Quotes and backslashes must survive the ParseJson blob. */
+    ASSERT_STR_EQ(json_string(pool, "<!-- \"err\" \\ path -->"),
+                  "\"<!-- \\\"err\\\" \\\\ path -->\"");
+    /* Control characters are \u00XX-escaped. */
+    ASSERT_STR_EQ(json_string(pool, "a\nb"), "\"a\\u000ab\"");
+}
+
 /* --- MesiTimeout directive tests (#167) --- */
 
 TEST(timeout_default_unset) {
@@ -3349,6 +3487,16 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_max_depth_child_overrides);
     RUN_TEST(merge_max_depth_child_inherits);
     RUN_TEST(merge_max_depth_child_zero_overrides);
+
+    printf("\nTesting MesiIncludeErrorMarker (#165):\n");
+    RUN_TEST(include_error_marker_default_unset);
+    RUN_TEST(include_error_marker_set);
+    RUN_TEST(include_error_marker_empty_stored);
+    RUN_TEST(include_error_marker_null_rejected);
+    RUN_TEST(merge_include_error_marker_child_overrides);
+    RUN_TEST(merge_include_error_marker_child_inherits);
+    RUN_TEST(merge_include_error_marker_child_empty_clears);
+    RUN_TEST(include_error_marker_json_escapes);
 
     printf("\nTesting set_timeout() (#167):\n");
     RUN_TEST(timeout_default_unset);

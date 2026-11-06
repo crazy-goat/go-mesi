@@ -23,6 +23,7 @@ APACHE_PORT_8094=${APACHE_PORT_8094:-8094}
 APACHE_PORT_8095=${APACHE_PORT_8095:-8095}
 APACHE_PORT_8096=${APACHE_PORT_8096:-8096}
 APACHE_PORT_8097=${APACHE_PORT_8097:-8097}
+APACHE_PORT_8098=${APACHE_PORT_8098:-8098}
 
 docker compose up -d --wait
 
@@ -1049,6 +1050,61 @@ if echo "$R" | grep -q "included content from backend" && echo "$R" | grep -q "n
     echo "PASS: small streamed body processed"
 else
     echo "FAIL: small streamed body not processed"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 50: MesiIncludeErrorMarker renders on a failed include (#165) ==="
+R=$(curl -s http://localhost:"$APACHE_PORT_8098"/include-error-marker.html)
+if echo "$R" | grep -qF '<!-- ESI include failed -->' \
+    && echo "$R" | grep -q "After include-error marker" \
+    && ! echo "$R" | grep -q '<esi:include'; then
+    echo "PASS: failed include rendered the configured marker"
+else
+    echo "FAIL: MesiIncludeErrorMarker did not render for a failed include"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 51: MesiIncludeErrorMarker unset — failed include stays silent (#165) ==="
+# Same page on the default *:80 vhost (no directive): the failed
+# include must keep the historical empty output.
+R=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker.html)
+if ! echo "$R" | grep -qF '<!-- ESI include failed -->' \
+    && echo "$R" | grep -q "After include-error marker" \
+    && ! echo "$R" | grep -q '<esi:include'; then
+    echo "PASS: unset marker kept the failed include silent"
+else
+    echo "FAIL: unset MesiIncludeErrorMarker did not stay silent"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 52: onerror=continue takes priority over the marker (#165) ==="
+R=$(curl -s http://localhost:"$APACHE_PORT_8098"/include-error-onerror.html)
+if ! echo "$R" | grep -qF '<!-- ESI include failed -->' \
+    && echo "$R" | grep -q "After onerror include" \
+    && ! echo "$R" | grep -q '<esi:include'; then
+    echo "PASS: onerror=continue suppressed the marker"
+else
+    echo "FAIL: marker rendered despite onerror=continue"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 53: fallback body takes priority over the marker (#165) ==="
+R=$(curl -s http://localhost:"$APACHE_PORT_8098"/fallback.html)
+if ! echo "$R" | grep -qF '<!-- ESI include failed -->' \
+    && echo "$R" | grep -q "fallback content rendered" \
+    && echo "$R" | grep -q "After fallback" \
+    && ! echo "$R" | grep -q '<esi:include'; then
+    echo "PASS: fallback body suppressed the marker"
+else
+    echo "FAIL: marker rendered despite a fallback body"
     echo "$R" | head -c 500
     docker compose down
     exit 1

@@ -340,8 +340,11 @@ func defaultParseTimeout() time.Duration {
 // for values <= 0), the value those paths always left in
 // EsiParserConfig.MaxWorkers; only ParseJson passes a resolved
 // `maxWorkers` key (#171), so the positional exports keep their exact
-// pre-#171 behaviour too.
-func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int, cacheKeyTemplate *C.char, requestCtxJSON *C.char, timeout time.Duration, maxResponseSize int64, maxConcurrentRequests int, maxWorkers int) *C.char {
+// pre-#171 behaviour too. includeErrorMarker is the raw fallback HTML
+// for failed includes — every positional caller passes "" (silent, the
+// pre-#165 behaviour); only ParseJson passes a resolved
+// `includeErrorMarker` key (#165).
+func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int, cacheKeyTemplate *C.char, requestCtxJSON *C.char, timeout time.Duration, maxResponseSize int64, maxConcurrentRequests int, maxWorkers int, includeErrorMarker string) *C.char {
 	goInput := C.GoString(input)
 	goMaxDepth, err := resolveMaxDepth(maxDepth)
 	if err != nil {
@@ -375,6 +378,7 @@ func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, 
 		MaxResponseSize:                maxResponseSize,
 		MaxConcurrentRequests:          maxConcurrentRequests,
 		MaxWorkers:                     maxWorkers,
+		IncludeErrorMarker:             includeErrorMarker,
 	}
 	applySharedConfig(&cfg)
 	if allowPrivateIPsForAllowedHosts != 0 {
@@ -396,7 +400,7 @@ func parseWithConfigInternal(input *C.char, maxDepth C.int, defaultUrl *C.char, 
 }
 
 func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int) *C.char {
-	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, nil, nil, defaultParseTimeout(), 0, 0, 0)
+	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, nil, nil, defaultParseTimeout(), 0, 0, 0, "")
 }
 
 // ParseWithConfigCtx extends ParseWithConfigEx with cache key templating.
@@ -406,7 +410,7 @@ func parseWithConfig(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedH
 //
 //export ParseWithConfigCtx
 func ParseWithConfigCtx(input *C.char, maxDepth C.int, defaultUrl *C.char, allowedHosts *C.char, blockPrivateIPs C.int, allowPrivateIPsForAllowedHosts C.int, cacheKeyTemplate *C.char, requestCtxJSON *C.char) *C.char {
-	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, cacheKeyTemplate, requestCtxJSON, defaultParseTimeout(), 0, 0, 0)
+	return parseWithConfigInternal(input, maxDepth, defaultUrl, allowedHosts, blockPrivateIPs, allowPrivateIPsForAllowedHosts, cacheKeyTemplate, requestCtxJSON, defaultParseTimeout(), 0, 0, 0, "")
 }
 
 // ParseJson parses ESI tags with a JSON-encoded configuration blob — the
@@ -416,7 +420,8 @@ func ParseWithConfigCtx(input *C.char, maxDepth C.int, defaultUrl *C.char, allow
 //	{"maxDepth":5,"defaultUrl":"http://…/","allowedHosts":"a b",
 //	 "blockPrivateIPs":true,"allowPrivateIPsForAllowedHosts":false,
 //	 "cacheKeyTemplate":"mesi:${url}","requestCtx":{…},"timeoutSeconds":30,
-//	 "maxResponseSize":10485760,"maxConcurrentRequests":5,"maxWorkers":4}
+//	 "maxResponseSize":10485760,"maxConcurrentRequests":5,"maxWorkers":4,
+//	 "includeErrorMarker":"<!-- ESI include failed -->"}
 //
 // Every key is optional; an absent key resolves to the same documented
 // default the corresponding positional entry point uses (timeoutSeconds
@@ -427,8 +432,10 @@ func ParseWithConfigCtx(input *C.char, maxDepth C.int, defaultUrl *C.char, allow
 // unlimited — likewise for EsiParserConfig.MaxConcurrentRequests;
 // maxWorkers absent → 0 — likewise for EsiParserConfig.MaxWorkers, i.e.
 // the library default runtime.NumCPU()*4 the core substitutes for values
-// <= 0). Unknown keys are ignored (forward compatibility). configJSON may
-// be NULL or "" — both mean "{}" (pure defaults).
+// <= 0; includeErrorMarker absent → "" — likewise for
+// EsiParserConfig.IncludeErrorMarker, i.e. failed includes stay silent).
+// Unknown keys are ignored (forward compatibility). configJSON may be
+// NULL or "" — both mean "{}" (pure defaults).
 //
 // Malformed JSON, a type mismatch (e.g. "timeoutSeconds":"10"), or an
 // out-of-range value (maxDepth outside [0, mesi.MaxMaxDepth];
@@ -501,7 +508,8 @@ func ParseJson(input *C.char, configJSON *C.char) *C.char {
 	return parseWithConfigInternal(input, C.int(depth), cDefaultUrl, cAllowedHosts,
 		boolCInt(cfg.ResolvedBlockPrivateIPs()),
 		boolCInt(cfg.AllowPrivateIPsForAllowedHosts),
-		cCacheKeyTemplate, cRequestCtx, timeout, maxResponseSize, maxConcurrentRequests, maxWorkers)
+		cCacheKeyTemplate, cRequestCtx, timeout, maxResponseSize, maxConcurrentRequests, maxWorkers,
+		cfg.IncludeErrorMarker)
 }
 
 // boolCInt maps a Go bool to the C ABI int convention used by the

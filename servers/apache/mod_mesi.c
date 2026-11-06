@@ -168,6 +168,12 @@ typedef struct {
     // 0 to survive the merge below. Range [0,
     // MESI_MAX_MAX_WORKERS].
     int max_workers; // -1=unset, >=0 = configured
+    // Marker rendered in place of a failed <esi:include> when the tag
+    // has neither onerror="continue" nor a fallback body (#165). NULL
+    // (unset) or "" (explicit empty) = silent, the pre-#165 behaviour.
+    // Raw operator-supplied HTML: inserted into the response verbatim.
+    // Travels to libgomesi through ParseJson as "includeErrorMarker".
+    const char *include_error_marker;
 } mesi_config;
 
 // Default memory cache size when MesiCacheSize is not set.
@@ -267,6 +273,7 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     conf->on_oversize = -1;             // -1 = unset: pass
     conf->max_concurrent_requests = -1; // -1 = unset: legacy parse path, libgomesi leaves 0 = unlimited (pre-#170 behaviour)
     conf->max_workers = -1;             // -1 = unset: legacy parse path, libgomesi leaves 0 = library default NumCPU*4 (pre-#171 behaviour)
+    conf->include_error_marker = NULL;  // NULL = silent (pre-#165 behaviour)
     return conf;
 }
 
@@ -334,6 +341,12 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     conf->max_workers = (add->max_workers != -1)
                             ? add->max_workers
                             : base->max_workers;
+    // Include error marker: child wins when explicitly set (including an
+    // explicit empty string, whose non-NULL pointer clears an inherited
+    // marker); NULL sentinel inherits.
+    conf->include_error_marker = add->include_error_marker
+                                     ? add->include_error_marker
+                                     : base->include_error_marker;
     return conf;
 }
 
@@ -988,6 +1001,26 @@ static const char *parse_nonneg_off(apr_pool_t *pool, const char *arg,
                             directive, arg, (apr_int64_t)min, (apr_int64_t)max);
     }
     *out = val;
+    return NULL;
+}
+
+// MesiIncludeErrorMarker — raw HTML rendered in place of a failed
+// <esi:include> that has neither onerror="continue" nor a fallback body
+// (#165). AP_INIT_TAKE1, server context. Unset (NULL) and explicit ""
+// both mean silent (the pre-#165 behaviour); an explicit empty value is
+// still stored as a non-NULL pointer so a vhost can clear a marker
+// inherited from the global config. The value is inserted into the
+// response verbatim and is JSON-escaped by json_string() when it
+// travels through ParseJson, so quotes/backslashes/control characters
+// cannot break the config blob.
+static const char *set_include_error_marker(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
+    if (!arg) {
+        return "MesiIncludeErrorMarker requires an argument (use \"\" for silent)";
+    }
+    // The arg lives in Apache's config pool; store it directly (same
+    // lifetime as the server config).
+    conf->include_error_marker = arg;
     return NULL;
 }
 
@@ -1746,6 +1779,9 @@ static const char *json_string(apr_pool_t *pool, const char *s) {
 // configured, mirroring ParseWithConfigCtx's contract (absent/empty
 // template → URL-only keys; requestCtx is passed through verbatim as
 // pre-rendered JSON, omitted when build_request_ctx_json returned "").
+// includeErrorMarker is included only when the directive is set to a
+// non-empty value (#165) — absent/empty means silent, so the key stays
+// out of the blob and the core leaves its zero value untouched.
 static const char *build_parse_json_config(mesi_config *conf,
                                            int depth,
                                            const char *base_url,
@@ -1758,6 +1794,7 @@ static const char *build_parse_json_config(mesi_config *conf,
     const char *mrs_part = "";
     const char *maxcr_part = "";
     const char *maxw_part = "";
+    const char *marker_part = "";
     const char *tmpl_part = "";
     const char *ctx_part = "";
     if (conf->timeout_seconds != -1) {
@@ -1776,6 +1813,10 @@ static const char *build_parse_json_config(mesi_config *conf,
         maxw_part = apr_psprintf(pool, ",\"maxWorkers\":%d",
                                  conf->max_workers);
     }
+    if (conf->include_error_marker && conf->include_error_marker[0] != '\0') {
+        marker_part = apr_psprintf(pool, ",\"includeErrorMarker\":%s",
+                                   json_string(pool, conf->include_error_marker));
+    }
     if (conf->cache_key_template && conf->cache_key_template[0] != '\0') {
         tmpl_part = apr_psprintf(pool, ",\"cacheKeyTemplate\":%s",
                                  json_string(pool, conf->cache_key_template));
@@ -1786,7 +1827,7 @@ static const char *build_parse_json_config(mesi_config *conf,
     return apr_psprintf(pool,
                         "{\"maxDepth\":%d,\"defaultUrl\":%s,\"allowedHosts\":%s,"
                         "\"blockPrivateIPs\":%s,\"allowPrivateIPsForAllowedHosts\":%s"
-                        "%s%s%s%s%s%s}",
+                        "%s%s%s%s%s%s%s}",
                         depth,
                         json_string(pool, base_url),
                         json_string(pool, allowed_hosts_str),
@@ -1796,6 +1837,7 @@ static const char *build_parse_json_config(mesi_config *conf,
                         mrs_part,
                         maxcr_part,
                         maxw_part,
+                        marker_part,
                         tmpl_part,
                         ctx_part);
 }
@@ -2049,26 +2091,27 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     char *esi = NULL;
 
     // MesiTimeout (#167) / MesiMaxResponseSize (#169) /
-    // MesiMaxConcurrentRequests (#170) / MesiMaxWorkers (#171): when
-    // any is set AND libgomesi exports ParseJson, the whole parse is
-    // routed through the JSON entry point so timeoutSeconds /
-    // maxResponseSize / maxConcurrentRequests / maxWorkers reach the
+    // MesiMaxConcurrentRequests (#170) / MesiMaxWorkers (#171) /
+    // MesiIncludeErrorMarker (#165): when any is set AND libgomesi
+    // exports ParseJson, the whole parse is routed through the JSON
+    // entry point so timeoutSeconds / maxResponseSize /
+    // maxConcurrentRequests / maxWorkers / includeErrorMarker reach the
     // core. The blob carries every other resolved setting (depth, base
     // URL, SSRF flags, optional cache key template + request
     // context), so behaviour matches the positional path exactly
     // except for the directives it carries — and each key is only
     // rendered when its directive is configured,
     // so the other directives' absent keys keep their positional-path
-    // defaults (30s / unlimited / unlimited / library default). When
-    // the symbol is missing (older libgomesi.so), fall through to the
-    // legacy chain below with a logged warning per configured
+    // defaults (30s / unlimited / unlimited / library default / silent).
+    // When the symbol is missing (older libgomesi.so), fall through to
+    // the legacy chain below with a logged warning per configured
     // directive — the directive is ignored (its pre-existing default
     // applies), never a crash and never a silently wrong config.
     // used_parse_json distinguishes "not attempted" from "ParseJson
     // returned NULL" — a NULL must NOT fall back silently; it fails the
     // request closed below (config errors are already logged Go-side).
     int used_parse_json = 0;
-    if (conf->timeout_seconds != -1 || conf->max_response_size != -1 || conf->max_concurrent_requests != -1 || conf->max_workers != -1) {
+    if (conf->timeout_seconds != -1 || conf->max_response_size != -1 || conf->max_concurrent_requests != -1 || conf->max_workers != -1 || (conf->include_error_marker && conf->include_error_marker[0] != '\0')) {
         if (EsiParseJson) {
             used_parse_json = 1;
             const char *req_ctx_json = build_request_ctx_json(f->r, conf, f->r->pool);
@@ -2099,6 +2142,12 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
                               "mesi: MesiMaxWorkers set but libgomesi lacks ParseJson; "
                               "MesiMaxWorkers ignored (library default NumCPU*4 worker pool "
                               "applies, the pre-#171 behaviour). Upgrade libgomesi.so.");
+            }
+            if (conf->include_error_marker && conf->include_error_marker[0] != '\0') {
+                ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+                              "mesi: MesiIncludeErrorMarker set but libgomesi lacks ParseJson; "
+                              "MesiIncludeErrorMarker ignored (failed includes stay silent, "
+                              "the pre-#165 behaviour). Upgrade libgomesi.so.");
             }
         }
     }
@@ -2175,6 +2224,7 @@ static void register_hooks(apr_pool_t *p) {
 static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("EnableMesi", set_enable_mesi, NULL, RSRC_CONF, "Enable or disable the Mesi module"),
     AP_INIT_TAKE1("MesiMaxDepth", set_max_depth, NULL, RSRC_CONF, "Maximum ESI nesting depth (0..10000). Unset=5. 0=passthrough"),
+    AP_INIT_TAKE1("MesiIncludeErrorMarker", set_include_error_marker, NULL, RSRC_CONF, "Raw HTML rendered for a failed ESI include with no onerror/fallback (empty=silent, default)"),
     AP_INIT_TAKE1("MesiTimeout", set_timeout, NULL, RSRC_CONF, "ESI processing timeout per include in seconds (1..86400). Unset=30"),
     AP_INIT_TAKE1("MesiMaxResponseSize", set_max_response_size, NULL, RSRC_CONF, "Maximum ESI include response body size in bytes (0=unlimited). Unset=unlimited"),
     AP_INIT_TAKE1("MesiMaxBodySize", set_max_body_size, NULL, RSRC_CONF, "Maximum parent response body size in bytes buffered for ESI processing (0=unlimited). Unset=unlimited"),

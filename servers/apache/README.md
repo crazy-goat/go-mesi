@@ -87,6 +87,31 @@ MesiCacheTTL 60
   expanded). `1` processes one include level (inner ESI is not
   processed). Negatives, empty values, non-digits, decimals, and
   values above `10000` are rejected at config load.
+- `MesiIncludeErrorMarker <marker>` — Raw HTML rendered in place of a
+  failed `<esi:include>` when the tag has neither `onerror="continue"`
+  nor a fallback body (`RSRC_CONF`, server context; example:
+  `MesiIncludeErrorMarker "<!-- ESI include failed -->"`). Unset or an
+  explicit empty value (`MesiIncludeErrorMarker ""`) keeps the
+  historical silent behaviour: the failed include is replaced with
+  nothing. `onerror="continue"` and fallback tag bodies always take
+  priority, so the marker never overrides them. **Security warning:**
+  the marker is inserted into the rendered page verbatim — never put
+  internal error details, upstream URLs, host names or IP addresses in
+  it, because it is public output in production. **Merge:** a vhost's
+  value overrides the global one; an unset vhost inherits it, and an
+  explicit empty value in a vhost clears an inherited marker. The value
+  travels to libgomesi through the `ParseJson` entry point as the
+  additive `{"includeErrorMarker":"…"}` string key (JSON-escaped, so
+  quotes, backslashes and control characters cannot break the blob);
+  requires a `libgomesi.so` exporting `ParseJson` — older builds log
+  `MesiIncludeErrorMarker set but libgomesi lacks ParseJson;
+  MesiIncludeErrorMarker ignored (failed includes stay silent, the
+  pre-#165 behaviour)` and stay silent.
+
+  ```apache
+  EnableMesi On
+  MesiIncludeErrorMarker "<!-- ESI include failed -->"
+  ```
 - `MesiTimeout N` — Global per-include ESI fetch budget in seconds
   (`RSRC_CONF`, server context; example: `MesiTimeout 10` next to
   `EnableMesi On`). Unset (default) uses `30` — libgomesi's
@@ -388,11 +413,11 @@ docker compose up --build
    `MesiCacheBackend memory` is configured (TTL/size from
    `MesiCacheTTL`/`MesiCacheSize`).
 6. Processes the buffered body through `libgomesi.ParseJson()` when
-   `MesiTimeout`, `MesiMaxResponseSize`, `MesiMaxConcurrentRequests`
-   or `MesiMaxWorkers` is set (the JSON blob carries whichever of
-   those four directives are configured plus depth, base URL, SSRF
-   flags and, when configured, the cache key template + request
-   context), through
+   `MesiTimeout`, `MesiMaxResponseSize`, `MesiMaxConcurrentRequests`,
+   `MesiMaxWorkers` or a non-empty `MesiIncludeErrorMarker` is set
+   (the JSON blob carries whichever of those directives are configured
+   plus depth, base URL, SSRF flags and, when configured, the cache key
+   template + request context), through
    `libgomesi.ParseWithConfigCtx()` when only
    `MesiCacheKeyTemplate` is set (headers/cookies from the incoming
    request are serialised as JSON context for `mesi.BuildCacheKey`),
