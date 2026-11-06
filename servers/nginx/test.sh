@@ -2689,6 +2689,120 @@ else
     exit 1
 fi
 
+echo "=== Test 95: mesi_include_error_marker config validation (#228) ==="
+nginx_include_error_marker_conf_check() {
+    # $1 = directive lines; prints nginx -t output
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18082;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      $1" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-include-error-marker.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-include-error-marker.conf' < /tmp/nginx-mesi-include-error-marker.conf
+    docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-include-error-marker.conf 2>&1 || true
+}
+for GOOD in '' \
+    'mesi_include_error_marker "<!-- ESI include failed -->";' \
+    'mesi_include_error_marker <!--marker-->;' \
+    'mesi_include_error_marker "";'; do
+    if nginx_include_error_marker_conf_check "$GOOD" | grep -q 'syntax is ok'; then
+        echo "PASS: default/explicit '$GOOD' accepted by nginx -t"
+    else
+        echo "FAIL: nginx rejected valid '$GOOD'"
+        exit 1
+    fi
+done
+for BAD in 'mesi_include_error_marker;' \
+    'mesi_include_error_marker "a"; mesi_include_error_marker "b";' \
+    'mesi_include_error_marker <!-- ESI include failed -->;' \
+    'mesi_include_error_marker "<!-- ESI include failed -->" extra;'; do
+    if nginx_include_error_marker_conf_check "$BAD" | grep -q 'syntax is ok'; then
+        echo "FAIL: nginx accepted invalid '$BAD'"
+        exit 1
+    else
+        echo "PASS: invalid '$BAD' rejected by nginx -t"
+    fi
+done
+rm -f /tmp/nginx-mesi-include-error-marker.conf
+
+echo "=== Test 96: mesi_include_error_marker renders on a failed include (#228) ==="
+MARKER_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker/)
+if echo "$MARKER_RESPONSE" | grep -qF '<!-- ESI include failed -->' \
+    && echo "$MARKER_RESPONSE" | grep -q "After marker include" \
+    && ! echo "$MARKER_RESPONSE" | grep -q "esi:include"; then
+    echo "PASS: failed include rendered the configured marker"
+else
+    echo "FAIL: failed include did not render the configured marker"
+    echo "Response: $MARKER_RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 97: mesi_include_error_marker JSON-escapes special characters (#228) ==="
+SPECIAL_MARKER_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-special/)
+EXPECTED_SPECIAL_MARKER='<!-- ESI "quoted" \ / -->'
+if echo "$SPECIAL_MARKER_RESPONSE" | grep -qF "$EXPECTED_SPECIAL_MARKER" \
+    && echo "$SPECIAL_MARKER_RESPONSE" | grep -q "After marker include"; then
+    echo "PASS: special-character marker survived the ParseJson round trip verbatim"
+else
+    echo "FAIL: special-character marker was not rendered verbatim"
+    echo "Response: $SPECIAL_MARKER_RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 98: onerror=\"continue\" and fallback body take priority over the marker (#228) ==="
+ONERROR_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-onerror/)
+FALLBACK_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-fallback/)
+if echo "$ONERROR_RESPONSE" | grep -q "After onerror include" \
+    && ! echo "$ONERROR_RESPONSE" | grep -qF '<!-- ESI include failed -->' \
+    && echo "$FALLBACK_RESPONSE" | grep -q "fallback content rendered" \
+    && ! echo "$FALLBACK_RESPONSE" | grep -qF '<!-- ESI include failed -->'; then
+    echo "PASS: onerror and fallback body suppress the marker"
+else
+    echo "FAIL: the marker overrode onerror or the fallback body"
+    echo "onerror response: $ONERROR_RESPONSE"
+    echo "fallback response: $FALLBACK_RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 99: unset and explicit empty marker stay silent (#228) ==="
+UNSET_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-unset/)
+EMPTY_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-empty/)
+if echo "$UNSET_RESPONSE" | grep -q "After marker include" \
+    && ! echo "$UNSET_RESPONSE" | grep -qF 'ESI include failed' \
+    && echo "$EMPTY_RESPONSE" | grep -q "After marker include" \
+    && ! echo "$EMPTY_RESPONSE" | grep -qF 'ESI include failed'; then
+    echo "PASS: unset and explicit empty markers render nothing (backward compatible)"
+else
+    echo "FAIL: unset or explicit empty marker produced output"
+    echo "unset response: $UNSET_RESPONSE"
+    echo "empty response: $EMPTY_RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 100: mesi_include_error_marker merge — child inherits, explicit empty clears (#228) ==="
+MERGE_PARENT_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-merge/)
+MERGE_CHILD_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-merge/child/)
+MERGE_EMPTY_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-merge/empty/)
+if echo "$MERGE_PARENT_RESPONSE" | grep -qF '<!-- parent ESI marker -->' \
+    && echo "$MERGE_CHILD_RESPONSE" | grep -qF '<!-- parent ESI marker -->' \
+    && echo "$MERGE_EMPTY_RESPONSE" | grep -q "After marker include" \
+    && ! echo "$MERGE_EMPTY_RESPONSE" | grep -qF '<!-- parent ESI marker -->'; then
+    echo "PASS: unset child inherited the parent marker, explicit empty cleared it"
+else
+    echo "FAIL: marker merge/inherit semantics are wrong"
+    echo "parent response: $MERGE_PARENT_RESPONSE"
+    echo "child response: $MERGE_CHILD_RESPONSE"
+    echo "empty response: $MERGE_EMPTY_RESPONSE"
+    exit 1
+fi
+
 docker compose down
 
 echo ""
