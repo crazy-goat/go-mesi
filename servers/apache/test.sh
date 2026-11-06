@@ -25,6 +25,9 @@ APACHE_PORT_8096=${APACHE_PORT_8096:-8096}
 APACHE_PORT_8097=${APACHE_PORT_8097:-8097}
 APACHE_PORT_8098=${APACHE_PORT_8098:-8098}
 APACHE_PORT_8099=${APACHE_PORT_8099:-8099}
+APACHE_PORT_8100=${APACHE_PORT_8100:-8100}
+APACHE_PORT_8101=${APACHE_PORT_8101:-8101}
+APACHE_PORT_8102=${APACHE_PORT_8102:-8102}
 
 docker compose up -d --wait
 
@@ -1099,6 +1102,116 @@ else
     docker compose down
     exit 1
 fi
+
+echo "=== Test 50: MesiParseOnHeader absent — HTML without Edge-control still parsed (#172) ==="
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/backend/parse-on-header/plain)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: absent directive keeps the always-parse behaviour"
+else
+    echo "FAIL: absent MesiParseOnHeader did not parse an unsignalled page"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 51: MesiParseOnHeader Off — HTML without Edge-control still parsed (#172) ==="
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8101"/backend/parse-on-header/plain)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: explicit Off keeps the always-parse behaviour"
+else
+    echo "FAIL: MesiParseOnHeader Off did not parse an unsignalled page"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 52: MesiParseOnHeader On + Edge-control — HTML parsed (#172) ==="
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8100"/backend/parse-on-header/esi)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: signalled page processed with MesiParseOnHeader On"
+else
+    echo "FAIL: signalled page was not processed with MesiParseOnHeader On"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 53: MesiParseOnHeader On without Edge-control — byte-identical passthrough (#172) ==="
+curl -s -D /tmp/mesi-poh-headers.txt \
+    http://localhost:"$APACHE_PORT_8100"/backend/parse-on-header/plain \
+    -o /tmp/mesi-poh-body.html
+if cmp -s /tmp/mesi-poh-body.html "$SCRIPT_DIR/tests/parse-on-header.html" \
+    && grep -q '<esi:include src="http://backend:8000/include.txt" />' /tmp/mesi-poh-body.html \
+    && ! grep -q "included content from backend" /tmp/mesi-poh-body.html; then
+    echo "PASS: unsignalled page passed through byte for byte, include not fetched"
+else
+    echo "FAIL: unsignalled page was changed or its include was fetched"
+    diff -u "$SCRIPT_DIR/tests/parse-on-header.html" /tmp/mesi-poh-body.html || true
+    docker compose down
+    exit 1
+fi
+if grep -qi "Surrogate-Capability" /tmp/mesi-poh-headers.txt; then
+    echo "FAIL: unsignalled page still carries the ESI Surrogate-Capability header"
+    cat /tmp/mesi-poh-headers.txt
+    docker compose down
+    exit 1
+fi
+echo "PASS: unsignalled page has no ESI Surrogate-Capability header"
+rm -f /tmp/mesi-poh-body.html /tmp/mesi-poh-headers.txt
+
+echo "=== Test 54: MesiParseOnHeader On — non-HTML unaffected (#172) ==="
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8100"/noesi.txt)
+HEADERS=$(curl -sI http://localhost:"$APACHE_PORT_8100"/noesi.txt)
+if echo "$RESPONSE" | grep -q "esi:include" \
+    && ! echo "$RESPONSE" | grep -q "included content from backend" \
+    && echo "$HEADERS" | grep -q "Surrogate-Capability"; then
+    echo "PASS: non-HTML content bypasses the parse-on-header branch unchanged"
+else
+    echo "FAIL: non-HTML content changed under MesiParseOnHeader On"
+    echo "Response: $RESPONSE"
+    echo "Headers: $HEADERS"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 55: MesiParseOnHeader On — nested fragments follow the header (#172) ==="
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8100"/backend/parse-on-header/nested)
+INCLUDED_COUNT=$(echo "$RESPONSE" | grep -o "included content from backend" | wc -l | tr -d ' ')
+RAW_TAG_COUNT=$(echo "$RESPONSE" | grep -o '<esi:include src="http://backend:8000/include.txt" />' | wc -l | tr -d ' ')
+if [ "$INCLUDED_COUNT" -eq 1 ] && [ "$RAW_TAG_COUNT" -eq 1 ]; then
+    echo "PASS: signalling fragment parsed, non-signalling fragment left raw"
+else
+    echo "FAIL: nested fragments did not follow the header (expanded: $INCLUDED_COUNT, raw: $RAW_TAG_COUNT)"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 56: MesiParseOnHeader On — unsignalled page is not buffered/limited (#172) ==="
+R=$(curl -s -w '\n%{http_code}' http://localhost:"$APACHE_PORT_8102"/backend/poh-nolen-html/plain/6000)
+if echo "$R" | grep -q "nolen-end-marker" \
+    && echo "$R" | grep -q '<esi:include' \
+    && ! echo "$R" | grep -q "included content from backend" \
+    && [ "$(echo "$R" | tail -n1)" = "200" ]; then
+    echo "PASS: unsignalled streamed page bypassed MesiMaxBodySize untouched"
+else
+    echo "FAIL: unsignalled streamed page was buffered/limited"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+CODE=$(curl -s -o /tmp/mesi-poh-oversize.html -w '%{http_code}' \
+    http://localhost:"$APACHE_PORT_8102"/backend/poh-nolen-html/esi/6000)
+if [ "$CODE" = "502" ] && ! grep -q "nolen-end-marker" /tmp/mesi-poh-oversize.html; then
+    echo "PASS: signalled page over MesiMaxBodySize answered 502"
+else
+    echo "FAIL: signalled oversize page expected 502 (got $CODE)"
+    head -c 500 /tmp/mesi-poh-oversize.html
+    rm -f /tmp/mesi-poh-oversize.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-poh-oversize.html
 
 docker compose down
 
