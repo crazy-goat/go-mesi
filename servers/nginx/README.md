@@ -214,6 +214,71 @@ location / {
 
 See [examples/nginx-max-response-size.conf](../../examples/nginx-max-response-size.conf) for a full example file.
 
+## Include Error Marker
+
+The `mesi_include_error_marker` directive renders a static HTML marker in place of a failed `<esi:include>` when the tag has neither `onerror="continue"` nor a fallback body. Until #228 a failed include silently disappeared from the rendered page — a "ghost include" with no trace for developers, QA or monitoring. The directive maps to `mesi.EsiParserConfig.IncludeErrorMarker` (the same field Apache's `MesiIncludeErrorMarker` and Caddy's `include_error_marker` set).
+
+### Directive
+
+#### `mesi_include_error_marker`
+
+- **Syntax:** `mesi_include_error_marker <marker>`
+- **Default:** unset → **silent** (the pre-#228 behaviour: a failed include is replaced with nothing)
+- **Context:** `location`
+
+Semantics:
+
+- **Unset** → silent and the request stays on the byte-identical legacy positional path.
+- **A non-empty marker** → rendered **verbatim** in place of each failed include that has no `onerror="continue"` and no fallback tag body.
+- **An explicit empty value** (`mesi_include_error_marker "";`) → configured but silent. It still routes the parse through `ParseJson` as `{"includeErrorMarker":""}` (the same value the positional path applies), and it clears an inherited marker in a nested location.
+- **`onerror="continue"` and fallback bodies always win:** the marker is used only on the include-error path where neither mechanism applies.
+
+The value is passed through libgomesi's **`ParseJson`** entry point as the additive `{"includeErrorMarker":"…"}` string key, JSON-escaped by the module's shared helper (quotes, backslashes and control characters cannot break the blob) and then inserted into the response verbatim by the core. The blob also carries the other resolved settings (`maxDepth`, `defaultUrl`, `allowedHosts`, SSRF flags, optional `timeoutSeconds` / `maxResponseSize` / `maxConcurrentRequests` / `maxWorkers` / `debug` / `cacheKeyTemplate` + `requestCtx`), so behaviour matches the positional path except for the marker. A `ParseJson` NULL fails the request closed; an older `libgomesi.so` without the symbol logs a per-request warning (`mesi: mesi_include_error_marker is set but libgomesi lacks ParseJson — mesi_include_error_marker ignored (failed includes stay silent, the pre-#228 behaviour)`) and stays silent — never a crash.
+
+Nested `location` blocks inherit the marker: an unset child takes the parent's value (the `ngx_str_t` `data == NULL` sentinel survives the merge), and a child's explicit empty value clears an inherited marker. The directive accepts one token, so a marker containing spaces must be quoted; `mesi_include_error_marker "";` is a real explicit-empty value, and a missing argument, an unquoted marker with spaces or a trailing token fails `nginx -t`.
+
+> **Security — read before choosing a marker:** the marker is **public response output**, inserted as raw HTML with no escaping or filtering. It must be a **static, operator-controlled string** and must **never** contain internal error details, upstream URLs, host names, IP addresses, stack traces or any value derived from the request or the failing include. Common safe choices are an invisible HTML comment (`<!-- ESI include failed -->`), a visible placeholder (`[ESI ERROR]`), or the explicit empty value for production silence. Never use it to echo the error message.
+
+### Example
+
+```nginx
+# Debug-friendly: an invisible marker in the rendered HTML.
+location /debug/ {
+    enable_mesi on;
+    mesi_include_error_marker "<!-- ESI include failed -->";
+    proxy_pass http://backend;
+}
+
+# Visible placeholder for staging.
+location /staging/ {
+    enable_mesi on;
+    mesi_include_error_marker "[ESI ERROR]";
+    proxy_pass http://backend;
+}
+
+# Production: explicit empty marker clears a marker inherited from a
+# broader location and keeps failed includes silent.
+location /prod/ {
+    enable_mesi on;
+    mesi_include_error_marker "";
+    proxy_pass http://backend;
+
+    location /prod/inherits/ {
+        enable_mesi on;
+        # No directive: inherits the parent's explicit empty (silent).
+        proxy_pass http://backend;
+    }
+}
+
+location / {
+    enable_mesi on;
+    # mesi_include_error_marker unset → silent (legacy path)
+    proxy_pass http://backend;
+}
+```
+
+See [examples/nginx-include-error-marker.conf](../../examples/nginx-include-error-marker.conf) for a full example file.
+
 ## Max Concurrent Requests
 
 The `mesi_max_concurrent_requests` directive caps how many `<esi:include>` HTTP fetches may run at the same time during a single ESI parse. Until #214 the nginx module had no way to configure this limit.
