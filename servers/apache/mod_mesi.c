@@ -168,6 +168,14 @@ typedef struct {
     // 0 to survive the merge below. Range [0,
     // MESI_MAX_MAX_WORKERS].
     int max_workers; // -1=unset, >=0 = configured
+    // Debug logging from the Go parser (#173). -1=unset, 0=off, 1=on.
+    // Default (unset → off) keeps the parser silent, byte-identical to
+    // previous behaviour. When On, the directive routes the parse
+    // through ParseJson with "debug":true, enabling mesi.EsiParserConfig.
+    // Debug. The core's logger writes to stderr, which Apache captures
+    // in its error log (ErrorLog); output includes fetch URLs, so it is
+    // a troubleshooting aid, not a production setting.
+    int debug; // -1=unset, 0=off, 1=on
 } mesi_config;
 
 // Default memory cache size when MesiCacheSize is not set.
@@ -267,6 +275,7 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     conf->on_oversize = -1;             // -1 = unset: pass
     conf->max_concurrent_requests = -1; // -1 = unset: legacy parse path, libgomesi leaves 0 = unlimited (pre-#170 behaviour)
     conf->max_workers = -1;             // -1 = unset: legacy parse path, libgomesi leaves 0 = library default NumCPU*4 (pre-#171 behaviour)
+    conf->debug = -1;                   // -1 = unset: parser stays silent (pre-#173 behaviour)
     return conf;
 }
 
@@ -334,6 +343,8 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     conf->max_workers = (add->max_workers != -1)
                             ? add->max_workers
                             : base->max_workers;
+    // Debug: child wins when explicitly set (On or Off); -1 inherits.
+    conf->debug = (add->debug != -1) ? add->debug : base->debug;
     return conf;
 }
 
@@ -419,12 +430,12 @@ static void mesi_child_init(apr_pool_t *p, server_rec *s) {
     }
     // ParseJson is optional: JSON config entry point that carries the
     // timeoutSeconds (#167), maxResponseSize (#169),
-    // maxConcurrentRequests (#170) and maxWorkers (#171) fields. When
-    // present AND MesiTimeout, MesiMaxResponseSize,
-    // MesiMaxConcurrentRequests or MesiMaxWorkers is set, the filter
-    // uses it so the directives take effect (the blob also carries
-    // cache-key templating when configured, and each of the four keys
-    // is only rendered when its own directive is set).
+    // maxConcurrentRequests (#170), maxWorkers (#171) and debug (#173)
+    // fields. When present AND MesiTimeout, MesiMaxResponseSize,
+    // MesiMaxConcurrentRequests, MesiMaxWorkers or MesiDebug is set, the
+    // filter uses it so the directives take effect (the blob also
+    // carries cache-key templating when configured, and each of the
+    // five keys is only rendered when its own directive is set).
     // Older libgomesi builds without it fall back to the existing
     // ParseWithConfigCtx/Ex/Config chain and the configured
     // directives are ignored with a logged warning — never a crash,
@@ -872,6 +883,12 @@ static const char *set_allow_private_for_allowed(cmd_parms *cmd, void *cfg, int 
 static const char *set_shared_http_client(cmd_parms *cmd, void *cfg, int flag) {
     mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     conf->shared_http_client = flag;
+    return NULL;
+}
+
+static const char *set_debug(cmd_parms *cmd, void *cfg, int flag) {
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
+    conf->debug = flag;
     return NULL;
 }
 
@@ -1729,10 +1746,11 @@ static const char *json_string(apr_pool_t *pool, const char *s) {
 // build_parse_json_config renders the fully-resolved per-request parse
 // configuration into the JSON blob accepted by libgomesi's ParseJson
 // entry point (#167). Only called when MesiTimeout,
-// MesiMaxResponseSize, MesiMaxConcurrentRequests or MesiMaxWorkers is
-// set (those are what route a request through ParseJson). Every other
-// key mirrors exactly what the legacy positional path would pass, so
-// behaviour is identical except for the directives the blob carries.
+// MesiMaxResponseSize, MesiMaxConcurrentRequests, MesiMaxWorkers or
+// MesiDebug is set (those are what route a request through ParseJson).
+// Every other key mirrors exactly what the legacy positional path would
+// pass, so behaviour is identical except for the directives the blob
+// carries.
 // timeoutSeconds travels in SECONDS ("timeoutSeconds":N),
 // maxResponseSize in BYTES ("maxResponseSize":N),
 // maxConcurrentRequests as a plain count ("maxConcurrentRequests":N)
@@ -1742,6 +1760,9 @@ static const char *json_string(apr_pool_t *pool, const char *s) {
 // Go-side (30s / 0 = unlimited / 0 = unlimited / 0 = library default
 // NumCPU*4), so a config that sets only one directive produces exactly
 // the legacy behaviour for the others.
+// debug is rendered only when MesiDebug is configured ("debug":true or
+// false), so an unset directive omits the key and keeps the silent
+// positional-path default (#173).
 // cacheKeyTemplate/requestCtx are included only when a template is
 // configured, mirroring ParseWithConfigCtx's contract (absent/empty
 // template → URL-only keys; requestCtx is passed through verbatim as
@@ -1758,6 +1779,7 @@ static const char *build_parse_json_config(mesi_config *conf,
     const char *mrs_part = "";
     const char *maxcr_part = "";
     const char *maxw_part = "";
+    const char *debug_part = "";
     const char *tmpl_part = "";
     const char *ctx_part = "";
     if (conf->timeout_seconds != -1) {
@@ -1776,6 +1798,10 @@ static const char *build_parse_json_config(mesi_config *conf,
         maxw_part = apr_psprintf(pool, ",\"maxWorkers\":%d",
                                  conf->max_workers);
     }
+    if (conf->debug != -1) {
+        debug_part = apr_psprintf(pool, ",\"debug\":%s",
+                                  conf->debug ? "true" : "false");
+    }
     if (conf->cache_key_template && conf->cache_key_template[0] != '\0') {
         tmpl_part = apr_psprintf(pool, ",\"cacheKeyTemplate\":%s",
                                  json_string(pool, conf->cache_key_template));
@@ -1786,7 +1812,7 @@ static const char *build_parse_json_config(mesi_config *conf,
     return apr_psprintf(pool,
                         "{\"maxDepth\":%d,\"defaultUrl\":%s,\"allowedHosts\":%s,"
                         "\"blockPrivateIPs\":%s,\"allowPrivateIPsForAllowedHosts\":%s"
-                        "%s%s%s%s%s%s}",
+                        "%s%s%s%s%s%s%s}",
                         depth,
                         json_string(pool, base_url),
                         json_string(pool, allowed_hosts_str),
@@ -1796,6 +1822,7 @@ static const char *build_parse_json_config(mesi_config *conf,
                         mrs_part,
                         maxcr_part,
                         maxw_part,
+                        debug_part,
                         tmpl_part,
                         ctx_part);
 }
@@ -2049,17 +2076,17 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     char *esi = NULL;
 
     // MesiTimeout (#167) / MesiMaxResponseSize (#169) /
-    // MesiMaxConcurrentRequests (#170) / MesiMaxWorkers (#171): when
-    // any is set AND libgomesi exports ParseJson, the whole parse is
-    // routed through the JSON entry point so timeoutSeconds /
-    // maxResponseSize / maxConcurrentRequests / maxWorkers reach the
-    // core. The blob carries every other resolved setting (depth, base
-    // URL, SSRF flags, optional cache key template + request
-    // context), so behaviour matches the positional path exactly
-    // except for the directives it carries — and each key is only
-    // rendered when its directive is configured,
-    // so the other directives' absent keys keep their positional-path
-    // defaults (30s / unlimited / unlimited / library default). When
+    // MesiMaxConcurrentRequests (#170) / MesiMaxWorkers (#171) /
+    // MesiDebug (#173): when any is set AND libgomesi exports
+    // ParseJson, the whole parse is routed through the JSON entry point
+    // so timeoutSeconds / maxResponseSize / maxConcurrentRequests /
+    // maxWorkers / debug reach the core. The blob carries every other
+    // resolved setting (depth, base URL, SSRF flags, optional cache key
+    // template + request context), so behaviour matches the positional
+    // path exactly except for the directives it carries — and each key
+    // is only rendered when its directive is configured, so the other
+    // directives' absent keys keep their positional-path defaults
+    // (30s / unlimited / unlimited / library default / debug off). When
     // the symbol is missing (older libgomesi.so), fall through to the
     // legacy chain below with a logged warning per configured
     // directive — the directive is ignored (its pre-existing default
@@ -2068,7 +2095,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     // returned NULL" — a NULL must NOT fall back silently; it fails the
     // request closed below (config errors are already logged Go-side).
     int used_parse_json = 0;
-    if (conf->timeout_seconds != -1 || conf->max_response_size != -1 || conf->max_concurrent_requests != -1 || conf->max_workers != -1) {
+    if (conf->timeout_seconds != -1 || conf->max_response_size != -1 || conf->max_concurrent_requests != -1 || conf->max_workers != -1 || conf->debug != -1) {
         if (EsiParseJson) {
             used_parse_json = 1;
             const char *req_ctx_json = build_request_ctx_json(f->r, conf, f->r->pool);
@@ -2099,6 +2126,12 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
                               "mesi: MesiMaxWorkers set but libgomesi lacks ParseJson; "
                               "MesiMaxWorkers ignored (library default NumCPU*4 worker pool "
                               "applies, the pre-#171 behaviour). Upgrade libgomesi.so.");
+            }
+            if (conf->debug != -1) {
+                ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+                              "mesi: MesiDebug set but libgomesi lacks ParseJson; "
+                              "MesiDebug ignored (parser stays silent, the pre-#173 behaviour). "
+                              "Upgrade libgomesi.so.");
             }
         }
     }
@@ -2185,6 +2218,7 @@ static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("MesiBlockPrivateIPs", set_block_private_ips, NULL, RSRC_CONF, "Enable or disable private IP blocking (default: On)"),
     AP_INIT_FLAG("MesiAllowPrivateIPsForAllowedHosts", set_allow_private_for_allowed, NULL, RSRC_CONF, "Allow private IP access for hosts in MesiAllowedHosts when MesiBlockPrivateIPs is On (default: Off)"),
     AP_INIT_FLAG("MesiSharedHTTPClient", set_shared_http_client, NULL, RSRC_CONF, "Share HTTP client across ESI includes for connection pooling (default: Off)"),
+    AP_INIT_FLAG("MesiDebug", set_debug, NULL, RSRC_CONF, "Enable debug logging from the ESI parser (default: Off). Output goes to stderr, captured in the Apache error log"),
     AP_INIT_TAKE1("MesiCacheBackend", set_cache_backend, NULL, RSRC_CONF, "Cache backend: \"memory\", \"redis\", \"memcached\" (off when empty). Default: off"),
     AP_INIT_TAKE1("MesiCacheSize", set_cache_size, NULL, RSRC_CONF, "Memory cache max entries (1..1000000). Default: 10000"),
     AP_INIT_TAKE1("MesiCacheTTL", set_cache_ttl, NULL, RSRC_CONF, "Memory cache entry TTL in seconds (0..86400). Default: 0 (no expiry)"),
