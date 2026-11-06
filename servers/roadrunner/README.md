@@ -277,8 +277,8 @@ http:
 
 **Template placeholders:**
 - `${url}` — the include URL
-- `${header:Name}` — request header value (supports canonical, lowercase, uppercase forms)
-- `${cookie:Name}` — cookie value (supports canonical, lowercase, uppercase forms)
+- `${header:Name}` — request header value (case-insensitive)
+- `${cookie:Name}` — cookie value (case-insensitive)
 
 Unknown placeholders are left as literals.
 
