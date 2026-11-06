@@ -1,0 +1,16 @@
+# RoadRunner mESI — debug logging example
+#
+# Enables the core's verbose ESI diagnostics: parse progress, each
+# <esi:include> fetch (URL, status, duration), timeout/SSRF decisions and
+# cache read/write errors. The core's default logger writes to stderr, so
+# the lines appear wherever the rr process's stderr goes — no extra log
+# target is needed.
+#
+# Absent and explicit false both keep debug logging off (plain bool).
+# Debug lines can contain include URLs and upstream error details, so use
+# this option only while diagnosing a problem, not in production.
+http:
+  address: "0.0.0.0:8080"
+  middleware:
+    mesi:
+      debug: true
