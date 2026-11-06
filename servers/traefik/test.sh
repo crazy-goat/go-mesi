@@ -452,6 +452,28 @@ else
 fi
 rm -f /tmp/mesi-traefik-maxworkers-absent.txt
 
+echo "=== Test 19: debug true emits core logs, absent stays silent (#225) ==="
+BEFORE=$(docker compose logs traefik 2>&1 | grep -c "parse_start" || true)
+curl -s --max-time 30 -H "Host: domain.com" http://localhost:"$HTTP_PORT"/ >/dev/null
+AFTER_ABSENT=$(docker compose logs traefik 2>&1 | grep -c "parse_start" || true)
+if [ "$AFTER_ABSENT" -ne "$BEFORE" ]; then
+    echo "FAIL: absent debug emitted parse_start ($BEFORE -> $AFTER_ABSENT)"
+    docker compose down
+    exit 1
+fi
+echo "PASS: absent debug wrote no core debug lines"
+RESPONSE=$(curl -s --max-time 30 -H "Host: debug.domain.com" http://localhost:"$HTTP_PORT"/)
+AFTER_DEBUG=$(docker compose logs traefik 2>&1 | grep -c "parse_start" || true)
+if [ "$AFTER_DEBUG" -gt "$AFTER_ABSENT" ]; then
+    echo "PASS: debug true emitted parse_start in Traefik logs"
+else
+    echo "FAIL: debug true emitted no parse_start ($AFTER_ABSENT -> $AFTER_DEBUG)"
+    echo "Response: $RESPONSE"
+    docker compose logs traefik
+    docker compose down
+    exit 1
+fi
+
 docker compose down
 
 echo ""
