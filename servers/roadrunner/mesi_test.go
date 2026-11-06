@@ -1,11 +1,14 @@
 package roadrunner
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +42,116 @@ func TestInitDefaults(t *testing.T) {
 	}
 	if p.config.MaxResponseSize != DefaultMaxResponseSize {
 		t.Errorf("Expected max response size %d (unlimited), got %d", DefaultMaxResponseSize, p.config.MaxResponseSize)
+	}
+	if p.config.Debug {
+		t.Error("Expected debug logging off with default config")
+	}
+}
+
+func TestInitDebugAbsentDefaultsFalse(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init with absent debug: %v", err)
+	}
+	if p.config.Debug {
+		t.Error("absent debug = true, want false")
+	}
+
+	defaults := CreateConfig()
+	if err := (&Plugin{config: defaults}).Init(); err != nil {
+		t.Fatalf("Init with CreateConfig defaults: %v", err)
+	}
+	if defaults.Debug {
+		t.Error("CreateConfig Debug = true, want false")
+	}
+}
+
+func TestInitDebugExplicitTrueKept(t *testing.T) {
+	config := CreateConfig()
+	config.Debug = true
+
+	p := &Plugin{config: config}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init with debug=true: %v", err)
+	}
+	if !p.config.Debug {
+		t.Error("debug=true did not survive Init")
+	}
+}
+
+// captureStderr redirects os.Stderr for the duration of f and returns what was
+// written. The core's DefaultLogger (selected when EsiParserConfig.Debug is
+// true) writes there, so the test observes the same stream the `rr` process
+// would send to its stderr.
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer func() { _ = read.Close() }()
+	original := os.Stderr
+	os.Stderr = write
+	defer func() { os.Stderr = original }()
+
+	f()
+
+	os.Stderr = original
+	if err := write.Close(); err != nil {
+		t.Fatalf("close stderr pipe: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, read); err != nil {
+		t.Fatalf("read stderr pipe: %v", err)
+	}
+	return buf.String()
+}
+
+func TestMiddlewareDebugFlagReachesParser(t *testing.T) {
+	fragment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("DEBUG-FRAGMENT"))
+	}))
+	t.Cleanup(fragment.Close)
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><esi:include src="` + fragment.URL + `/fragment" /></body></html>`))
+	})
+
+	block := false
+	for _, tc := range []struct {
+		name    string
+		debug   bool
+		wantLog bool
+	}{
+		{name: "enabled", debug: true, wantLog: true},
+		{name: "disabled", debug: false, wantLog: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := CreateConfig()
+			config.BlockPrivateIPs = &block
+			config.Debug = tc.debug
+
+			p := &Plugin{config: config}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+
+			rec := httptest.NewRecorder()
+			logs := captureStderr(t, func() {
+				p.Middleware(upstream).ServeHTTP(rec, httptest.NewRequest("GET", "http://example.com/", nil))
+			})
+
+			if !strings.Contains(rec.Body.String(), "DEBUG-FRAGMENT") {
+				t.Fatalf("include was not processed, body: %q", rec.Body.String())
+			}
+			if gotLog := strings.Contains(logs, "DEBUG"); gotLog != tc.wantLog {
+				t.Errorf("debug log present = %v, want %v (stderr: %q)", gotLog, tc.wantLog, logs)
+			}
+		})
 	}
 }
 

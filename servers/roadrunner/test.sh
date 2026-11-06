@@ -26,7 +26,9 @@ start_rr() {
 	[ -n "$RR_PID" ] && kill "$RR_PID" 2>/dev/null || true
 	sleep 1
 	[ -n "$RR_PID" ] && kill -9 "$RR_PID" 2>/dev/null || true
-	"$RR_TEST_BINARY" -listen :9090 "$@" &
+	# Redirect the worker's stderr to the log file: debug diagnostics from the
+	# core's default logger are written there.
+	"$RR_TEST_BINARY" -listen :9090 "$@" >"$TEST_DIR/rr.log" 2>&1 &
 	RR_PID=$!
 	sleep 2
 }
@@ -250,6 +252,61 @@ else
     exit 1
 fi
 
+echo "--- ParseOnHeader Tests (#194) ---"
+
+PARSE_HEADER_PAGE='<html><body>PARSE-HEADER<esi:include src="http://127.0.0.1:9090/fragment" /></body></html>'
+
+echo "=== Test 16: parse_on_header true parses signalled HTML ==="
+start_rr -block-private-ips=false -parse-on-header
+for MODE in esi upper list; do
+    RESPONSE=$(curl -fsS "http://localhost:9090/parse-header/$MODE")
+    if echo "$RESPONSE" | grep -q "FRAGMENT_OK" \
+        && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+        echo "PASS: Edge-control mode $MODE enabled ESI processing"
+    else
+        echo "FAIL: Edge-control mode $MODE did not enable ESI processing"
+        echo "Response: $RESPONSE"
+        exit 1
+    fi
+done
+
+echo "=== Test 17: parse_on_header true without Edge-control passes through unchanged ==="
+HEADERS=$(curl -sD - -o "$TEST_DIR/parse-header-body.txt" http://localhost:9090/parse-header/none)
+RESPONSE=$(cat "$TEST_DIR/parse-header-body.txt")
+if [ "$RESPONSE" = "$PARSE_HEADER_PAGE" ] \
+    && ! echo "$RESPONSE" | grep -q "FRAGMENT_OK" \
+    && ! echo "$HEADERS" | grep -qi "Surrogate-Control" \
+    && [ "$(echo "$HEADERS" | grep -i '^Content-Length:' | awk '{print $2}' | tr -d '\r')" = "${#PARSE_HEADER_PAGE}" ]; then
+    echo "PASS: unsignalled HTML was sent byte for byte without Surrogate-Control"
+else
+    echo "FAIL: unsignalled HTML was changed or carried a surrogate header"
+    echo "Response: $RESPONSE"
+    echo "Headers: $HEADERS"
+    exit 1
+fi
+
+echo "=== Test 18: parse_on_header true leaves non-HTML untouched ==="
+RESPONSE=$(curl -fsS http://localhost:9090/plain)
+if [ "$RESPONSE" = 'plain text with <esi:include src="http://example.com/test" /> tags' ]; then
+    echo "PASS: non-HTML response passed through unchanged"
+else
+    echo "FAIL: non-HTML response was modified"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 19: absent parse_on_header always parses HTML ==="
+start_rr -block-private-ips=false
+RESPONSE=$(curl -fsS http://localhost:9090/parse-header/none)
+if echo "$RESPONSE" | grep -q "FRAGMENT_OK" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: absent parse_on_header still parsed unsignalled HTML"
+else
+    echo "FAIL: absent parse_on_header did not parse unsignalled HTML"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
 echo "--- Max Concurrent Requests Tests (#218) ---"
 
 # The fixture host and fragment listener are both loopback because rrtest serves
@@ -353,7 +410,7 @@ echo "--- Include Error Marker Tests (#233) ---"
 # also proves the middleware does not escape it.
 MARKER='<span class="esi-error">include failed</span>'
 
-echo "=== Test 16: include_error_marker renders for a failed include ==="
+echo "=== Test 20: include_error_marker renders for a failed include ==="
 start_rr -block-private-ips=false -include-error-marker "$MARKER"
 RESPONSE=$(curl -fsS http://localhost:9090/include-error/failed)
 if echo "$RESPONSE" | grep -qF "$MARKER" \
@@ -366,7 +423,7 @@ else
     exit 1
 fi
 
-echo "=== Test 17: onerror=\"continue\" suppresses the marker ==="
+echo "=== Test 21: onerror=\"continue\" suppresses the marker ==="
 RESPONSE=$(curl -fsS http://localhost:9090/include-error/continue)
 if echo "$RESPONSE" | grep -q "AFTER-CONTINUE" \
     && ! echo "$RESPONSE" | grep -qF "$MARKER" \
@@ -378,7 +435,7 @@ else
     exit 1
 fi
 
-echo "=== Test 18: fallback body suppresses the marker ==="
+echo "=== Test 22: fallback body suppresses the marker ==="
 RESPONSE=$(curl -fsS http://localhost:9090/include-error/fallback)
 if echo "$RESPONSE" | grep -q "FALLBACK-BODY" \
     && ! echo "$RESPONSE" | grep -qF "$MARKER" \
@@ -390,7 +447,7 @@ else
     exit 1
 fi
 
-echo "=== Test 19: absent and explicit empty marker render nothing ==="
+echo "=== Test 23: absent and explicit empty marker render nothing ==="
 start_rr -block-private-ips=false -include-error-marker ""
 RESPONSE_EMPTY=$(curl -fsS http://localhost:9090/include-error/failed)
 start_rr -block-private-ips=false
@@ -405,6 +462,30 @@ else
     echo "Explicit empty: $RESPONSE_EMPTY"
     echo "Absent: $RESPONSE_ABSENT"
     exit 1
+fi
+
+echo "--- Debug Logging Tests (#229) ---"
+
+echo "=== Test: debug true writes ESI diagnostics to the server log ==="
+start_rr -block-private-ips=false -debug
+curl -fsS http://localhost:9090/ >/dev/null
+if grep -q "DEBUG parse_start" "$TEST_DIR/rr.log"; then
+    echo "PASS: debug=true emitted ESI diagnostics to stderr"
+else
+    echo "FAIL: debug=true did not emit ESI diagnostics"
+    cat "$TEST_DIR/rr.log"
+    exit 1
+fi
+
+echo "=== Test: absent debug keeps ESI diagnostics out of the server log ==="
+start_rr -block-private-ips=false
+curl -fsS http://localhost:9090/ >/dev/null
+if grep -q "DEBUG" "$TEST_DIR/rr.log"; then
+    echo "FAIL: ESI diagnostics were emitted without debug: true"
+    cat "$TEST_DIR/rr.log"
+    exit 1
+else
+    echo "PASS: absent debug emitted no ESI diagnostics"
 fi
 
 echo ""

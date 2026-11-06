@@ -20,7 +20,8 @@ const DefaultMaxDepth = 5
 // defaults — maxDepth 5, no allowed-hosts restriction, SSRF
 // blockPrivateIPs ON (secure default, matching the core/Caddy/PHP/
 // RoadRunner defaults), no bypass, URL-only cache keys, debug off,
-// timeoutSeconds 30 (libgomesi's historical hardcoded value),
+// parseOnHeader off (always parse HTML), timeoutSeconds 30
+// (libgomesi's historical hardcoded value),
 // maxResponseSize 0 (unlimited — the value every positional Parse*
 // entry point leaves in EsiParserConfig.MaxResponseSize, NOT the
 // 10 MB of mesi.CreateDefaultConfig, which only applies to Go
@@ -29,7 +30,9 @@ const DefaultMaxDepth = 5
 // point leaves in EsiParserConfig.MaxConcurrentRequests), and
 // maxWorkers 0 (the library default runtime.NumCPU()*4 applied Go-side
 // when the value is <= 0 — likewise the value every positional
-// Parse* entry point leaves in EsiParserConfig.MaxWorkers).
+// Parse* entry point leaves in EsiParserConfig.MaxWorkers), and
+// includeErrorMarker "" (silent — the value every positional Parse*
+// entry point leaves in EsiParserConfig.IncludeErrorMarker).
 //
 // Unknown keys are ignored (forward compatibility — a newer caller
 // must be able to talk to an older libgomesi). Type mismatches and
@@ -63,6 +66,14 @@ type ParseConfig struct {
 	// left on in production shared logs. The Apache MesiDebug
 	// directive (#173) is the first user of this key.
 	Debug bool `json:"debug"`
+	// ParseOnHeader makes the core parse a fetched HTML fragment only
+	// when its own response carries `Edge-control: dca=esi`
+	// (case-insensitive, comma-separated list — mesi.IsEsiResponse).
+	// Absent → false, preserving the positional Parse* entry points'
+	// always-parse behaviour. The Apache MesiParseOnHeader directive
+	// (#172) is the first user of this key; it is required there so
+	// nested includes follow the same rule as the top-level response.
+	ParseOnHeader bool `json:"parseOnHeader"`
 	// RequestCtx is the raw {"headers":{...},"cookies":[...]} request
 	// context handed to mesi.BuildCacheKey; consumed verbatim by
 	// buildRequestFromJSON. Absent → nil (dummy request).
@@ -108,6 +119,14 @@ type ParseConfig struct {
 	// value <= 0 with NO warning, mesi/parser.go — libgomesi fails
 	// loud instead).
 	MaxWorkers *int `json:"maxWorkers"`
+	// IncludeErrorMarker is raw HTML rendered in place of a failed
+	// <esi:include> that has neither onerror="continue" nor a fallback
+	// body. Absent or "" → silent (empty output), byte-identical to
+	// the positional Parse* entry points, which leave
+	// EsiParserConfig.IncludeErrorMarker at its zero value. The value
+	// is inserted into the response verbatim; callers must treat it as
+	// trusted operator configuration.
+	IncludeErrorMarker string `json:"includeErrorMarker"`
 }
 
 // ParseConfigFromJSON decodes the ParseJson config blob. Malformed

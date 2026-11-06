@@ -15,6 +15,13 @@
 #
 # Mirrors tests/server/main.go's /sleep/<timeout>/<index> endpoint:
 # sleep first, then return a "<label> Waited <seconds>" fragment body.
+#
+# Also serves the MesiParseOnHeader (#172) endpoints:
+# /parse-on-header/<esi|plain|nested> returns a checked-in HTML fixture,
+# with `Edge-control: dca=esi` for "esi"/"nested" and without it for
+# "plain"; /poh-nolen-html/<esi|plain>/<size> is the streamed, length-less
+# body of /nolen-html with the same optional signal.
+import os
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -119,6 +126,67 @@ class Handler(SimpleHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
             return
+        if len(parts) == 3 and parts[1] == 'parse-on-header':
+            # /parse-on-header/<esi|plain|nested> (#172): a checked-in HTML
+            # fixture with `Edge-control: dca=esi` for "esi"/"nested", and
+            # without the header for "plain". The nested page includes both
+            # fragments so the parser's ParseOnHeader flag decides whether
+            # each fragment's own <esi:include> is expanded.
+            modes = {
+                'esi': ('parse-on-header.html', True),
+                'plain': ('parse-on-header.html', False),
+                'nested': ('parse-on-header-nested.html', True),
+            }
+            if parts[2] in modes:
+                name, signalled = modes[parts[2]]
+                # Resolve next to this script, not against the process CWD,
+                # so a missing fixture is a loud 500 rather than an empty
+                # 200 body that looks like a parsing bug.
+                fixture = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+                try:
+                    with open(fixture, 'rb') as fh:
+                        body = fh.read()
+                except OSError:
+                    self.send_error(500, 'missing parse-on-header fixture')
+                    return
+                try:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html')
+                    if signalled:
+                        self.send_header('Edge-control', 'dca=esi')
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+        if len(parts) == 4 and parts[1] == 'poh-nolen-html':
+            # /poh-nolen-html/<esi|plain>/<size> (#172): the streamed,
+            # length-less body of /nolen-html with an optional ESI signal.
+            # An unsignalled page must bypass MesiMaxBodySize entirely
+            # (the filter passes it through before buffering).
+            mode = parts[2]
+            try:
+                size = int(parts[3])
+            except ValueError:
+                size = -1
+            if mode in ('esi', 'plain') and 0 <= size <= 1000000:
+                try:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html')
+                    if mode == 'esi':
+                        self.send_header('Edge-control', 'dca=esi')
+                    self.end_headers()
+                    self.wfile.write(b'<esi:include src="http://backend:8000/include.txt" />\n')
+                    sent = 0
+                    while sent < size:
+                        self.wfile.write(b'x' * 500)
+                        self.wfile.flush()
+                        sent += 500
+                    self.wfile.write(b'\n<p>nolen-end-marker</p>\n')
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
         if len(parts) >= 3 and parts[1] == 'nolen-html':
             # /nolen-html/<size>: an HTML page of about <size> bytes sent
             # in 500-byte writes WITHOUT Content-Length (HTTP/1.0, closed
