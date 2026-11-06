@@ -79,6 +79,9 @@ typedef struct {
     /* Parser debug logging (#173). -1 = unset (off, legacy path),
      * 0 = explicit Off, 1 = On. */
     int debug;
+    /* Parse only signalled HTML responses (#172). -1 = unset (always
+     * parse), 0 = explicit Off, 1 = On. */
+    int parse_on_header;
     /* Include-error marker (#165). NULL = unset, non-NULL (possibly "")
      * = explicitly configured; non-NULL empty clears an inherited
      * marker and renders nothing. */
@@ -219,6 +222,39 @@ static const char *parse_shared_http_client(mesi_config *conf, int flag) {
 static const char *parse_debug(mesi_config *conf, int flag) {
     conf->debug = flag;
     return NULL;
+}
+
+static const char *parse_parse_on_header(mesi_config *conf, int flag) {
+    conf->parse_on_header = flag;
+    return NULL;
+}
+
+/* Header matcher copied from mod_mesi.c — mirrors mesi.IsEsiResponse:
+ * comma-separated list, case-insensitive, ASCII whitespace trimmed. */
+static int mesi_is_header_space(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
+}
+
+static int mesi_header_signals_esi(const char *value) {
+    if (!value) {
+        return 0;
+    }
+    const char *p = value;
+    for (;;) {
+        while (mesi_is_header_space(*p)) p++;
+        const char *start = p;
+        while (*p && *p != ',') p++;
+        const char *end = p;
+        while (end > start && mesi_is_header_space(end[-1])) end--;
+        if ((size_t)(end - start) == sizeof("dca=esi") - 1 &&
+            strncasecmp(start, "dca=esi", sizeof("dca=esi") - 1) == 0) {
+            return 1;
+        }
+        if (*p == '\0') {
+            return 0;
+        }
+        p++;
+    }
 }
 
 /* Parse helper copied verbatim from mod_mesi.c — verifies the
@@ -813,6 +849,7 @@ static void init_config(mesi_config *conf) {
     conf->max_concurrent_requests = -1;
     conf->max_workers = -1;
     conf->debug = -1;
+    conf->parse_on_header = -1;
     conf->include_error_marker = NULL;
 }
 
@@ -850,6 +887,9 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
                               ? add->max_workers
                               : base->max_workers;
     merged->debug = (add->debug != -1) ? add->debug : base->debug;
+    merged->parse_on_header = (add->parse_on_header != -1)
+                                  ? add->parse_on_header
+                                  : base->parse_on_header;
     merged->include_error_marker = add->include_error_marker
                                        ? add->include_error_marker
                                        : base->include_error_marker;
@@ -1267,6 +1307,111 @@ TEST(merge_debug_both_unset) {
 
     merge_configs(&base, &add, &merged);
     ASSERT_EQ(merged.debug, -1);
+}
+
+/* --- MesiParseOnHeader directive + Edge-control matcher tests (#172) --- */
+
+TEST(parse_on_header_default_unset) {
+    /* A freshly-created config has the sentinel -1 (unset → off): every
+     * HTML response is parsed, byte-identical to pre-#172 behaviour. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_EQ(conf.parse_on_header, -1);
+}
+
+TEST(parse_on_header_on) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = parse_parse_on_header(&conf, 1);
+    ASSERT_NULL(err);
+    ASSERT_EQ(conf.parse_on_header, 1);
+}
+
+TEST(parse_on_header_off) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = parse_parse_on_header(&conf, 0);
+    ASSERT_NULL(err);
+    ASSERT_EQ(conf.parse_on_header, 0);
+}
+
+TEST(merge_parse_on_header_child_overrides) {
+    /* Child On / parent Off → On (add overrides base). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.parse_on_header = 0;
+    add.parse_on_header = 1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.parse_on_header, 1);
+}
+
+TEST(merge_parse_on_header_child_off_overrides) {
+    /* Explicit Off must override an inherited On — 0 is configured,
+     * not unset (the whole reason the sentinel is -1). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.parse_on_header = 1;
+    add.parse_on_header = 0;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.parse_on_header, 0);
+}
+
+TEST(merge_parse_on_header_child_inherits) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.parse_on_header = 1;
+    add.parse_on_header = -1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.parse_on_header, 1);
+}
+
+TEST(merge_parse_on_header_both_unset) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.parse_on_header, -1);
+}
+
+TEST(header_signals_esi_matches) {
+    ASSERT_EQ(mesi_header_signals_esi("dca=esi"), 1);
+}
+
+TEST(header_signals_esi_case_insensitive) {
+    ASSERT_EQ(mesi_header_signals_esi("DCA=ESI"), 1);
+    ASSERT_EQ(mesi_header_signals_esi("Dca=Esi"), 1);
+}
+
+TEST(header_signals_esi_comma_list) {
+    ASSERT_EQ(mesi_header_signals_esi("no-cache, dca=esi"), 1);
+    ASSERT_EQ(mesi_header_signals_esi("no-cache,dca=esi,private"), 1);
+    ASSERT_EQ(mesi_header_signals_esi("  dca=esi  "), 1);
+    ASSERT_EQ(mesi_header_signals_esi("dca=esi,"), 1);
+}
+
+TEST(header_signals_esi_no_match) {
+    ASSERT_EQ(mesi_header_signals_esi("max-age=60"), 0);
+    ASSERT_EQ(mesi_header_signals_esi("esi"), 0);
+    ASSERT_EQ(mesi_header_signals_esi("dca=esi-extra"), 0);
+    ASSERT_EQ(mesi_header_signals_esi("xdca=esi"), 0);
+    ASSERT_EQ(mesi_header_signals_esi(""), 0);
+}
+
+TEST(header_signals_esi_null) {
+    ASSERT_EQ(mesi_header_signals_esi(NULL), 0);
 }
 
 /* --- Cache backend directive tests (#174) --- */
@@ -2665,6 +2810,7 @@ TEST(parse_json_blob_all_optional_keys) {
         .max_concurrent_requests = 4,
         .max_workers = 8,
         .debug = 1,
+        .parse_on_header = 1,
         .include_error_marker = "<!-- err -->",
         .cache_key_template = "{header:Accept-Language}",
     };
@@ -2680,6 +2826,7 @@ TEST(parse_json_blob_all_optional_keys) {
                   ",\"maxConcurrentRequests\":4"
                   ",\"maxWorkers\":8"
                   ",\"debug\":true"
+                  ",\"parseOnHeader\":true"
                   ",\"includeErrorMarker\":\"<!-- err -->\""
                   ",\"cacheKeyTemplate\":\"{header:Accept-Language}\""
                   ",\"requestCtx\":{\"ctx\":{\"header:Accept-Language\":\"pl\"}}}");
@@ -2707,6 +2854,7 @@ TEST(parse_json_blob_minimal) {
         .max_concurrent_requests = -1,
         .max_workers = -1,
         .debug = -1,
+        .parse_on_header = -1,
         .include_error_marker = NULL,
         .cache_key_template = NULL,
     };
@@ -2738,6 +2886,7 @@ TEST(parse_json_blob_request_ctx_needs_template) {
         .max_concurrent_requests = -1,
         .max_workers = -1,
         .debug = -1,
+        .parse_on_header = -1,
         .include_error_marker = NULL,
         .cache_key_template = "",
     };
@@ -2762,6 +2911,7 @@ TEST(parse_json_blob_template_without_ctx) {
         .max_concurrent_requests = -1,
         .max_workers = -1,
         .debug = -1,
+        .parse_on_header = -1,
         .include_error_marker = NULL,
         .cache_key_template = "{header:Accept-Language}",
     };
@@ -3635,6 +3785,20 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_debug_child_off_overrides);
     RUN_TEST(merge_debug_child_inherits);
     RUN_TEST(merge_debug_both_unset);
+
+    printf("\nTesting MesiParseOnHeader + Edge-control matcher (#172):\n");
+    RUN_TEST(parse_on_header_default_unset);
+    RUN_TEST(parse_on_header_on);
+    RUN_TEST(parse_on_header_off);
+    RUN_TEST(merge_parse_on_header_child_overrides);
+    RUN_TEST(merge_parse_on_header_child_off_overrides);
+    RUN_TEST(merge_parse_on_header_child_inherits);
+    RUN_TEST(merge_parse_on_header_both_unset);
+    RUN_TEST(header_signals_esi_matches);
+    RUN_TEST(header_signals_esi_case_insensitive);
+    RUN_TEST(header_signals_esi_comma_list);
+    RUN_TEST(header_signals_esi_no_match);
+    RUN_TEST(header_signals_esi_null);
 
     printf("\nTesting set_cache_backend() (#174):\n");
     RUN_TEST(cache_backend_memory);

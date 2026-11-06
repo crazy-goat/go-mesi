@@ -12,11 +12,11 @@
  *     allowPrivateIPsForAllowedHosts are always present.
  *   - timeoutSeconds (seconds), maxResponseSize (bytes),
  *     maxConcurrentRequests, maxWorkers (counts), debug (true/false),
- *     includeErrorMarker, cacheKeyTemplate and requestCtx are rendered only
- *     when their directive is configured (sentinel -1 for the integer
- *     fields, NULL/empty for the strings), so an unset directive keeps the
- *     documented positional-path default Go-side (#167, #169, #170, #171,
- *     #173).
+ *     parseOnHeader (true/false), includeErrorMarker, cacheKeyTemplate and
+ *     requestCtx are rendered only when their directive is configured
+ *     (sentinel -1 for the integer fields, NULL/empty for the strings), so
+ *     an unset directive keeps the documented positional-path default
+ *     Go-side (#167, #169, #170, #171, #173, #172).
  *   - requestCtx is only meaningful with a cache key template (it populates
  *     the template placeholders) and is passed through verbatim as
  *     pre-rendered JSON.
@@ -52,6 +52,7 @@ typedef struct {
     int max_concurrent_requests;
     int max_workers;
     int debug;
+    int parse_on_header;
     const char *include_error_marker;
     const char *cache_key_template;
 } mesi_parse_json_config;
@@ -101,6 +102,7 @@ static const char *mesi_build_parse_json_config(apr_pool_t *pool,
     const char *maxcr_part = "";
     const char *maxw_part = "";
     const char *debug_part = "";
+    const char *poh_part = "";
     const char *marker_part = "";
     const char *tmpl_part = "";
     const char *ctx_part = "";
@@ -124,6 +126,10 @@ static const char *mesi_build_parse_json_config(apr_pool_t *pool,
         debug_part = apr_psprintf(pool, ",\"debug\":%s",
                                   cfg->debug ? "true" : "false");
     }
+    if (cfg->parse_on_header != -1) {
+        poh_part = apr_psprintf(pool, ",\"parseOnHeader\":%s",
+                                cfg->parse_on_header ? "true" : "false");
+    }
     if (cfg->include_error_marker && cfg->include_error_marker[0] != '\0') {
         marker_part = apr_psprintf(pool, ",\"includeErrorMarker\":%s",
                                    mesi_json_string(pool, cfg->include_error_marker));
@@ -146,6 +152,7 @@ static const char *mesi_build_parse_json_config(apr_pool_t *pool,
                        maxcr_part,
                        maxw_part,
                        debug_part,
+                       poh_part,
                        marker_part,
                        tmpl_part,
                        ctx_part,

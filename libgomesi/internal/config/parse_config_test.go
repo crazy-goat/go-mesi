@@ -18,6 +18,8 @@ func TestParseConfigFromJSONMalformed(t *testing.T) {
 		{name: "blockPrivateIPs as string", blob: `{"blockPrivateIPs":"yes"}`},
 		{name: "debug as string", blob: `{"debug":"true"}`},
 		{name: "debug as number", blob: `{"debug":1}`},
+		{name: "parseOnHeader as string", blob: `{"parseOnHeader":"true"}`},
+		{name: "parseOnHeader as number", blob: `{"parseOnHeader":1}`},
 		{name: "maxResponseSize as string", blob: `{"maxResponseSize":"1048576"}`},
 		{name: "fractional maxResponseSize", blob: `{"maxResponseSize":1.5}`},
 		{name: "maxResponseSize above int64 range", blob: `{"maxResponseSize":9223372036854775808}`},
@@ -68,6 +70,11 @@ func TestParseConfigDefaults(t *testing.T) {
 	// every positional Parse* entry point.
 	if c.Debug {
 		t.Error("Debug = true for an absent key, want false (silent default)")
+	}
+	// Absent parseOnHeader → false: HTML is always parsed, byte-identical
+	// to every positional Parse* entry point.
+	if c.ParseOnHeader {
+		t.Error("ParseOnHeader = true for an absent key, want false (always parse)")
 	}
 	if len(c.RequestCtx) != 0 {
 		t.Errorf("RequestCtx = %s, want absent", c.RequestCtx)
@@ -152,6 +159,7 @@ func TestParseConfigExplicitValues(t *testing.T) {
 		"allowPrivateIPsForAllowedHosts": true,
 		"cacheKeyTemplate": "mesi:${url}",
 		"debug": true,
+		"parseOnHeader": true,
 		"requestCtx": {"headers":{"X-A":"1"},"cookies":[{"name":"a","value":"b"}]},
 		"timeoutSeconds": 7,
 		"maxResponseSize": 2048,
@@ -181,6 +189,9 @@ func TestParseConfigExplicitValues(t *testing.T) {
 	}
 	if !c.Debug {
 		t.Error("explicit debug=true not honoured")
+	}
+	if !c.ParseOnHeader {
+		t.Error("explicit parseOnHeader=true not honoured")
 	}
 	if c.DefaultUrl != "http://example.test/" || c.AllowedHosts != "backend other.example" || c.CacheKeyTemplate != "mesi:${url}" {
 		t.Errorf("string fields not honoured: %+v", c)
@@ -226,6 +237,27 @@ func TestParseConfigDebugExplicitValues(t *testing.T) {
 	}
 	if c.Debug {
 		t.Error("Debug = true for explicit false")
+	}
+}
+
+func TestParseConfigParseOnHeaderExplicitValues(t *testing.T) {
+	// parseOnHeader has no "unset vs explicit false" distinction to
+	// preserve: both mean "always parse HTML". Pin the round-trip anyway
+	// so a future schema change cannot silently ignore the key.
+	c, err := ParseConfigFromJSON([]byte(`{"parseOnHeader":true}`))
+	if err != nil {
+		t.Fatalf("ParseConfigFromJSON(parseOnHeader=true) = %v", err)
+	}
+	if !c.ParseOnHeader {
+		t.Error("ParseOnHeader = false for explicit true")
+	}
+
+	c, err = ParseConfigFromJSON([]byte(`{"parseOnHeader":false}`))
+	if err != nil {
+		t.Fatalf("ParseConfigFromJSON(parseOnHeader=false) = %v", err)
+	}
+	if c.ParseOnHeader {
+		t.Error("ParseOnHeader = true for explicit false")
 	}
 }
 

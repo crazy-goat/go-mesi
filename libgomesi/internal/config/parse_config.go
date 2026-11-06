@@ -20,7 +20,8 @@ const DefaultMaxDepth = 5
 // defaults — maxDepth 5, no allowed-hosts restriction, SSRF
 // blockPrivateIPs ON (secure default, matching the core/Caddy/PHP/
 // RoadRunner defaults), no bypass, URL-only cache keys, debug off,
-// timeoutSeconds 30 (libgomesi's historical hardcoded value),
+// parseOnHeader off (always parse HTML), timeoutSeconds 30
+// (libgomesi's historical hardcoded value),
 // maxResponseSize 0 (unlimited — the value every positional Parse*
 // entry point leaves in EsiParserConfig.MaxResponseSize, NOT the
 // 10 MB of mesi.CreateDefaultConfig, which only applies to Go
@@ -65,6 +66,14 @@ type ParseConfig struct {
 	// left on in production shared logs. The Apache MesiDebug
 	// directive (#173) is the first user of this key.
 	Debug bool `json:"debug"`
+	// ParseOnHeader makes the core parse a fetched HTML fragment only
+	// when its own response carries `Edge-control: dca=esi`
+	// (case-insensitive, comma-separated list — mesi.IsEsiResponse).
+	// Absent → false, preserving the positional Parse* entry points'
+	// always-parse behaviour. The Apache MesiParseOnHeader directive
+	// (#172) is the first user of this key; it is required there so
+	// nested includes follow the same rule as the top-level response.
+	ParseOnHeader bool `json:"parseOnHeader"`
 	// RequestCtx is the raw {"headers":{...},"cookies":[...]} request
 	// context handed to mesi.BuildCacheKey; consumed verbatim by
 	// buildRequestFromJSON. Absent → nil (dummy request).
