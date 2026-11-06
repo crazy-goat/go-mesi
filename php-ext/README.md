@@ -110,6 +110,8 @@ $html = \mesi\parse_with_config(
 | `max_response_size` | optional | int | Caps a single `<esi:include>` response body in **bytes**; range `[0, 9223372036854775806]` (`MaxInt64 - 1`); absent = `0` = **unlimited** (backward compatible — omitting the key is byte-identical to previous behaviour; there is **no implicit 10 MB default** on this path). **`0` is the documented "unlimited" value** (the core only limits when `MaxResponseSize > 0`). Non-integer values (string `"10"`, float `1.5`, `"abc"`, `""`, bool, null, array), negatives and values above the cap are rejected with `E_WARNING` and the function returns `false`. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"maxResponseSize":N}` (#169 schema key); on an older `libgomesi.so` without `ParseJson` a warning is emitted and the cap is ignored (unlimited applies) |
 | `max_concurrent_requests` | optional | int | Caps the number of **concurrent** `<esi:include>` HTTP fetches within ONE `parse_with_config()` call (the admission semaphore — per call, **not** global across PHP calls or requests); range `[0, 999999999]` (`MaxMaxConcurrentRequests`, #170); absent = `0` = **unlimited** (backward compatible — omitting the key is byte-identical to previous behaviour). **`0` is the documented "unlimited" value** (the core only installs the semaphore when the value is `> 0`); includes queued beyond the cap are still delivered, never dropped. Non-integer values (string `"10"`, float `1.5`, `"abc"`, `""`, bool, null, array), negatives and values above the cap are rejected with `E_WARNING` and the function returns `false`. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"maxConcurrentRequests":N}` (#170 schema key); on an older `libgomesi.so` without `ParseJson` a warning is emitted and the cap is ignored (unlimited applies) |
 | `max_workers` | optional | int | Caps the size of the include **drain-pool goroutines** that process ESI tokens/`<esi:include>` jobs within ONE `parse_with_config()` call (`min(MaxWorkers, len(esiJobs))` per `MESIParse`, so per call, **not** global across PHP calls or requests; each nested parse spawns its own pool and inherits the cap); range `[0, 999999999]` (`MaxMaxWorkers`, #171); absent = `0` = the **library default `runtime.NumCPU()*4`** (backward compatible — omitting the key is byte-identical to previous behaviour). **`0` is the documented "library default" value** — with a current `libgomesi.so` there is **no observable difference** between an explicit `0` and an absent key. Negatives (rejected because the core substitutes `NumCPU*4` for any value `<= 0` **silently, with no warning**), non-integer values (string `"8"`, float `1.5`, `"abc"`, `""`, bool, null, array) and values above the cap are rejected with `E_WARNING` and the function returns `false`. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"maxWorkers":N}` (#171 schema key); on an older `libgomesi.so` without `ParseJson` a warning is emitted and the cap is ignored (library default applies) |
+| `max_body_size` | optional | int | Caps the **parent** body handed to ESI processing, in **bytes**; absent or `0` = **unlimited** (backward compatible — omitting the key is byte-identical to previous behaviour). PHP has already allocated the body as a string, so this cannot reduce PHP-side memory; it avoids ESI parsing of huge bodies and gives the caller a deterministic outcome. Negative or non-integer values (numeric string `"10"` does not coerce, floats, bool, null, array) are rejected with `E_WARNING` and the function returns `false`. This is input handling in the extension, not parser config: it adds no `ParseJson` key. |
+| `on_oversize` | optional | string | What happens when the parent body is larger than `max_body_size`: `"pass"` (default) returns the input body unchanged **without ESI processing** and emits an `E_WARNING`; `"error"` emits an `E_WARNING` (without internal details) and returns `false`. Values are case-sensitive; unknown strings and non-strings are rejected with `E_WARNING`. Only effective with a positive `max_body_size`. |
 
 Validation is strict: an unknown `cache_backend`, mismatched Redis-vs-Memcached key, out-of-range numeric value, non-integer value, malformed `host:port`, or a non-string memcached server entry emits an `E_WARNING` and returns `false`. The function never silently degrades to "no cache" on a typo — a wrong host:port or empty memcached list surfaces as `E_WARNING`, matching the validation pattern in `parse_with_config()` for the in-memory backend and the equivalent `MesiCache*` directives in `servers/apache`. The same applies to `allowed_hosts`: a non-string or whitespace-only value is rejected (a whitespace-only list would silently tokenize to an empty allowlist = allow all hosts — the same fail-open typo nginx hardens against, #354). The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
 
@@ -448,6 +450,61 @@ Semantics (identical to Apache's `MesiMaxResponseSize` #169 and libgomesi's
   older `libgomesi.so` without the `ParseJson` symbol emits a warning
   (`max_response_size ignored … Upgrade libgomesi.so.`) and falls back to
   that path unlimited — never a crash.
+
+#### Parent body size (`max_body_size` / `on_oversize`)
+
+Since #538. `max_body_size` bounds the **parent** body that
+`parse_with_config()` hands to ESI processing — the same limit nginx
+`mesi_max_body_size`, Apache `MesiMaxBodySize`, Caddy `max_body_size` and the
+other integrations apply to the upstream page:
+
+```php
+// Limit ESI processing to pages up to 1 MiB; pass bigger pages through unchanged:
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    ['max_body_size' => 1048576, 'on_oversize' => 'pass']
+);
+
+// Or fail deterministically instead of passing through:
+$result = \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    ['max_body_size' => 1048576, 'on_oversize' => 'error']
+);
+```
+
+Semantics:
+
+- Integer **bytes**. Absent or `0` = **unlimited** (the legacy path: no
+  size check, no extra warning, byte-identical behaviour).
+- The body is already a PHP string when the extension sees it, so the limit
+  **cannot reduce PHP-side memory** — PHP allocated the string before the
+  call. What it does is avoid ESI parsing of an oversized body and give the
+  caller a deterministic outcome. If you need to bound memory, enforce the
+  limit earlier (for example when reading the upstream response).
+- There is no `Content-Length` in this API: the decision uses the actual
+  string length. The boundary is inclusive — a body of exactly
+  `max_body_size` bytes is processed; only a longer body is oversized.
+- `on_oversize => 'pass'` (default): an oversized body is returned
+  **unchanged and without ESI processing** — the PHP analogue of sending
+  the upstream body unchanged — and an `E_WARNING` is emitted.
+  `on_oversize => 'error'`: an `E_WARNING` is emitted and
+  `parse_with_config()` returns `false`. The warning names the option but
+  does not include internal details such as include URLs.
+- `on_oversize` is validated whenever it is present but only takes effect
+  with a positive `max_body_size`. Values are case-sensitive (`"pass"` /
+  `"error"`); unknown strings and non-strings are rejected.
+- Malformed explicit values are never silently coerced: negative or
+  non-integer `max_body_size` values emit an `E_WARNING` naming
+  `max_body_size` and `parse_with_config()` returns `false`.
+- These two keys are **input handling in the extension**, not parser
+  config: they never route the call through `ParseJson` and add no blob
+  key, so a call that sets only `max_body_size` / `on_oversize` keeps the
+  exact positional `ParseWithConfigCtx` path (and works with an older
+  `libgomesi.so`).
 
 #### Max concurrent requests (`max_concurrent_requests`)
 

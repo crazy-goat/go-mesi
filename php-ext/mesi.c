@@ -874,6 +874,27 @@ PHP_FUNCTION(parse) {
  *                            (the library-default NumCPU*4 pool
  *                            applies, the pre-#211 behaviour) and the
  *                            positional path runs — never a crash.
+ *   max_body_size:            optional integer. Caps the PARENT body in
+ *                            BYTES before ESI processing. Absent or 0 =
+ *                            unlimited (byte-identical to the legacy
+ *                            path). Negatives and non-integers (string
+ *                            "10", float 1.5, bool, null, array) are
+ *                            rejected with E_WARNING naming the option and
+ *                            parse_with_config() returns false. PHP has
+ *                            already allocated the body as a string, so
+ *                            this cannot reduce PHP-side memory — it only
+ *                            avoids parsing huge bodies and gives the
+ *                            caller a deterministic outcome. This is
+ *                            input handling in the extension, NOT parser
+ *                            config: it does not route through ParseJson
+ *                            and adds no blob key.
+ *   on_oversize:              optional string, "pass" (default) or
+ *                            "error", used only when max_body_size is a
+ *                            positive limit. "pass" returns the input body
+ *                            unchanged without ESI processing and emits an
+ *                            E_WARNING; "error" emits an E_WARNING and
+ *                            returns false. Unknown values and non-strings
+ *                            are rejected with E_WARNING naming the option.
  *
  * Validation strictly mirrors libgomesi's InitCacheWithConfig contract —
  * we detect the same bad inputs libgomesi would silently ignore or silently
@@ -961,6 +982,18 @@ PHP_FUNCTION(parse_with_config) {
      * #171 pattern). */
     long max_workers = 0;
     int max_workers_set = 0;
+
+    /* max_body_size / on_oversize (#538): bound the PARENT body that is
+     * handed to ESI processing. PHP has already allocated the body as a
+     * string before this function runs, so the limit cannot reduce
+     * PHP-side memory — it avoids ESI parsing of huge bodies and gives
+     * the caller a deterministic outcome. Absent or 0 = unlimited
+     * (byte-identical to the legacy path); on_oversize defaults to
+     * "pass" (return the input unchanged, no ESI processing). These are
+     * input-handling options of the extension, NOT parser config: they
+     * never route the call through ParseJson and add no blob key. */
+    long max_body_size = 0;
+    const char *on_oversize = "pass";
 
     if (config != NULL && Z_TYPE_P(config) == IS_ARRAY) {
         zval *val;
@@ -1527,6 +1560,57 @@ PHP_FUNCTION(parse_with_config) {
             max_workers_set = 1;
         }
 
+        /* max_body_size: PARENT body cap in bytes, range [0, LONG_MAX].
+         * Absent or 0 = unlimited (byte-identical to the legacy path).
+         * Strict validation: an explicit non-integer (string "10", float
+         * 1.5, bool, null, array) or negative value emits E_WARNING and
+         * the call returns false — never a silent coercion. Unlike
+         * max_response_size there is no transport-derived upper cap: the
+         * value only gates this extension's own strlen() comparison. */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "max_body_size",
+                                 sizeof("max_body_size") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) != IS_LONG) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): max_body_size must be a non-negative "
+                                 "integer (bytes; 0 = unlimited)");
+                RETURN_FALSE;
+            }
+            long v = Z_LVAL_P(val);
+            if (v < 0) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): max_body_size %ld is invalid "
+                                 "(must be >= 0; 0 = unlimited)",
+                                 v);
+                RETURN_FALSE;
+            }
+            max_body_size = v;
+        }
+
+        /* on_oversize: what to do when the parent body exceeds
+         * max_body_size. "pass" (default) returns the input unchanged
+         * without ESI processing; "error" returns false. Unknown or
+         * non-string values are rejected loudly. */
+        val = zend_hash_str_find(Z_ARRVAL_P(config), "on_oversize",
+                                 sizeof("on_oversize") - 1);
+        if (val != NULL) {
+            if (Z_TYPE_P(val) != IS_STRING) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): on_oversize must be a string "
+                                 "(\"pass\" or \"error\")");
+                RETURN_FALSE;
+            }
+            const char *mode = Z_STRVAL_P(val);
+            if (strcmp(mode, "pass") != 0 && strcmp(mode, "error") != 0) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): on_oversize '%s' is invalid "
+                                 "(allowed: \"pass\", \"error\")",
+                                 mode);
+                RETURN_FALSE;
+            }
+            on_oversize = mode;
+        }
+
         /* Backend-specific requirements: redis requires addr; memcached
          * requires servers. Detected after per-key parsing so a stray
          * key doesn't by itself trigger the error. */
@@ -1541,6 +1625,34 @@ PHP_FUNCTION(parse_with_config) {
                              "mesi\\parse_with_config(): cache_memcached_servers is required for "
                              "cache_backend='memcached' and must contain at least one host:port entry");
             RETURN_FALSE;
+        }
+    }
+
+    /* Parent body size limit (#538). PHP has already materialised the body
+     * as a string before parse_with_config() runs, so this cannot reduce
+     * PHP-side memory; it avoids ESI parsing of an oversized body and makes
+     * the outcome deterministic. There is no Content-Length in this API, so
+     * the decision uses the actual body length (strlen — the parser itself
+     * receives a NUL-terminated C string, so bytes after an embedded NUL
+     * are not part of the processed body). Only an explicit positive limit
+     * does anything; absent/0 is the unlimited legacy path. */
+    if (max_body_size > 0) {
+        size_t body_len = strlen(input);
+        if (body_len > (size_t)max_body_size) {
+            if (strcmp(on_oversize, "error") == 0) {
+                php_error_docref(NULL, E_WARNING,
+                                 "mesi\\parse_with_config(): input body size %zu exceeds "
+                                 "max_body_size %ld (on_oversize=error)",
+                                 body_len, max_body_size);
+                RETURN_FALSE;
+            }
+            php_error_docref(NULL, E_WARNING,
+                             "mesi\\parse_with_config(): input body size %zu exceeds "
+                             "max_body_size %ld; returning it unchanged without ESI "
+                             "processing (on_oversize=pass)",
+                             body_len, max_body_size);
+            RETVAL_STRINGL(input, input_len);
+            return;
         }
     }
 
