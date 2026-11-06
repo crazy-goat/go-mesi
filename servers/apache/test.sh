@@ -23,6 +23,8 @@ APACHE_PORT_8094=${APACHE_PORT_8094:-8094}
 APACHE_PORT_8095=${APACHE_PORT_8095:-8095}
 APACHE_PORT_8096=${APACHE_PORT_8096:-8096}
 APACHE_PORT_8097=${APACHE_PORT_8097:-8097}
+APACHE_PORT_8098=${APACHE_PORT_8098:-8098}
+APACHE_PORT_8099=${APACHE_PORT_8099:-8099}
 
 docker compose up -d --wait
 
@@ -198,6 +200,50 @@ check_memcached_servers_config reject "quote in the second entry" "mc:11211 'oth
 check_memcached_servers_config reject "backslashed host" 'mc\:11211' "invalid character"
 check_memcached_servers_config accept "two unquoted entries" "mc:11211 other:11211"
 
+
+echo "=== Test 6f: MesiDebug Off — parser emits no DEBUG output (#173) ==="
+# 8099 sets an explicit Off; the default *:80 vhost is unset (also off).
+# The assertion is a before/after delta so it does not depend on this
+# test running before the On case (no line may be added by the request).
+DEBUG_OFF_BEFORE=$(docker compose exec -T apache sh -c 'grep -c "DEBUG include_" /var/log/apache2/error.log 2>/dev/null || true')
+DEBUG_OFF_BEFORE=${DEBUG_OFF_BEFORE:-0}
+DEBUG_OFF_RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8099"/debug-failed-include.html)
+DEBUG_OFF_AFTER=$(docker compose exec -T apache sh -c 'grep -c "DEBUG include_" /var/log/apache2/error.log 2>/dev/null || true')
+DEBUG_OFF_AFTER=${DEBUG_OFF_AFTER:-0}
+if echo "$DEBUG_OFF_RESPONSE" | grep -q "After failed debug include" \
+    && [ "$DEBUG_OFF_AFTER" -eq "$DEBUG_OFF_BEFORE" ]; then
+    echo "PASS: MesiDebug Off rendered the page and added no parser DEBUG lines"
+else
+    echo "FAIL: MesiDebug Off added parser DEBUG output (before: $DEBUG_OFF_BEFORE, after: $DEBUG_OFF_AFTER)"
+    echo "Response: $DEBUG_OFF_RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 6g: MesiDebug On — failed include details in error log (#173) ==="
+# 8098 sets MesiDebug On. The missing include must make the core log
+# include_failed plus the fetch URL/status to stderr, which Apache
+# captures in error.log. The unique 173 filename keeps the assertion
+# independent of other test traffic.
+DEBUG_ON_BEFORE=$(docker compose exec -T apache sh -c 'grep -c "DEBUG include_" /var/log/apache2/error.log 2>/dev/null || true')
+DEBUG_ON_BEFORE=${DEBUG_ON_BEFORE:-0}
+DEBUG_ON_RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8098"/debug-failed-include.html)
+DEBUG_ON_AFTER=$(docker compose exec -T apache sh -c 'grep -c "DEBUG include_" /var/log/apache2/error.log 2>/dev/null || true')
+DEBUG_ON_AFTER=${DEBUG_ON_AFTER:-0}
+DEBUG_LOG=$(docker compose exec -T apache sh -c 'cat /var/log/apache2/error.log 2>/dev/null' || true)
+if echo "$DEBUG_ON_RESPONSE" | grep -q "After failed debug include" \
+    && [ "$DEBUG_ON_AFTER" -gt "$DEBUG_ON_BEFORE" ] \
+    && echo "$DEBUG_LOG" | grep -q "DEBUG include_failed" \
+    && echo "$DEBUG_LOG" | grep -q "missing-debug-fragment-173.txt"; then
+    echo "PASS: MesiDebug On logged include_failed with the failing include URL"
+else
+    echo "FAIL: MesiDebug On did not produce the expected DEBUG diagnostics (before: $DEBUG_ON_BEFORE, after: $DEBUG_ON_AFTER)"
+    echo "Response: $DEBUG_ON_RESPONSE"
+    echo "Matching log lines:"
+    echo "$DEBUG_LOG" | grep "missing-debug-fragment-173.txt" || true
+    docker compose down
+    exit 1
+fi
 
 echo "=== Test 7: Large response (multi-brigade) - direct ==="
 RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/large.html)
