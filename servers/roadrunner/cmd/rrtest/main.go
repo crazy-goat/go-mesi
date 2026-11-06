@@ -26,6 +26,7 @@ func main() {
 	maxResponseSize := flag.Int64("max-response-size", 0, "Maximum bytes per ESI include response (0 = unlimited)")
 	maxConcurrentRequests := flag.Int("max-concurrent-requests", 0, "Maximum concurrent ESI include fetches (0 = unlimited)")
 	maxWorkers := flag.Int("max-workers", 0, "Maximum token-processing workers per ESI parse (0 = library default)")
+	debug := flag.Bool("debug", false, "Enable ESI debug logging to stderr")
 	flag.Parse()
 
 	config := roadrunner.CreateConfig()
@@ -38,6 +39,7 @@ func main() {
 	config.MaxResponseSize = *maxResponseSize
 	config.MaxConcurrentRequests = *maxConcurrentRequests
 	config.MaxWorkers = *maxWorkers
+	config.Debug = *debug
 	config.BlockPrivateIPs = blockPrivateIPs
 	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
 	// Only override CreateConfig()'s default (5) when -max-depth is

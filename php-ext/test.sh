@@ -641,6 +641,63 @@ if [ -n "$DEBUG_PID" ]; then
 fi
 [ -n "$DEBUG_ERR" ] && rm -f "$DEBUG_ERR"
 
+echo ""
+echo "=== Test 33: include_error_marker renders for a failed include (#221) ==="
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/include-error-marker)
+if echo "$RESPONSE" | grep -q "marker test" \
+   && echo "$RESPONSE" | grep -q "<!-- MESI_ERROR_MARKER -->" \
+   && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: marker rendered in place of the failed include"
+else
+    echo "FAIL: marker not rendered for the failed include"
+    echo "Response: $RESPONSE"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 34: include_error_marker suppressed by onerror=\"continue\" (#221) ==="
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/include-error-marker-onerror)
+if echo "$RESPONSE" | grep -q "marker onerror" \
+   && ! echo "$RESPONSE" | grep -q "MESI_ERROR_MARKER" \
+   && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: onerror=\"continue\" takes priority over the marker"
+else
+    echo "FAIL: marker rendered despite onerror=\"continue\""
+    echo "Response: $RESPONSE"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 35: include_error_marker suppressed by a fallback body (#221) ==="
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/include-error-marker-fallback)
+if echo "$RESPONSE" | grep -q "marker fallback" \
+   && echo "$RESPONSE" | grep -q "fallback body" \
+   && ! echo "$RESPONSE" | grep -q "MESI_ERROR_MARKER" \
+   && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: fallback body takes priority over the marker"
+else
+    echo "FAIL: marker overrode the fallback body (or fallback missing)"
+    echo "Response: $RESPONSE"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+echo ""
+echo "=== Test 36: include_error_marker absent stays silent (#221) ==="
+RESPONSE=$(curl -s http://localhost:"$TEST_PORT"/include-error-marker-absent)
+if echo "$RESPONSE" | grep -q "marker absent" \
+   && ! echo "$RESPONSE" | grep -q "MESI_ERROR_MARKER" \
+   && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: absent key kept failed includes silent (pre-#221 behaviour)"
+else
+    echo "FAIL: absent key changed the failed-include output"
+    echo "Response: $RESPONSE"
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
 if [ "${CI:-}" != "true" ]; then
   docker compose down -v
 fi

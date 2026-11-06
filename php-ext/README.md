@@ -113,6 +113,7 @@ $html = \mesi\parse_with_config(
 | `max_body_size` | optional | int | Caps the **parent** body handed to ESI processing, in **bytes**; absent or `0` = **unlimited** (backward compatible — omitting the key is byte-identical to previous behaviour). PHP has already allocated the body as a string, so this cannot reduce PHP-side memory; it avoids ESI parsing of huge bodies and gives the caller a deterministic outcome. Negative or non-integer values (numeric string `"10"` does not coerce, floats, bool, null, array) are rejected with `E_WARNING` and the function returns `false`. This is input handling in the extension, not parser config: it adds no `ParseJson` key. |
 | `on_oversize` | optional | string | What happens when the parent body is larger than `max_body_size`: `"pass"` (default) returns the input body unchanged **without ESI processing** and emits an `E_WARNING`; `"error"` emits an `E_WARNING` (without internal details) and returns `false`. Values are case-sensitive; unknown strings and non-strings are rejected with `E_WARNING`. Only effective with a positive `max_body_size`. |
 | `debug` | optional | bool | Enables the core parser's debug logger (`mesi.EsiParserConfig.Debug`). When `true`, the core emits `DEBUG` parse/include/fetch events — **including every include URL** — to **stderr**, which PHP captures in its error log/error output; output is never sent to the client. Absent = `false` (silent — byte-identical to previous behaviour). **Strict boolean**: only `true`/`false` are accepted; integers `0`/`1`, strings (`"true"`, `"1"`, `""`), floats, `null`, arrays and objects are rejected with `E_WARNING` naming `debug` and the function returns `false` — unlike `block_private_ips`, a typo must never silently flip logging. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"debug":true\|false}`; an absent key keeps the legacy positional path. On an older `libgomesi.so` without `ParseJson` a warning is emitted and debug stays off (pre-#216 behaviour). **Security/ops:** debug lines contain fetch URLs (potential information leak in shared logs) and are high-volume — use it only while diagnosing and turn it off for production traffic |
+| `include_error_marker` | optional | string | Raw HTML rendered in place of a failed `<esi:include>` that has **neither** `onerror="continue"` **nor** a fallback body. Empty string = configured but silent; absent = silent and the exact legacy positional path (byte-identical to pre-#221 behaviour). `onerror` and fallback bodies always take priority. **Strict string**: any non-string value (and a string containing a NUL byte, which would silently truncate) is rejected with `E_WARNING` naming `include_error_marker` and the function returns `false`. Quotes, backslashes and control characters are valid raw HTML and are JSON-escaped into the blob. When set, the call is routed through libgomesi's `ParseJson` entry point (#167) as `{"includeErrorMarker":"…"}`; an absent key keeps the legacy positional path. On an older `libgomesi.so` without `ParseJson` a warning is emitted and failed includes stay silent (pre-#165 behaviour). **Security:** the marker is inserted into the public response **verbatim** (raw HTML, not escaped) — never put internal error details, upstream URLs, host names or IP addresses in it |
 
 Validation is strict: an unknown `cache_backend`, mismatched Redis-vs-Memcached key, out-of-range numeric value, non-integer value, malformed `host:port`, or a non-string memcached server entry emits an `E_WARNING` and returns `false`. The function never silently degrades to "no cache" on a typo — a wrong host:port or empty memcached list surfaces as `E_WARNING`, matching the validation pattern in `parse_with_config()` for the in-memory backend and the equivalent `MesiCache*` directives in `servers/apache`. The same applies to `allowed_hosts`: a non-string or whitespace-only value is rejected (a whitespace-only list would silently tokenize to an empty allowlist = allow all hosts — the same fail-open typo nginx hardens against, #354). The legacy `\mesi\parse()` entrypoint is unchanged in its signature, but it shares the same per-process cache as soon as `\mesi\parse_with_config()` has been called at least once in this worker — don't rely on `\mesi\parse()` to bypass the cache.
 
@@ -630,6 +631,51 @@ Semantics (identical to Apache's `MesiMaxWorkers` #171, CLI
   older `libgomesi.so` without the `ParseJson` symbol emits a warning
   (`max_workers ignored … Upgrade libgomesi.so.`) and falls back to that
   path with the library-default pool — never a crash.
+
+#### Include error marker (`include_error_marker`)
+
+Since #221. `include_error_marker` renders raw HTML in place of a failed
+`<esi:include>` that has neither `onerror="continue"` nor a fallback body —
+the same option as Apache `MesiIncludeErrorMarker` (#165):
+
+```php
+// Show a generic placeholder where an include could not be fetched:
+echo \mesi\parse_with_config(
+    $esi,
+    5,
+    'http://edge.example.com/',
+    ['include_error_marker' => '<!-- ESI include failed -->']
+);
+```
+
+Semantics:
+
+- Rendered **only** for a failed include with no `onerror="continue"` and
+  no fallback body; both always take priority. Include failures include
+  HTTP errors, connection failures, timeouts and the
+  `max_response_size` cap.
+- **Absent key → silent**, byte-identical to the pre-#221 behaviour (the
+  include is replaced with nothing; the legacy positional
+  `ParseWithConfigCtx` path runs).
+- **Explicit empty string → configured but silent** (no warning). Like the
+  other optional keys, presence routes through `ParseJson` as
+  `{"includeErrorMarker":"…"}`; absence keeps the positional path.
+- Quotes, backslashes and control characters are valid raw HTML and are
+  JSON-escaped by the shared blob builder, so they cannot break the JSON.
+  A string containing a NUL byte is rejected (it would silently truncate
+  the marker).
+- A non-string value (integer, float, bool, `null`, array, object) emits
+  `E_WARNING` naming `include_error_marker` and the function returns
+  `false` — never a silent default.
+- An older `libgomesi.so` without `ParseJson` emits a warning and falls
+  back to the positional path with failed includes silent — never a crash.
+
+**Security warning:** the marker is inserted into the public response
+**verbatim** as raw HTML — it is **not** HTML-escaped. Never put internal
+error details, upstream URLs, host names or IP addresses in the marker: it
+is public output that anyone can read. A generic placeholder (for example
+`<!-- ESI include failed -->`) is enough for users and leaks nothing about
+the infrastructure.
 
 ### Cache scope
 
