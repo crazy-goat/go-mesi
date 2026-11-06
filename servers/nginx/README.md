@@ -320,6 +320,50 @@ location / {
 
 See [examples/nginx-max-workers.conf](../../examples/nginx-max-workers.conf) for a full example file.
 
+## Debug Logging
+
+The `mesi_debug` directive turns on the Go parser's debug logger (`mesi.EsiParserConfig.Debug`). Until #223 the nginx module had no way to enable it, so a failing or empty `<esi:include>` produced no diagnostics at all.
+
+### Directive
+
+#### `mesi_debug`
+
+- **Syntax:** `mesi_debug on | off`
+- **Default:** `off` (unset stays on the byte-identical legacy path, parser silent)
+- **Context:** `location`
+
+Semantics:
+
+- **Unset** → **off**. Omitting the directive keeps the request on the legacy positional path and the core's discard logger, exactly like previous releases.
+- **`on`** enables `DEBUG` lines for parse, include and fetch events: `parse_start`, `include_start` / `include_failed` (with `src`), `fetch_start` / `fetch_done` (URL, HTTP status, duration), `fetch_timeout`, SSRF rejections, depth-limit enforcement and A/B selection.
+- **`off`** is an explicit request for silence. It is a *configured* value (not the unset sentinel), so it routes the parse through `ParseJson` with `{"debug":false}` — the same honest-configuration rule as the other sentinel-based directives.
+
+**Where the output goes:** the core's default logger writes to **`stderr`** (Go's `os.Stderr`), which is the nginx worker's file descriptor 2. Docker captures that stream (`docker compose logs nginx`); a bare-metal nginx started by systemd or a shell writes it to the same place as its own stderr, and nginx's `error_log stderr;` directive likewise targets fd 2. Debug lines are **never sent to the client**. If your `error_log` points at a file rather than `stderr`, redirect the process's stderr (for example `nginx ... 2>> /var/log/nginx/error.log`) or use `error_log stderr;` — the Go logger does not go through nginx's own log pipeline.
+
+When the directive is set, the whole parse is routed through libgomesi's **`ParseJson`** entry point with the additive `{"debug":true}` / `{"debug":false}` key (the `debug` key exists in `config.ParseConfig`; absent → `false`, so every positional `Parse*` entry point stays silent). The blob also carries the other resolved settings (`maxDepth`, `defaultUrl`, `allowedHosts`, SSRF flags, optional `timeoutSeconds` / `maxResponseSize` / `maxConcurrentRequests` / `maxWorkers` / `cacheKeyTemplate` + `requestCtx`), so behaviour matches the positional path except for the debug logger. Nested `location` blocks inherit the value over the `NGX_CONF_UNSET` sentinel: an unset child takes the parent's value, and a child's explicit `off` overrides an inherited `on`.
+
+With an older `libgomesi.so` that lacks `ParseJson`, the directive is ignored with a per-request warning (`mesi: mesi_debug is set but libgomesi lacks ParseJson — mesi_debug ignored (parser stays silent, the pre-#223 behaviour)`) and the parser stays silent — never a crash and never a silently wrong config. A `ParseJson` NULL fails the request closed (config errors are logged Go-side).
+
+> **Operational warning:** debug output is high-volume (multiple lines per include) and contains every fetched include URL, which may leak internal hostnames or signed query strings if logs are shared. Enable it only while troubleshooting, for the specific location that needs it — not globally and not as a long-term production setting.
+
+### Example
+
+```nginx
+location /troubleshoot/ {
+    enable_mesi on;
+    mesi_debug on;         # parser diagnostics → stderr (Docker logs / error log)
+    proxy_pass http://backend;
+}
+
+location / {
+    enable_mesi on;
+    # mesi_debug unset → off (silent, legacy path)
+    proxy_pass http://backend;
+}
+```
+
+See [examples/nginx-debug.conf](../../examples/nginx-debug.conf) for a full example file.
+
 ## Shared HTTP Client
 
 Not available in the nginx module: there is no shared-client directive (unlike Apache's `MesiSharedHTTPClient` and the CLI's `-shared-http-client`) and no `InitHTTPClient` wiring. Each `<esi:include>` fetch creates its own `http.Client` for the request, so TCP/TLS connection pooling across includes is not available — every include performs its own connection setup. Each per-include client still uses the SSRF-safe transport, so `mesi_block_private_ips` protection applies to every fetch.

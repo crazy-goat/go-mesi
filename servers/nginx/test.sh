@@ -2409,6 +2409,130 @@ else
     exit 1
 fi
 
+echo "=== Test 82: mesi_debug config validation — on/off accepted, invalid rejected (#223) ==="
+nginx_debug_conf_check() {
+    # $1 = directive lines; prints nginx -t output
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      $1" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-debug.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-debug.conf' < /tmp/nginx-mesi-debug.conf
+    docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-debug.conf 2>&1 || true
+}
+for GOOD in 'mesi_debug on;' 'mesi_debug off;'; do
+    if nginx_debug_conf_check "$GOOD" | grep -q 'syntax is ok'; then
+        echo "PASS: '$GOOD' accepted by nginx -t"
+    else
+        echo "FAIL: nginx rejected valid '$GOOD'"
+        exit 1
+    fi
+done
+for BAD in 'mesi_debug maybe;' 'mesi_debug;' 'mesi_debug on; mesi_debug off;'; do
+    if nginx_debug_conf_check "$BAD" | grep -q 'syntax is ok'; then
+        echo "FAIL: nginx accepted invalid '$BAD'"
+        exit 1
+    else
+        echo "PASS: invalid '$BAD' rejected by nginx -t"
+    fi
+done
+rm -f /tmp/nginx-mesi-debug.conf
+
+echo "=== Test 83: mesi_debug on — failed include diagnostics in the error log (#223) ==="
+# The Go logger writes DEBUG lines straight to stderr; Docker captures
+# them in `docker compose logs nginx` (nginx.conf also sends its own
+# error_log to stderr). Deltas keep the assertion independent of earlier
+# test traffic.
+count_debug_include_failed() {
+    docker compose logs nginx 2>&1 | grep -c 'DEBUG include_failed' || true
+}
+DEBUG_ON_BEFORE=$(count_debug_include_failed)
+DEBUG_ON_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/debug-on/)
+DEBUG_ON_AFTER=$DEBUG_ON_BEFORE
+for _ in $(seq 1 25); do
+    DEBUG_ON_AFTER=$(count_debug_include_failed)
+    [ "$DEBUG_ON_AFTER" -gt "$DEBUG_ON_BEFORE" ] && break
+    sleep 0.2
+done
+DEBUG_ON_LOG=$(docker compose logs nginx 2>&1 || true)
+if echo "$DEBUG_ON_RESPONSE" | grep -q "After failed debug include" \
+    && [ "$DEBUG_ON_AFTER" -gt "$DEBUG_ON_BEFORE" ] \
+    && echo "$DEBUG_ON_LOG" | grep -q 'DEBUG include_failed' \
+    && echo "$DEBUG_ON_LOG" | grep -q 'missing-debug-fragment-223.txt'; then
+    echo "PASS: mesi_debug on logged include_failed with the failing include URL"
+else
+    echo "FAIL: mesi_debug on did not produce the expected DEBUG diagnostics (before: $DEBUG_ON_BEFORE, after: $DEBUG_ON_AFTER)"
+    echo "Response: $DEBUG_ON_RESPONSE"
+    echo "$DEBUG_ON_LOG" | grep 'missing-debug-fragment-223.txt' || true
+    exit 1
+fi
+
+echo "=== Test 84: mesi_debug off — parser emits no DEBUG output (#223) ==="
+# Explicit off is a configured value (sent as {"debug":false}), so it
+# must stay silent even though the parser is opt-in anyway.
+DEBUG_OFF_BEFORE=$(count_debug_include_failed)
+DEBUG_OFF_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/debug-off/)
+sleep 0.5
+DEBUG_OFF_AFTER=$(count_debug_include_failed)
+if echo "$DEBUG_OFF_RESPONSE" | grep -q "After failed debug include" \
+    && [ "$DEBUG_OFF_AFTER" -eq "$DEBUG_OFF_BEFORE" ]; then
+    echo "PASS: mesi_debug off rendered the page and added no parser DEBUG lines"
+else
+    echo "FAIL: mesi_debug off added parser DEBUG output (before: $DEBUG_OFF_BEFORE, after: $DEBUG_OFF_AFTER)"
+    echo "Response: $DEBUG_OFF_RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 85: mesi_debug unset (default) — parser stays silent (#223) ==="
+DEBUG_UNSET_BEFORE=$(count_debug_include_failed)
+DEBUG_UNSET_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/debug-failed-include.html)
+sleep 0.5
+DEBUG_UNSET_AFTER=$(count_debug_include_failed)
+if echo "$DEBUG_UNSET_RESPONSE" | grep -q "After failed debug include" \
+    && [ "$DEBUG_UNSET_AFTER" -eq "$DEBUG_UNSET_BEFORE" ]; then
+    echo "PASS: unset mesi_debug (default off) added no parser DEBUG lines"
+else
+    echo "FAIL: unset mesi_debug added parser DEBUG output (before: $DEBUG_UNSET_BEFORE, after: $DEBUG_UNSET_AFTER)"
+    echo "Response: $DEBUG_UNSET_RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 86: mesi_debug merge — parent on, nested child explicit off (#223) ==="
+DEBUG_MERGE_PARENT_BEFORE=$(count_debug_include_failed)
+DEBUG_MERGE_PARENT_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/debug-merge/)
+for _ in $(seq 1 25); do
+    DEBUG_MERGE_PARENT_AFTER=$(count_debug_include_failed)
+    [ "$DEBUG_MERGE_PARENT_AFTER" -gt "$DEBUG_MERGE_PARENT_BEFORE" ] && break
+    sleep 0.2
+done
+DEBUG_MERGE_PARENT_AFTER=${DEBUG_MERGE_PARENT_AFTER:-$DEBUG_MERGE_PARENT_BEFORE}
+if ! echo "$DEBUG_MERGE_PARENT_RESPONSE" | grep -q "After failed debug include" \
+    || [ "$DEBUG_MERGE_PARENT_AFTER" -le "$DEBUG_MERGE_PARENT_BEFORE" ]; then
+    echo "FAIL: parent mesi_debug on inherited nowhere (before: $DEBUG_MERGE_PARENT_BEFORE, after: $DEBUG_MERGE_PARENT_AFTER)"
+    echo "Response: $DEBUG_MERGE_PARENT_RESPONSE"
+    exit 1
+fi
+DEBUG_MERGE_CHILD_BEFORE=$(count_debug_include_failed)
+DEBUG_MERGE_CHILD_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/debug-merge/child/)
+sleep 0.5
+DEBUG_MERGE_CHILD_AFTER=$(count_debug_include_failed)
+if echo "$DEBUG_MERGE_CHILD_RESPONSE" | grep -q "After failed debug include" \
+    && [ "$DEBUG_MERGE_CHILD_AFTER" -eq "$DEBUG_MERGE_CHILD_BEFORE" ]; then
+    echo "PASS: parent on logs, nested child's explicit off stays silent"
+else
+    echo "FAIL: nested child did not override the parent's on (before: $DEBUG_MERGE_CHILD_BEFORE, after: $DEBUG_MERGE_CHILD_AFTER)"
+    echo "Response: $DEBUG_MERGE_CHILD_RESPONSE"
+    exit 1
+fi
+
 docker compose down
 
 echo ""
