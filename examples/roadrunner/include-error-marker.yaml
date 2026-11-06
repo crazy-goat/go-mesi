@@ -1,0 +1,19 @@
+# RoadRunner include_error_marker example
+#
+# Renders this raw HTML in place of an <esi:include> whose processing fails
+# (a failed fetch or a parse-time include error, e.g. exhausted max_depth)
+# and that has neither a fallback body nor onerror="continue". The default ""
+# renders nothing, preserving the previous behaviour.
+#
+# SECURITY: the marker is inserted verbatim (not escaped or sanitized).
+# Never include error details, exception text, URLs, hostnames or IP
+# addresses: the page is sent to the client. Keep diagnostics in the server
+# log and use a static, generic marker here.
+#
+# Merge these keys into .rr.yaml under http.middleware.mesi.
+
+http:
+  address: "0.0.0.0:8080"
+  middleware:
+    mesi:
+      include_error_marker: "<!-- esi include failed -->"

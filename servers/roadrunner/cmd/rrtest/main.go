@@ -26,6 +26,7 @@ func main() {
 	maxResponseSize := flag.Int64("max-response-size", 0, "Maximum bytes per ESI include response (0 = unlimited)")
 	maxConcurrentRequests := flag.Int("max-concurrent-requests", 0, "Maximum concurrent ESI include fetches (0 = unlimited)")
 	maxWorkers := flag.Int("max-workers", 0, "Maximum token-processing workers per ESI parse (0 = library default)")
+	includeErrorMarker := flag.String("include-error-marker", "", "Raw HTML rendered for a failed <esi:include> (empty = render nothing)")
 	parseOnHeader := flag.Bool("parse-on-header", false, "Parse text/html only when the response carries Edge-control: dca=esi")
 	debug := flag.Bool("debug", false, "Enable ESI debug logging to stderr")
 	flag.Parse()
@@ -40,6 +41,7 @@ func main() {
 	config.MaxResponseSize = *maxResponseSize
 	config.MaxConcurrentRequests = *maxConcurrentRequests
 	config.MaxWorkers = *maxWorkers
+	config.IncludeErrorMarker = *includeErrorMarker
 	config.ParseOnHeader = *parseOnHeader
 	config.Debug = *debug
 	config.BlockPrivateIPs = blockPrivateIPs
@@ -256,6 +258,25 @@ func main() {
 	mux.HandleFunc("/timeout", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/slow-fragment" /></body></html>`))
+	})
+	// /include-error fixtures exercise the include_error_marker contract: a
+	// plain failed include renders the marker, while onerror="continue" and a
+	// fallback body suppress it. The fragment answers 500, so the fetch fails
+	// deterministically without relying on SSRF blocking or DNS.
+	mux.HandleFunc("/include-error/fragment", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "fragment unavailable", http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/include-error/failed", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>FAILED-PAGE<esi:include src="http://127.0.0.1:9090/include-error/fragment" /></body></html>`))
+	})
+	mux.HandleFunc("/include-error/continue", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>CONTINUE-PAGE<esi:include src="http://127.0.0.1:9090/include-error/fragment" onerror="continue" />AFTER-CONTINUE</body></html>`))
+	})
+	mux.HandleFunc("/include-error/fallback", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>FALLBACK-PAGE<esi:include src="http://127.0.0.1:9090/include-error/fragment">FALLBACK-BODY</esi:include></body></html>`))
 	})
 
 	handler := plugin.Middleware(mux)

@@ -404,6 +404,66 @@ else
     exit 1
 fi
 
+echo "--- Include Error Marker Tests (#233) ---"
+
+# The marker is raw HTML: matching the exact markup (including angle brackets)
+# also proves the middleware does not escape it.
+MARKER='<span class="esi-error">include failed</span>'
+
+echo "=== Test 20: include_error_marker renders for a failed include ==="
+start_rr -block-private-ips=false -include-error-marker "$MARKER"
+RESPONSE=$(curl -fsS http://localhost:9090/include-error/failed)
+if echo "$RESPONSE" | grep -qF "$MARKER" \
+    && echo "$RESPONSE" | grep -q "FAILED-PAGE" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: failed include rendered the configured marker and stripped the tag"
+else
+    echo "FAIL: failed include did not render the configured marker"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 21: onerror=\"continue\" suppresses the marker ==="
+RESPONSE=$(curl -fsS http://localhost:9090/include-error/continue)
+if echo "$RESPONSE" | grep -q "AFTER-CONTINUE" \
+    && ! echo "$RESPONSE" | grep -qF "$MARKER" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: onerror=continue rendered nothing extra and suppressed the marker"
+else
+    echo "FAIL: onerror=continue did not suppress the marker"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 22: fallback body suppresses the marker ==="
+RESPONSE=$(curl -fsS http://localhost:9090/include-error/fallback)
+if echo "$RESPONSE" | grep -q "FALLBACK-BODY" \
+    && ! echo "$RESPONSE" | grep -qF "$MARKER" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: fallback body replaced the failed include without the marker"
+else
+    echo "FAIL: fallback body did not suppress the marker"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 23: absent and explicit empty marker render nothing ==="
+start_rr -block-private-ips=false -include-error-marker ""
+RESPONSE_EMPTY=$(curl -fsS http://localhost:9090/include-error/failed)
+start_rr -block-private-ips=false
+RESPONSE_ABSENT=$(curl -fsS http://localhost:9090/include-error/failed)
+if ! echo "$RESPONSE_ABSENT" | grep -qF "$MARKER" \
+    && echo "$RESPONSE_ABSENT" | grep -q "FAILED-PAGE" \
+    && ! echo "$RESPONSE_ABSENT" | grep -q '<esi:include' \
+    && [ "$RESPONSE_EMPTY" = "$RESPONSE_ABSENT" ]; then
+    echo "PASS: absent and explicit empty markers render nothing (byte-identical)"
+else
+    echo "FAIL: absent or explicit empty marker changed the output"
+    echo "Explicit empty: $RESPONSE_EMPTY"
+    echo "Absent: $RESPONSE_ABSENT"
+    exit 1
+fi
+
 echo "--- Debug Logging Tests (#229) ---"
 
 echo "=== Test: debug true writes ESI diagnostics to the server log ==="

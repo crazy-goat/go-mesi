@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -798,17 +799,143 @@ func TestMiddlewareSurrogateCapability(t *testing.T) {
 	}
 }
 
-func TestMiddlewareIncludeErrorMarker(t *testing.T) {
-	config := CreateConfig()
-	config.IncludeErrorMarker = "<!-- esi error -->"
+func TestCreateConfigIncludeErrorMarkerDefaultEmpty(t *testing.T) {
+	if got := CreateConfig().IncludeErrorMarker; got != "" {
+		t.Errorf("Expected empty default include_error_marker, got %q", got)
+	}
+}
 
+func TestInitIncludeErrorMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		set    bool
+		marker string
+		want   string
+	}{
+		{name: "absent", want: ""},
+		{name: "explicit_empty", set: true, marker: "", want: ""},
+		{name: "set", set: true, marker: "<!-- esi error -->", want: "<!-- esi error -->"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := CreateConfig()
+			if tc.set {
+				config.IncludeErrorMarker = tc.marker
+			}
+
+			p := &Plugin{config: config}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if p.config.IncludeErrorMarker != tc.want {
+				t.Errorf("include_error_marker = %q, want %q", p.config.IncludeErrorMarker, tc.want)
+			}
+		})
+	}
+}
+
+// TestMiddlewareIncludeErrorMarker proves the configured marker is rendered
+// for a failed include and that onerror="continue" and fallback bodies keep
+// their precedence over it. The include targets a loopback fragment, so the
+// default block_private_ips=true makes the fetch fail deterministically.
+func TestMiddlewareIncludeErrorMarker(t *testing.T) {
+	const marker = "<!-- esi error -->"
+
+	for _, tc := range []struct {
+		name        string
+		include     string
+		wantMarker  bool
+		wantContent string
+	}{
+		{
+			name:       "failed_include_renders_marker",
+			include:    `<esi:include src="%s/fragment" />`,
+			wantMarker: true,
+		},
+		{
+			name:        "onerror_continue_suppresses_marker",
+			include:     `<esi:include src="%s/fragment" onerror="continue" />AFTER-CONTINUE`,
+			wantContent: "AFTER-CONTINUE",
+		},
+		{
+			name:        "fallback_body_suppresses_marker",
+			include:     `<esi:include src="%s/fragment">FALLBACK-BODY</esi:include>`,
+			wantContent: "FALLBACK-BODY",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fragmentURL, _ := newBlockPrivateIPsTestServers(t)
+			upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = fmt.Fprintf(w, "<html><body>"+tc.include+"</body></html>", fragmentURL)
+			})
+
+			config := CreateConfig()
+			config.IncludeErrorMarker = marker
+			p := &Plugin{config: config}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			rec := httptest.NewRecorder()
+			p.Middleware(upstream).ServeHTTP(rec, httptest.NewRequest("GET", "http://example.com/", nil))
+			body := rec.Body.String()
+
+			if strings.Contains(body, "FRAGMENT_OK") {
+				t.Errorf("include unexpectedly succeeded, got body: %s", body)
+			}
+			if got := strings.Contains(body, marker); got != tc.wantMarker {
+				t.Errorf("marker present = %v, want %v, body: %s", got, tc.wantMarker, body)
+			}
+			if tc.wantContent != "" && !strings.Contains(body, tc.wantContent) {
+				t.Errorf("expected %q in body, got: %s", tc.wantContent, body)
+			}
+		})
+	}
+}
+
+// TestMiddlewareIncludeErrorMarkerParseTimeError proves the marker is not
+// fetch-only: with max_depth 0 the page is parse-only, so the include fails
+// before any HTTP request is made, yet the marker still replaces it. Private
+// IP blocking is disabled and the fragment server counts requests, so a fetch
+// would succeed and be detected instead of being masked by the SSRF guard.
+func TestMiddlewareIncludeErrorMarkerParseTimeError(t *testing.T) {
+	const marker = "<!-- esi error -->"
+
+	var fragmentRequests atomic.Int32
+	fragment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fragmentRequests.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("FRAGMENT_OK"))
+	}))
+	t.Cleanup(fragment.Close)
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><body><esi:include src="%s/fragment" /></body></html>`, fragment.URL)
+	})
+
+	allowPrivate := false
+	config := CreateConfig()
+	config.MaxDepth = intPtr(0)
+	config.BlockPrivateIPs = &allowPrivate
+	config.IncludeErrorMarker = marker
 	p := &Plugin{config: config}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if p.config.IncludeErrorMarker != "<!-- esi error -->" {
-		t.Errorf("Expected include_error_marker '<!-- esi error -->', got %s", p.config.IncludeErrorMarker)
+	rec := httptest.NewRecorder()
+	p.Middleware(upstream).ServeHTTP(rec, httptest.NewRequest("GET", "http://example.com/", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, marker) {
+		t.Errorf("expected marker for parse-time include error, got body: %s", body)
+	}
+	if strings.Contains(body, "FRAGMENT_OK") {
+		t.Errorf("parse-only include was fetched, got body: %s", body)
+	}
+	if got := fragmentRequests.Load(); got != 0 {
+		t.Errorf("parse-only include made %d HTTP request(s), want 0", got)
 	}
 }
 
