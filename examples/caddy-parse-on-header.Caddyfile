@@ -1,0 +1,19 @@
+# Example: parse ESI only when the backend asks for it.
+#
+# With parse_on_header, a text/html response is parsed only when it carries
+# `Edge-control: dca=esi` (case-insensitive, comma-separated list allowed).
+# Every other response is sent through unchanged and is not buffered for
+# max_body_size. Without the directive, every text/html response is parsed,
+# which is the backward-compatible default.
+
+http://:8080 {
+    mesi {
+        parse_on_header
+
+        # Optional: bound the pages that ARE parsed. Unsignalled pages are
+        # not counted because they are never buffered for ESI.
+        max_body_size 1048576
+        on_oversize pass
+    }
+    reverse_proxy backend:80
+}

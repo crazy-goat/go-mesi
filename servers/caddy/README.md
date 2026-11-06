@@ -117,6 +117,35 @@ Note: If adding Caddyfile directives that affect transport behaviour (e.g.
 `block_private_ips`, `allowed_hosts`), `Provision()` must recreate the
 shared transport to respect the new settings.
 
+### `parse_on_header`
+
+Makes ESI processing conditional on the upstream response. When enabled, only
+`text/html` responses carrying `Edge-control: dca=esi` are parsed; every other
+response is passed through unchanged, byte for byte.
+
+```
+mesi {
+    parse_on_header
+}
+```
+
+| Value | Behaviour |
+|---|---|
+| present | Parse `text/html` only with `Edge-control: dca=esi`; pass everything else through untouched. |
+| absent | Always parse `text/html` (default, backward compatible). |
+
+**Notes:**
+- The header value is matched case-insensitively and may be a comma-separated
+  list, matching `mesi.IsEsiResponse` (the same rule nested includes use).
+  `Edge-Control` and `Edge-control` are the same header to `http.Header.Get`.
+- The flag is also passed to `EsiParserConfig.ParseOnHeader`, so a fetched
+  fragment is parsed only when its own response carries the header.
+- A page that is not signalled is not buffered for `max_body_size` either,
+  because it is never parsed. This is the same behaviour as the standalone
+  proxy's `--parse-on-header`.
+- Responses without the header keep their upstream headers and
+  `Content-Length`; the middleware adds no `Surrogate-Control`.
+
 ### `cache_backend memory`
 
 Enables an in-process LRU cache for ESI fragments. Shared-nothing — each Caddy
@@ -376,6 +405,8 @@ mesi {
 
 **Notes:**
 - Only `text/html` responses are counted; other content types are not limited.
+  With `parse_on_header`, only pages that carry `Edge-control: dca=esi` are
+  counted, because the others are never parsed.
 - If `Content-Length` is known and over the limit, the decision is made at
   once and nothing is buffered. Otherwise the size is checked while the body
   is buffered: in `pass` mode the part buffered so far and the rest are
