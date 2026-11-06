@@ -19,7 +19,7 @@ const DefaultMaxDepth = 5
 // Every field is optional. Absent keys resolve to documented
 // defaults — maxDepth 5, no allowed-hosts restriction, SSRF
 // blockPrivateIPs ON (secure default, matching the core/Caddy/PHP/
-// RoadRunner defaults), no bypass, URL-only cache keys,
+// RoadRunner defaults), no bypass, URL-only cache keys, debug off,
 // timeoutSeconds 30 (libgomesi's historical hardcoded value),
 // maxResponseSize 0 (unlimited — the value every positional Parse*
 // entry point leaves in EsiParserConfig.MaxResponseSize, NOT the
@@ -56,6 +56,15 @@ type ParseConfig struct {
 	// CacheKeyTemplate enables template-based cache keys ("" = the
 	// URL-only DefaultCacheKey).
 	CacheKeyTemplate string `json:"cacheKeyTemplate"`
+	// Debug enables debug logging from the core parser
+	// (mesi.EsiParserConfig.Debug). Absent → false, preserving the
+	// silent-by-default behaviour of every positional Parse* entry
+	// point. The core's default logger writes to stderr, which the
+	// host server usually captures in its error log (e.g. Apache's
+	// error.log); debug output includes fetch URLs, so it must not be
+	// left on in production shared logs. The Apache MesiDebug
+	// directive (#173) is the first user of this key.
+	Debug bool `json:"debug"`
 	// RequestCtx is the raw {"headers":{...},"cookies":[...]} request
 	// context handed to mesi.BuildCacheKey; consumed verbatim by
 	// buildRequestFromJSON. Absent → nil (dummy request).

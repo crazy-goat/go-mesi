@@ -30,10 +30,13 @@ services:
       # 8096 = MesiMaxBodySize 2000 (pass), 8097 = + MesiOnOversize error.
       - "${APACHE_PORT_8096:-8096}:8096"
       - "${APACHE_PORT_8097:-8097}:8097"
-      # 8098 = MesiIncludeErrorMarker set, 8099 = vhost inherits the
-      # global marker (#165).
+      # 8098 = MesiDebug On, 8099 = MesiDebug Off (#173);
+      # 8100 = MesiIncludeErrorMarker set on the vhost, 8101 = vhost
+      # inherits the global marker (#165).
       - "${APACHE_PORT_8098:-8098}:8098"
       - "${APACHE_PORT_8099:-8099}:8099"
+      - "${APACHE_PORT_8100:-8100}:8100"
+      - "${APACHE_PORT_8101:-8101}:8101"
     environment:
       - MESI_FORCE_FLATTEN_ERROR=${MESI_FORCE_FLATTEN_ERROR:-}
     volumes:

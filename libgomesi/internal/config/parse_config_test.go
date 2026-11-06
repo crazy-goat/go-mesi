@@ -16,6 +16,8 @@ func TestParseConfigFromJSONMalformed(t *testing.T) {
 		{name: "timeoutSeconds as string", blob: `{"timeoutSeconds":"10"}`},
 		{name: "fractional maxDepth", blob: `{"maxDepth":1.5}`},
 		{name: "blockPrivateIPs as string", blob: `{"blockPrivateIPs":"yes"}`},
+		{name: "debug as string", blob: `{"debug":"true"}`},
+		{name: "debug as number", blob: `{"debug":1}`},
 		{name: "maxResponseSize as string", blob: `{"maxResponseSize":"1048576"}`},
 		{name: "fractional maxResponseSize", blob: `{"maxResponseSize":1.5}`},
 		{name: "maxResponseSize above int64 range", blob: `{"maxResponseSize":9223372036854775808}`},
@@ -61,6 +63,11 @@ func TestParseConfigDefaults(t *testing.T) {
 	}
 	if c.DefaultUrl != "" || c.AllowedHosts != "" || c.CacheKeyTemplate != "" {
 		t.Errorf("string fields = (%q, %q, %q), want all empty", c.DefaultUrl, c.AllowedHosts, c.CacheKeyTemplate)
+	}
+	// Absent debug → false: the parser stays silent, byte-identical to
+	// every positional Parse* entry point.
+	if c.Debug {
+		t.Error("Debug = true for an absent key, want false (silent default)")
 	}
 	if len(c.RequestCtx) != 0 {
 		t.Errorf("RequestCtx = %s, want absent", c.RequestCtx)
@@ -144,6 +151,7 @@ func TestParseConfigExplicitValues(t *testing.T) {
 		"blockPrivateIPs": false,
 		"allowPrivateIPsForAllowedHosts": true,
 		"cacheKeyTemplate": "mesi:${url}",
+		"debug": true,
 		"requestCtx": {"headers":{"X-A":"1"},"cookies":[{"name":"a","value":"b"}]},
 		"timeoutSeconds": 7,
 		"maxResponseSize": 2048,
@@ -171,6 +179,9 @@ func TestParseConfigExplicitValues(t *testing.T) {
 	if !c.AllowPrivateIPsForAllowedHosts {
 		t.Error("explicit allowPrivateIPsForAllowedHosts=true not honoured")
 	}
+	if !c.Debug {
+		t.Error("explicit debug=true not honoured")
+	}
 	if c.DefaultUrl != "http://example.test/" || c.AllowedHosts != "backend other.example" || c.CacheKeyTemplate != "mesi:${url}" {
 		t.Errorf("string fields not honoured: %+v", c)
 	}
@@ -194,6 +205,27 @@ func TestParseConfigExplicitValues(t *testing.T) {
 	maxWorkers, err := c.ResolvedMaxWorkers()
 	if err != nil || maxWorkers != 4 {
 		t.Errorf("ResolvedMaxWorkers() = (%d, %v), want (4, nil)", maxWorkers, err)
+	}
+}
+
+func TestParseConfigDebugExplicitValues(t *testing.T) {
+	// Debug has no "unset vs explicit false" distinction to preserve:
+	// both mean "silent". Pin the round-trip anyway so a future schema
+	// change cannot silently ignore the key.
+	c, err := ParseConfigFromJSON([]byte(`{"debug":true}`))
+	if err != nil {
+		t.Fatalf("ParseConfigFromJSON(debug=true) = %v", err)
+	}
+	if !c.Debug {
+		t.Error("Debug = false for explicit true")
+	}
+
+	c, err = ParseConfigFromJSON([]byte(`{"debug":false}`))
+	if err != nil {
+		t.Fatalf("ParseConfigFromJSON(debug=false) = %v", err)
+	}
+	if c.Debug {
+		t.Error("Debug = true for explicit false")
 	}
 }
 

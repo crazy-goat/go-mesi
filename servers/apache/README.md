@@ -306,6 +306,29 @@ MesiCacheTTL 60
   EnableMesi On
   MesiMaxWorkers 8
   ```
+- `MesiDebug on|off` — Enable debug logging from the Go ESI parser
+  (`mesi.EsiParserConfig.Debug`; `RSRC_CONF`, server context; example:
+  `MesiDebug On` next to `EnableMesi On`). Default: **Off** — the parser
+  stays silent, byte-identical to previous behaviour. When `On`, the
+  directive routes the parse through libgomesi's `ParseJson` entry point
+  with `{"debug":true}`, so the core's logger emits `DEBUG` lines for
+  every parse, include and fetch (including the fetch URL, HTTP status
+  and failure reason). The Go logger writes to **stderr**, which Apache
+  captures in its error log (`ErrorLog` / `${APACHE_LOG_DIR}/error.log`),
+  so the output appears there rather than in the client response.
+  **Security/ops warning:** debug lines contain fetch URLs (potential
+  information leak in shared logs) and are high-volume — use `MesiDebug
+  On` only while troubleshooting, never as a long-term production
+  setting. A vhost's value overrides the global one; unset vhosts
+  inherit it (`-1` sentinel). Requires a `libgomesi.so` exporting
+  `ParseJson` — older builds log `MesiDebug set but libgomesi lacks
+  ParseJson; MesiDebug ignored (parser stays silent, the pre-#173
+  behaviour)` and keep the parser silent.
+
+  ```apache
+  EnableMesi On
+  MesiDebug On
+  ```
 - `MesiAllowedHosts host1 host2 …` — Space-separated list of hostnames
   allowed in `<esi:include src=…>`. Matches `isURLSafe` from libgomesi.
   A value without any hostname (empty, or only ASCII or Unicode whitespace
@@ -420,10 +443,10 @@ docker compose up --build
    `MesiCacheTTL`/`MesiCacheSize`).
 6. Processes the buffered body through `libgomesi.ParseJson()` when
    `MesiTimeout`, `MesiMaxResponseSize`, `MesiMaxConcurrentRequests`,
-   `MesiMaxWorkers` or a non-empty `MesiIncludeErrorMarker` is set
-   (the JSON blob carries whichever of those directives are configured
-   plus depth, base URL, SSRF flags and, when configured, the cache key
-   template + request context), through
+   `MesiMaxWorkers`, `MesiDebug` or a non-empty
+   `MesiIncludeErrorMarker` is set (the JSON blob carries whichever of
+   those directives are configured plus depth, base URL, SSRF flags and,
+   when configured, the cache key template + request context), through
    `libgomesi.ParseWithConfigCtx()` when only
    `MesiCacheKeyTemplate` is set (headers/cookies from the incoming
    request are serialised as JSON context for `mesi.BuildCacheKey`),

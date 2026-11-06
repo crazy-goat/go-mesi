@@ -72,6 +72,9 @@ typedef struct {
      * a storable configured value — the same "library default" — so
      * the sentinel must stay -1. */
     int max_workers;
+    /* Parser debug logging (#173). -1 = unset (off, legacy path),
+     * 0 = explicit Off, 1 = On. */
+    int debug;
     /* Include-error marker (#165). NULL = unset, non-NULL (possibly "")
      * = explicitly configured; non-NULL empty clears an inherited
      * marker and renders nothing. */
@@ -206,6 +209,11 @@ static const char *parse_allow_private_for_allowed(mesi_config *conf, int flag) 
 
 static const char *parse_shared_http_client(mesi_config *conf, int flag) {
     conf->shared_http_client = flag;
+    return NULL;
+}
+
+static const char *parse_debug(mesi_config *conf, int flag) {
+    conf->debug = flag;
     return NULL;
 }
 
@@ -836,6 +844,7 @@ static void init_config(mesi_config *conf) {
     conf->on_oversize = -1;
     conf->max_concurrent_requests = -1;
     conf->max_workers = -1;
+    conf->debug = -1;
     conf->include_error_marker = NULL;
 }
 
@@ -872,6 +881,7 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
     merged->max_workers = (add->max_workers != -1)
                               ? add->max_workers
                               : base->max_workers;
+    merged->debug = (add->debug != -1) ? add->debug : base->debug;
     merged->include_error_marker = add->include_error_marker
                                        ? add->include_error_marker
                                        : base->include_error_marker;
@@ -1212,6 +1222,83 @@ TEST(merge_shared_http_client_child_inherits) {
 
     merge_configs(&base, &add, &merged);
     ASSERT_EQ(merged.shared_http_client, 1);
+}
+
+/* --- MesiDebug directive tests (#173) --- */
+
+TEST(debug_default_unset) {
+    /* A freshly-created config has the sentinel -1 (unset → off): the
+     * parser stays silent, byte-identical to pre-#173 behaviour. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_EQ(conf.debug, -1);
+}
+
+TEST(debug_on) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = parse_debug(&conf, 1);
+    ASSERT_NULL(err);
+    ASSERT_EQ(conf.debug, 1);
+}
+
+TEST(debug_off) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = parse_debug(&conf, 0);
+    ASSERT_NULL(err);
+    ASSERT_EQ(conf.debug, 0);
+}
+
+TEST(merge_debug_child_overrides) {
+    /* Child On / parent Off → On (add overrides base). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.debug = 0;
+    add.debug = 1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.debug, 1);
+}
+
+TEST(merge_debug_child_off_overrides) {
+    /* Explicit Off must override an inherited On — 0 is configured,
+     * not unset (the whole reason the sentinel is -1). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.debug = 1;
+    add.debug = 0;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.debug, 0);
+}
+
+TEST(merge_debug_child_inherits) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.debug = 1;
+    add.debug = -1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.debug, 1);
+}
+
+TEST(merge_debug_both_unset) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.debug, -1);
 }
 
 /* --- Cache backend directive tests (#174) --- */
@@ -3444,6 +3531,15 @@ int main(int argc, char *argv[]) {
     RUN_TEST(shared_http_client_off);
     RUN_TEST(merge_shared_http_client_child_overrides);
     RUN_TEST(merge_shared_http_client_child_inherits);
+
+    printf("\nTesting set_debug() (#173):\n");
+    RUN_TEST(debug_default_unset);
+    RUN_TEST(debug_on);
+    RUN_TEST(debug_off);
+    RUN_TEST(merge_debug_child_overrides);
+    RUN_TEST(merge_debug_child_off_overrides);
+    RUN_TEST(merge_debug_child_inherits);
+    RUN_TEST(merge_debug_both_unset);
 
     printf("\nTesting set_cache_backend() (#174):\n");
     RUN_TEST(cache_backend_memory);
