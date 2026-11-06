@@ -2533,7 +2533,163 @@ else
     exit 1
 fi
 
-echo "=== Test 87: mesi_include_error_marker config validation (#228) ==="
+echo "=== Test 87: mesi_parse_on_header config validation — on/off and merge accepted, invalid rejected (#188) ==="
+nginx_poh_conf_check() {
+    # $1 = directive lines; prints nginx -t output
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18081;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      $1" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-poh.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-poh.conf' < /tmp/nginx-mesi-poh.conf
+    docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-poh.conf 2>&1 || true
+}
+for GOOD in 'mesi_parse_on_header on;' 'mesi_parse_on_header off;' \
+    'mesi_parse_on_header on; location /child/ { mesi_parse_on_header off; }'; do
+    if nginx_poh_conf_check "$GOOD" | grep -q 'syntax is ok'; then
+        echo "PASS: '$GOOD' accepted by nginx -t"
+    else
+        echo "FAIL: nginx rejected valid '$GOOD'"
+        exit 1
+    fi
+done
+for BAD in 'mesi_parse_on_header maybe;' 'mesi_parse_on_header;' \
+    'mesi_parse_on_header on; mesi_parse_on_header off;'; do
+    if nginx_poh_conf_check "$BAD" | grep -q 'syntax is ok'; then
+        echo "FAIL: nginx accepted invalid '$BAD'"
+        exit 1
+    else
+        echo "PASS: invalid '$BAD' rejected by nginx -t"
+    fi
+done
+rm -f /tmp/nginx-mesi-poh.conf
+
+echo "=== Test 88: mesi_parse_on_header absent — unsignalled HTML still parsed (#188) ==="
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/poh-unset/plain)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: absent directive keeps the always-parse behaviour"
+else
+    echo "FAIL: absent mesi_parse_on_header did not parse an unsignalled page"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 89: mesi_parse_on_header off — unsignalled HTML still parsed (#188) ==="
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/poh-off/plain)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: explicit off keeps the always-parse behaviour"
+else
+    echo "FAIL: mesi_parse_on_header off did not parse an unsignalled page"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 90: mesi_parse_on_header on + Edge-control — HTML parsed (#188) ==="
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/poh-on/esi)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: signalled page processed with mesi_parse_on_header on"
+else
+    echo "FAIL: signalled page was not processed with mesi_parse_on_header on"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/poh-on/case)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: case-insensitive comma-separated Edge-control value processed"
+else
+    echo "FAIL: case-insensitive Edge-control value was not processed"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 91: mesi_parse_on_header on without Edge-control — byte-identical passthrough (#188) ==="
+curl -s -D /tmp/mesi-poh-headers.txt \
+    http://localhost:"$HTTP_PORT"/poh-on/plain \
+    -o /tmp/mesi-poh-body.html
+if cmp -s /tmp/mesi-poh-body.html "$SCRIPT_DIR/tests/parse-on-header.html" \
+    && grep -q '<esi:include src="http://backend:8000/include.txt" />' /tmp/mesi-poh-body.html \
+    && ! grep -q "included content from backend" /tmp/mesi-poh-body.html; then
+    echo "PASS: unsignalled page passed through byte for byte, include not fetched"
+else
+    echo "FAIL: unsignalled page was changed or its include was fetched"
+    diff -u "$SCRIPT_DIR/tests/parse-on-header.html" /tmp/mesi-poh-body.html || true
+    exit 1
+fi
+if grep -qi "Surrogate-Capability" /tmp/mesi-poh-headers.txt; then
+    echo "FAIL: unsignalled page still carries the ESI Surrogate-Capability header"
+    cat /tmp/mesi-poh-headers.txt
+    exit 1
+fi
+echo "PASS: unsignalled page has no ESI Surrogate-Capability header"
+rm -f /tmp/mesi-poh-body.html /tmp/mesi-poh-headers.txt
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/poh-on/nonsignal)
+if ! echo "$RESPONSE" | grep -q "included content from backend" \
+    && echo "$RESPONSE" | grep -q '<esi:include src="http://backend:8000/include.txt" />'; then
+    echo "PASS: non-matching Edge-control value (max-age=60) does not signal ESI"
+else
+    echo "FAIL: non-matching Edge-control value still triggered ESI processing"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 92: mesi_parse_on_header on — non-HTML unaffected (#188) ==="
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/poh-nonhtml/noesi.txt)
+if echo "$RESPONSE" | grep -q "esi:include" \
+    && ! echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: non-HTML content bypasses the parse-on-header branch unchanged"
+else
+    echo "FAIL: non-HTML content changed under mesi_parse_on_header on"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 93: mesi_parse_on_header on — nested fragments follow the header (#188) ==="
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/poh-on/nested)
+INCLUDED_COUNT=$(echo "$RESPONSE" | grep -o "included content from backend" | wc -l | tr -d ' ')
+RAW_TAG_COUNT=$(echo "$RESPONSE" | grep -o '<esi:include src="http://backend:8000/include.txt" />' | wc -l | tr -d ' ')
+if [ "$INCLUDED_COUNT" -eq 1 ] && [ "$RAW_TAG_COUNT" -eq 1 ]; then
+    echo "PASS: signalling fragment parsed, non-signalling fragment left raw"
+else
+    echo "FAIL: nested fragments did not follow the header (expanded: $INCLUDED_COUNT, raw: $RAW_TAG_COUNT)"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 94: mesi_parse_on_header merge — parent on, child explicit off, unset child inherits (#188) ==="
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/poh-merge/plain)
+if ! echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: parent's on passed an unsignalled page through unchanged"
+else
+    echo "FAIL: parent mesi_parse_on_header on did not take effect"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/poh-merge/child/plain)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: nested child's explicit off overrode the inherited on"
+else
+    echo "FAIL: nested child did not override the parent's on"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/poh-merge/inherit/plain)
+if ! echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: unset nested child inherited the parent's on"
+else
+    echo "FAIL: unset nested child did not inherit the parent's on"
+    echo "Response: $RESPONSE"
+    exit 1
+fi
+
+echo "=== Test 95: mesi_include_error_marker config validation (#228) ==="
 nginx_include_error_marker_conf_check() {
     # $1 = directive lines; prints nginx -t output
     printf '%b\n' \
@@ -2576,7 +2732,7 @@ for BAD in 'mesi_include_error_marker;' \
 done
 rm -f /tmp/nginx-mesi-include-error-marker.conf
 
-echo "=== Test 88: mesi_include_error_marker renders on a failed include (#228) ==="
+echo "=== Test 96: mesi_include_error_marker renders on a failed include (#228) ==="
 MARKER_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker/)
 if echo "$MARKER_RESPONSE" | grep -qF '<!-- ESI include failed -->' \
     && echo "$MARKER_RESPONSE" | grep -q "After marker include" \
@@ -2588,7 +2744,7 @@ else
     exit 1
 fi
 
-echo "=== Test 89: mesi_include_error_marker JSON-escapes special characters (#228) ==="
+echo "=== Test 97: mesi_include_error_marker JSON-escapes special characters (#228) ==="
 SPECIAL_MARKER_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-special/)
 EXPECTED_SPECIAL_MARKER='<!-- ESI "quoted" \ / -->'
 if echo "$SPECIAL_MARKER_RESPONSE" | grep -qF "$EXPECTED_SPECIAL_MARKER" \
@@ -2600,7 +2756,7 @@ else
     exit 1
 fi
 
-echo "=== Test 90: onerror=\"continue\" and fallback body take priority over the marker (#228) ==="
+echo "=== Test 98: onerror=\"continue\" and fallback body take priority over the marker (#228) ==="
 ONERROR_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-onerror/)
 FALLBACK_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-fallback/)
 if echo "$ONERROR_RESPONSE" | grep -q "After onerror include" \
@@ -2615,7 +2771,7 @@ else
     exit 1
 fi
 
-echo "=== Test 91: unset and explicit empty marker stay silent (#228) ==="
+echo "=== Test 99: unset and explicit empty marker stay silent (#228) ==="
 UNSET_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-unset/)
 EMPTY_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-empty/)
 if echo "$UNSET_RESPONSE" | grep -q "After marker include" \
@@ -2630,7 +2786,7 @@ else
     exit 1
 fi
 
-echo "=== Test 92: mesi_include_error_marker merge — child inherits, explicit empty clears (#228) ==="
+echo "=== Test 100: mesi_include_error_marker merge — child inherits, explicit empty clears (#228) ==="
 MERGE_PARENT_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-merge/)
 MERGE_CHILD_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-merge/child/)
 MERGE_EMPTY_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker-merge/empty/)

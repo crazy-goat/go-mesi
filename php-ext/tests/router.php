@@ -300,6 +300,95 @@ if ($path === '/max-response-size-zero') {
     return true;
 }
 
+// max_body_size / on_oversize (#538): the PARENT body cap is enforced by
+// the extension before ESI processing. The input below is exactly what this
+// route hands to parse_with_config(); its strlen() is the boundary the
+// limit is compared against (PHP has the whole body already, so there is no
+// Content-Length notion here).
+$body_limit_input = '<p>body limit test</p><esi:include src="' . $esiIncludeUrl . '" />';
+
+// Exact boundary: limit == body length -> still processed (rejects only
+// len > cap).
+if ($path === '/max-body-size-exact') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        $body_limit_input,
+        5,
+        $backend,
+        ['max_body_size' => strlen($body_limit_input), 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// Under the limit: processed normally.
+if ($path === '/max-body-size-under') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        $body_limit_input,
+        5,
+        $backend,
+        ['max_body_size' => strlen($body_limit_input) + 1, 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// limit+1 over, on_oversize=pass: the body is returned unchanged (the raw
+// <esi:include> tag stays and the backend is never fetched).
+if ($path === '/max-body-size-over-pass') {
+    header('Content-Type: text/html');
+    echo @\mesi\parse_with_config(
+        $body_limit_input,
+        5,
+        $backend,
+        ['max_body_size' => strlen($body_limit_input) - 1, 'on_oversize' => 'pass', 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// limit+1 over, on_oversize=error: parse_with_config() returns false; this
+// route turns that into a 500 + marker so the functional test can observe
+// the deterministic failure.
+if ($path === '/max-body-size-over-error') {
+    header('Content-Type: text/html');
+    $r = @\mesi\parse_with_config(
+        $body_limit_input,
+        5,
+        $backend,
+        ['max_body_size' => strlen($body_limit_input) - 1, 'on_oversize' => 'error', 'block_private_ips' => false]
+    );
+    if ($r === false) {
+        http_response_code(500);
+        echo 'BODY-ERROR';
+    } else {
+        echo $r;
+    }
+    return true;
+}
+
+// Absent limit: unlimited (legacy path).
+if ($path === '/max-body-size-absent') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        $body_limit_input,
+        5,
+        $backend,
+        ['block_private_ips' => false]
+    );
+    return true;
+}
+
+// Explicit 0: the documented "unlimited" value.
+if ($path === '/max-body-size-zero') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        $body_limit_input,
+        5,
+        $backend,
+        ['max_body_size' => 0, 'block_private_ips' => false]
+    );
+    return true;
+}
+
 // max_concurrent_requests (#206): 20 x 1500 ms /hold includes against the
 // test-server (Go, CONCURRENT — a single-threaded php -S backend would
 // serialize every hold into a peak of 1 and prove nothing, which is why

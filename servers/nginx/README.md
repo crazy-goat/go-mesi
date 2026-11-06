@@ -429,6 +429,54 @@ location / {
 
 See [examples/nginx-debug.conf](../../examples/nginx-debug.conf) for a full example file.
 
+## Parse On Header
+
+The `mesi_parse_on_header` directive makes ESI processing conditional on the upstream response carrying an ESI signal. Until #188 the nginx module always parsed every `text/html` response.
+
+### Directive
+
+#### `mesi_parse_on_header`
+
+- **Syntax:** `mesi_parse_on_header on | off`
+- **Default:** `off` (unset stays on the byte-identical legacy path, always parse)
+- **Context:** `location`
+
+Semantics:
+
+- **Unset** → **off**. Omitting the directive keeps the request on the legacy positional path: every `text/html` response is parsed, exactly like previous releases.
+- **`on`** processes a `text/html` response only when its upstream headers carry:
+
+  ```text
+  Edge-control: dca=esi
+  ```
+
+  The value is a case-insensitive, comma-separated list, so `Edge-control: no-cache, dca=esi` matches while `Edge-control: max-age=60` does not — the same contract as `mesi.IsEsiResponse`, Caddy's `parse_on_header` and Apache's `MesiParseOnHeader`. The check runs in the head filter **before** any body is buffered: an unsignalled page is passed through byte for byte with its upstream headers, is not limited by `mesi_max_body_size`, and does not get the module's `Surrogate-Capability: ESI/1.0` header. Non-HTML responses are unaffected either way.
+- **`off`** is an explicit request for the always-parse behaviour. It is a *configured* value (not the unset sentinel), so it routes the parse through `ParseJson` with `{"parseOnHeader":false}` — honest configuration, and it overrides an inherited `on` in a nested location.
+
+When the directive is set, the whole parse is routed through libgomesi's **`ParseJson`** entry point with the additive `{"parseOnHeader":true|false}` key (absent → `false`, so every positional `Parse*` entry point keeps the always-parse behaviour). The blob also carries the other resolved settings (`maxDepth`, `defaultUrl`, `allowedHosts`, SSRF flags, optional `timeoutSeconds` / `maxResponseSize` / `maxConcurrentRequests` / `maxWorkers` / `debug` / `cacheKeyTemplate` + `requestCtx`). The flag also reaches the core parser, so a fetched HTML fragment is parsed only when its own response signals ESI. Nested `location` blocks inherit the value over the `NGX_CONF_UNSET` sentinel: an unset child takes the parent's value, and a child's explicit `off` overrides an inherited `on`.
+
+With an older `libgomesi.so` that lacks `ParseJson`, the nested-fragment half is ignored with a per-request warning (`mesi: mesi_parse_on_header is set but libgomesi lacks ParseJson — mesi_parse_on_header ignored for fetched fragments ...`); the top-level head filter still honours the directive. A `ParseJson` NULL fails the request closed (config errors are logged Go-side).
+
+> **Known cache caveat (shared with Caddy and Apache):** the core cache stores only the fragment body, and a cache hit reports no ESI signal. With `mesi_cache_backend` enabled, a signalling fragment is parsed on the first request but its nested includes stay raw on later cached requests. Do not combine `mesi_cache_backend` with `mesi_parse_on_header` until the core caches the ESI signal.
+
+### Example
+
+```nginx
+location /esi/ {
+    enable_mesi on;
+    mesi_parse_on_header on;   # only parse when the backend sends Edge-control: dca=esi
+    proxy_pass http://backend;
+}
+
+location /always/ {
+    enable_mesi on;
+    # mesi_parse_on_header unset → every text/html response is parsed
+    proxy_pass http://backend;
+}
+```
+
+See [examples/nginx-parse-on-header.conf](../../examples/nginx-parse-on-header.conf) for a full example file.
+
 ## Shared HTTP Client
 
 Not available in the nginx module: there is no shared-client directive (unlike Apache's `MesiSharedHTTPClient` and the CLI's `-shared-http-client`) and no `InitHTTPClient` wiring. Each `<esi:include>` fetch creates its own `http.Client` for the request, so TCP/TLS connection pooling across includes is not available — every include performs its own connection setup. Each per-include client still uses the SSRF-safe transport, so `mesi_block_private_ips` protection applies to every fetch.

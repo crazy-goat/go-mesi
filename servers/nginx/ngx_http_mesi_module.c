@@ -176,6 +176,17 @@ typedef struct {
                                             // stored value routes the parse
                                             // through libgomesi ParseJson with
                                             // {"debug":true|false}
+  ngx_flag_t parse_on_header;               // Conditional ESI processing
+                                            // (#188): NGX_CONF_UNSET = unset
+                                            // (always parse HTML, the legacy
+                                            // behaviour), 0 = explicit off,
+                                            // 1 = on — only text/html
+                                            // responses whose upstream
+                                            // Edge-control carries dca=esi are
+                                            // buffered and parsed; a stored
+                                            // value routes the parse through
+                                            // ParseJson with
+                                            // {"parseOnHeader":true|false}
   ngx_str_t include_error_marker;           // Raw HTML rendered in place of a
                                             // failed <esi:include> with no
                                             // onerror="continue" and no
@@ -212,6 +223,8 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle);
 
 static ngx_int_t ngx_test_content_compression(ngx_http_request_t *r);
 static ngx_int_t ngx_test_is_html(ngx_http_request_t *r);
+static ngx_int_t ngx_http_mesi_has_esi_header(ngx_http_request_t *r);
+static ngx_int_t mesi_header_signals_esi(ngx_str_t *value);
 
 static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
@@ -324,6 +337,20 @@ static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("mesi_debug"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
      ngx_conf_set_flag_slot, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, debug), NULL},
+
+    // Conditional ESI processing (#188). A flag: `on` / `off`. The stock
+    // flag setter stores 1 / 0 and leaves the NGX_CONF_UNSET sentinel
+    // alone until merged. With `on`, the head filter only buffers and
+    // parses text/html responses whose upstream Edge-control header
+    // carries `dca=esi` (the same case-insensitive, comma-separated
+    // contract as mesi.IsEsiResponse); an unsignalled page passes through
+    // byte for byte, without Surrogate-Capability. An unset directive
+    // keeps the byte-identical legacy positional path (always parse),
+    // while an explicit `off` routes through ParseJson with
+    // {"parseOnHeader":false}.
+    {ngx_string("mesi_parse_on_header"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
+     ngx_conf_set_flag_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, parse_on_header), NULL},
 
     // Include error marker (#228). ngx_conf_set_str_slot is enough: it
     // stores the token verbatim and its duplicate check keys off
@@ -451,6 +478,23 @@ static ngx_int_t ngx_http_html_mesi_head_filter(ngx_http_request_t *r) {
   if (r->headers_out.status > NGX_HTTP_BAD_REQUEST) {
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "[mESI head filter]: error status code");
+    return ngx_http_next_header_filter(r);
+  }
+
+  // Conditional ESI processing (#188). When mesi_parse_on_header is on,
+  // only an HTML response whose upstream headers carry
+  // `Edge-control: dca=esi` reaches the accumulation path. The check runs
+  // before any body is buffered and before Surrogate-Capability is added,
+  // so an unsignalled page is passed through byte for byte with its
+  // upstream headers, is not limited by mesi_max_body_size, and does not
+  // advertise ESI. An unset directive (the NGX_CONF_UNSET sentinel) keeps
+  // the legacy always-parse behaviour; explicit off is a configured value
+  // but always parses at the top level. Non-HTML responses never reach
+  // here (ngx_test_is_html above), so they are unaffected either way.
+  if (lcf->parse_on_header != NGX_CONF_UNSET && lcf->parse_on_header &&
+      !ngx_http_mesi_has_esi_header(r)) {
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "[mESI head filter]: no ESI signal in Edge-control");
     return ngx_http_next_header_filter(r);
   }
 
@@ -1248,10 +1292,11 @@ static char *build_request_ctx_json(ngx_http_request_t *r, ngx_str_t *template,
 // defaultUrl, allowedHosts, blockPrivateIPs,
 // allowPrivateIPsForAllowedHosts, cacheKeyTemplate, requestCtx,
 // timeoutSeconds, maxResponseSize, maxConcurrentRequests,
-// maxWorkers, debug, includeErrorMarker). Only called when mesi_timeout,
-// mesi_max_response_size, mesi_max_concurrent_requests, mesi_max_workers,
-// mesi_debug or mesi_include_error_marker is set (those are what route a
-// request through ParseJson, #184/#208/#214/#219/#223/#228 — mirror of
+// maxWorkers, debug, parseOnHeader, includeErrorMarker). Only called when
+// mesi_timeout, mesi_max_response_size, mesi_max_concurrent_requests,
+// mesi_max_workers, mesi_debug, mesi_parse_on_header or
+// mesi_include_error_marker is set (those are what route a request through
+// ParseJson, #184/#208/#214/#219/#223/#188/#228 — mirror of
 // Apache's build_parse_json_config + used_parse_json pattern from #167).
 // Every other key mirrors exactly what the legacy positional path
 // would pass, so behaviour is identical except for the values the
@@ -1277,6 +1322,10 @@ static char *build_request_ctx_json(ngx_http_request_t *r, ngx_str_t *template,
 // debug is rendered only when mesi_debug is configured ("debug":true
 // or "debug":false), so an unset directive omits the key and keeps the
 // silent positional-path default (#223), matching Apache #173.
+// parseOnHeader is rendered only when mesi_parse_on_header is configured
+// ("parseOnHeader":true or false), so an unset directive omits the key and
+// keeps the always-parse positional-path default (#188), matching Apache
+// #172.
 // includeErrorMarker is rendered only when mesi_include_error_marker is
 // configured, including the explicit-empty form ("includeErrorMarker":"")
 // which means "configured but silent" (#228). The marker is raw HTML
@@ -1302,6 +1351,7 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
   static const char pfx_maxcr[] = ",\"maxConcurrentRequests\":";
   static const char pfx_maxw[] = ",\"maxWorkers\":";
   static const char pfx_debug[] = ",\"debug\":";
+  static const char pfx_poh[] = ",\"parseOnHeader\":";
   static const char pfx_marker[] = ",\"includeErrorMarker\":";
   static const char pfx_tmpl[] = ",\"cacheKeyTemplate\":";
   static const char pfx_ctx[] = ",\"requestCtx\":";
@@ -1311,6 +1361,7 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
   int has_maxcr = lcf->max_concurrent_requests != NGX_CONF_UNSET;
   int has_maxw = lcf->max_workers != NGX_CONF_UNSET;
   int has_debug = lcf->debug != NGX_CONF_UNSET;
+  int has_poh = lcf->parse_on_header != NGX_CONF_UNSET;
   int has_marker = lcf->include_error_marker.data != NULL;
   int has_tmpl = lcf->cache_key_template.len > 0;
   int has_ctx = has_tmpl && ctx_json != NULL && ctx_json[0] != '\0';
@@ -1347,6 +1398,9 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
   }
   if (has_debug) {
     total += sizeof(pfx_debug) - 1 + (lcf->debug ? 4 : 5); // "true"/"false"
+  }
+  if (has_poh) {
+    total += sizeof(pfx_poh) - 1 + (lcf->parse_on_header ? 4 : 5);
   }
   if (has_marker) {
     total += sizeof(pfx_marker) - 1 + 2 +
@@ -1422,6 +1476,16 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
     w += sizeof(pfx_debug) - 1;
     ngx_memcpy(w, debug_str, debug_len);
     w += debug_len;
+  }
+  if (has_poh) {
+    static const char true_str[] = "true";
+    static const char false_str[] = "false";
+    const char *poh_str = lcf->parse_on_header ? true_str : false_str;
+    size_t poh_len = lcf->parse_on_header ? 4 : 5;
+    ngx_memcpy(w, pfx_poh, sizeof(pfx_poh) - 1);
+    w += sizeof(pfx_poh) - 1;
+    ngx_memcpy(w, poh_str, poh_len);
+    w += poh_len;
   }
   if (has_marker) {
     ngx_memcpy(w, pfx_marker, sizeof(pfx_marker) - 1);
@@ -1670,20 +1734,23 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   char *message = NULL;
 
   // mesi_timeout / mesi_max_response_size / mesi_max_concurrent_requests
-  // / mesi_max_workers / mesi_debug / mesi_include_error_marker routing
-  // (#184/#208/#214/#219/#223/#228): when any of the six directives is
-  // set, the whole parse is routed through libgomesi's ParseJson entry
-  // point (the #167 schema) so {"timeoutSeconds":N}, {"maxResponseSize":N},
-  // {"maxConcurrentRequests":N}, {"maxWorkers":N},
-  // {"debug":true|false} and/or {"includeErrorMarker":"…"} reach the
-  // core — the same used_parse_json pattern Apache has used since #167.
+  // / mesi_max_workers / mesi_debug / mesi_parse_on_header /
+  // mesi_include_error_marker routing
+  // (#184/#208/#214/#219/#223/#188/#228): when any of the seven
+  // directives is set, the whole parse is routed through libgomesi's
+  // ParseJson entry point (the #167 schema) so {"timeoutSeconds":N},
+  // {"maxResponseSize":N}, {"maxConcurrentRequests":N}, {"maxWorkers":N},
+  // {"debug":true|false}, {"parseOnHeader":true|false} and/or
+  // {"includeErrorMarker":"…"} reach the core — the same used_parse_json
+  // pattern Apache has used since #167.
   // The blob carries every other resolved setting (depth, base URL, SSRF
   // flags, optional cache key template + request context), so behaviour
-  // matches the legacy positional path exactly except for those values. When the symbol is
-  // missing (older libgomesi.so), fall through to the legacy chain below
-  // with a logged per-request warning naming each set directive — the
-  // directives are ignored (30s / unlimited / unlimited / library-default
-  // NumCPU*4 pool / parser silent apply), never a crash and never a
+  // matches the legacy positional path exactly except for those values.
+  // When the symbol is missing (older libgomesi.so), fall through to the
+  // legacy chain below with a logged per-request warning naming each set
+  // directive — the directives are ignored (30s / unlimited / unlimited /
+  // library-default NumCPU*4 pool / parser silent / fragments always
+  // parsed / failed includes silent apply), never a crash and never a
   // silently wrong config.
   // used_parse_json distinguishes "not attempted" from "ParseJson
   // returned NULL" — a NULL must NOT fall back silently; it fails the
@@ -1693,6 +1760,7 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
                    lcf->max_concurrent_requests != NGX_CONF_UNSET ||
                    lcf->max_workers != NGX_CONF_UNSET ||
                    lcf->debug != NGX_CONF_UNSET ||
+                   lcf->parse_on_header != NGX_CONF_UNSET ||
                    lcf->include_error_marker.data != NULL;
   int used_parse_json = 0;
   if (configured) {
@@ -1749,6 +1817,14 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
                       "mesi: mesi_debug is set but libgomesi lacks "
                       "ParseJson — mesi_debug ignored (parser stays "
                       "silent, the pre-#223 behaviour)");
+      }
+      if (lcf->parse_on_header != NGX_CONF_UNSET) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "mesi: mesi_parse_on_header is set but libgomesi "
+                      "lacks ParseJson — mesi_parse_on_header ignored for "
+                      "fetched fragments (the top-level head filter still "
+                      "honours it; nested includes always parse, the "
+                      "pre-#188 behaviour)");
       }
       if (lcf->include_error_marker.data != NULL) {
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
@@ -1860,6 +1936,87 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   return output;
 }
 
+// mesi_header_signals_esi reports whether an Edge-control header value
+// signals ESI processing, mirroring mesi.IsEsiResponse exactly: the value
+// is a comma-separated list, matching is case-insensitive, and ASCII
+// whitespace around each element is ignored. Empty and non-matching
+// values (for example "max-age=60") do not signal ESI. The scan is
+// bounded by value->len; ngx_strncasecmp only reads the n bytes it was
+// given, so no byte outside the header value is touched.
+static ngx_int_t mesi_header_signals_esi(ngx_str_t *value) {
+  size_t start = 0;
+
+  if (value->len == 0) {
+    return 0;
+  }
+
+  for (;;) {
+    size_t end = start;
+    size_t begin = start;
+    size_t tail;
+
+    while (end < value->len && value->data[end] != ',') {
+      end++;
+    }
+    tail = end;
+    while (begin < tail &&
+           (value->data[begin] == ' ' || value->data[begin] == '\t' ||
+            value->data[begin] == '\r' || value->data[begin] == '\n' ||
+            value->data[begin] == '\v' || value->data[begin] == '\f')) {
+      begin++;
+    }
+    while (tail > begin &&
+           (value->data[tail - 1] == ' ' || value->data[tail - 1] == '\t' ||
+            value->data[tail - 1] == '\r' || value->data[tail - 1] == '\n' ||
+            value->data[tail - 1] == '\v' || value->data[tail - 1] == '\f')) {
+      tail--;
+    }
+    if (tail - begin == sizeof("dca=esi") - 1 &&
+        ngx_strncasecmp(value->data + begin, (u_char *)"dca=esi",
+                        sizeof("dca=esi") - 1) == 0) {
+      return 1;
+    }
+    if (end >= value->len) {
+      return 0;
+    }
+    start = end + 1; // Skip the comma and try the next element.
+  }
+}
+
+// ngx_http_mesi_has_esi_header scans the upstream response headers for an
+// Edge-control value that signals ESI (#188). nginx has no dedicated
+// headers_out accessor for Edge-control, and the list may contain several
+// headers, so every live entry is checked (hash == 0 entries are
+// skipped/hidden). The header name comparison is case-insensitive: nginx
+// lowercases proxied header names, but a hand-written module may use any
+// casing.
+static ngx_int_t ngx_http_mesi_has_esi_header(ngx_http_request_t *r) {
+  ngx_list_part_t *part = &r->headers_out.headers.part;
+  ngx_table_elt_t *h = part->elts;
+  ngx_uint_t i;
+
+  for (i = 0; /* void */; i++) {
+    if (i >= part->nelts) {
+      if (part->next == NULL) {
+        break;
+      }
+      part = part->next;
+      h = part->elts;
+      i = 0;
+    }
+    if (h[i].hash == 0) {
+      continue;
+    }
+    if (h[i].key.len == sizeof("Edge-control") - 1 &&
+        ngx_strncasecmp(h[i].key.data, (u_char *)"Edge-control",
+                        sizeof("Edge-control") - 1) == 0 &&
+        mesi_header_signals_esi(&h[i].value)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static ngx_int_t ngx_test_is_html(ngx_http_request_t *r) {
 
   if (r->headers_out.content_type.len == 0) {
@@ -1956,16 +2113,16 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
   }
 
   // ParseJson is optional: the JSON config entry point that carries
-  // timeoutSeconds, maxResponseSize, maxConcurrentRequests, maxWorkers
-  // and debug (the #167 schema, routed when mesi_timeout,
-  // mesi_max_response_size, mesi_max_concurrent_requests, mesi_max_workers
-  // or mesi_debug is set, #184/#208/#214/#219/#223). Older
-  // libgomesi.so builds without it keep working: the directives then
-  // degrade to a per-request warning in parse() and the defaults
-  // apply (30s / unlimited / unlimited / library-default NumCPU*4
-  // pool / parser silent) — never a crash, never a link-time hard
-  // dependency (same pattern as ParseWithConfigEx /
-  // ParseWithConfigCtx above).
+  // timeoutSeconds, maxResponseSize, maxConcurrentRequests, maxWorkers,
+  // debug and parseOnHeader (the #167 schema, routed when mesi_timeout,
+  // mesi_max_response_size, mesi_max_concurrent_requests, mesi_max_workers,
+  // mesi_debug or mesi_parse_on_header is set,
+  // #184/#208/#214/#219/#223/#188). Older libgomesi.so builds without it
+  // keep working: the directives then degrade to a per-request warning in
+  // parse() and the defaults apply (30s / unlimited / unlimited /
+  // library-default NumCPU*4 pool / parser silent / nested fragments
+  // always parsed) — never a crash, never a link-time hard dependency
+  // (same pattern as ParseWithConfigEx / ParseWithConfigCtx above).
   EsiParseJson = (ParseJsonFunc)dlsym(go_module, "ParseJson");
   if (dlerror() != NULL) {
     EsiParseJson = NULL;
@@ -2521,6 +2678,9 @@ static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
   // directive keeps the legacy positional path (parser silent) instead
   // of routing every parse through ParseJson (#223).
   conf->debug = NGX_CONF_UNSET;
+  // Same sentinel rule as debug (#188): 0 is a valid configured value
+  // (explicit off), so only NGX_CONF_UNSET can mean "inherit / legacy".
+  conf->parse_on_header = NGX_CONF_UNSET;
   // include_error_marker needs no explicit sentinel: ngx_pcalloc zeroes
   // the struct, and an ngx_str_t with data == NULL is what
   // ngx_conf_set_str_slot / ngx_conf_merge_str_value treat as "unset".
@@ -2630,6 +2790,16 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   // and an unset child inherits its parent's value (#223, the same
   // sentinel rule as Apache's MesiDebug / this module's mesi_timeout).
   ngx_conf_merge_value(conf->debug, prev->debug, NGX_CONF_UNSET);
+  // Unset STAYS NGX_CONF_UNSET — deliberately NOT a merged 0 (off): the
+  // sentinel keeps an unset directive on the byte-identical legacy
+  // positional path (always parse) and lets the head filter distinguish
+  // "not configured" from "configured off". An explicit on/off survives
+  // the merge as 1/0, so a child's explicit off overrides an inherited
+  // on and an unset child inherits its parent's value (#188, the same
+  // sentinel rule as Apache's MesiParseOnHeader / this module's
+  // mesi_debug).
+  ngx_conf_merge_value(conf->parse_on_header, prev->parse_on_header,
+                       NGX_CONF_UNSET);
   // include_error_marker (#228): data == NULL is the unset sentinel, so
   // an unset child inherits its parent's marker and keeps the legacy
   // positional path when the parent is unset too. Deliberately NOT
