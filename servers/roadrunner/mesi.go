@@ -92,6 +92,11 @@ type Config struct {
 	// "pass" (default) sends it unchanged with a warning, "error" logs an
 	// error and answers 502.
 	OnOversize string `mapstructure:"on_oversize"`
+	// Debug enables the core's verbose ESI diagnostics. The core's default
+	// logger writes them to stderr, so they appear wherever the `rr`
+	// process's stderr goes. Absent and explicit false both keep debug
+	// logging off.
+	Debug bool `mapstructure:"debug"`
 }
 
 func intPtr(v int) *int { return &v }
@@ -304,6 +309,7 @@ func (p *Plugin) Middleware(next http.Handler) http.Handler {
 				MaxResponseSize:                p.config.MaxResponseSize,
 				MaxConcurrentRequests:          p.config.MaxConcurrentRequests,
 				MaxWorkers:                     p.config.MaxWorkers,
+				Debug:                          p.config.Debug,
 			}
 
 			if p.cache != nil {

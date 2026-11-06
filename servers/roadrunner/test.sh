@@ -26,7 +26,9 @@ start_rr() {
 	[ -n "$RR_PID" ] && kill "$RR_PID" 2>/dev/null || true
 	sleep 1
 	[ -n "$RR_PID" ] && kill -9 "$RR_PID" 2>/dev/null || true
-	"$RR_TEST_BINARY" -listen :9090 "$@" &
+	# Redirect the worker's stderr to the log file: debug diagnostics from the
+	# core's default logger are written there.
+	"$RR_TEST_BINARY" -listen :9090 "$@" >"$TEST_DIR/rr.log" 2>&1 &
 	RR_PID=$!
 	sleep 2
 }
@@ -400,6 +402,30 @@ if [ "$RESPONSE_ZERO" = "$RESPONSE_ABSENT" ]; then
 else
     echo "FAIL: explicit zero and absent MaxWorkers differ"
     exit 1
+fi
+
+echo "--- Debug Logging Tests (#229) ---"
+
+echo "=== Test: debug true writes ESI diagnostics to the server log ==="
+start_rr -block-private-ips=false -debug
+curl -fsS http://localhost:9090/ >/dev/null
+if grep -q "DEBUG parse_start" "$TEST_DIR/rr.log"; then
+    echo "PASS: debug=true emitted ESI diagnostics to stderr"
+else
+    echo "FAIL: debug=true did not emit ESI diagnostics"
+    cat "$TEST_DIR/rr.log"
+    exit 1
+fi
+
+echo "=== Test: absent debug keeps ESI diagnostics out of the server log ==="
+start_rr -block-private-ips=false
+curl -fsS http://localhost:9090/ >/dev/null
+if grep -q "DEBUG" "$TEST_DIR/rr.log"; then
+    echo "FAIL: ESI diagnostics were emitted without debug: true"
+    cat "$TEST_DIR/rr.log"
+    exit 1
+else
+    echo "PASS: absent debug emitted no ESI diagnostics"
 fi
 
 echo ""

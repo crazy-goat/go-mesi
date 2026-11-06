@@ -27,6 +27,7 @@ func main() {
 	maxConcurrentRequests := flag.Int("max-concurrent-requests", 0, "Maximum concurrent ESI include fetches (0 = unlimited)")
 	maxWorkers := flag.Int("max-workers", 0, "Maximum token-processing workers per ESI parse (0 = library default)")
 	parseOnHeader := flag.Bool("parse-on-header", false, "Parse text/html only when the response carries Edge-control: dca=esi")
+	debug := flag.Bool("debug", false, "Enable ESI debug logging to stderr")
 	flag.Parse()
 
 	config := roadrunner.CreateConfig()
@@ -40,6 +41,7 @@ func main() {
 	config.MaxConcurrentRequests = *maxConcurrentRequests
 	config.MaxWorkers = *maxWorkers
 	config.ParseOnHeader = *parseOnHeader
+	config.Debug = *debug
 	config.BlockPrivateIPs = blockPrivateIPs
 	config.AllowPrivateIPsForAllowedHosts = *allowPrivateIPsForAllowedHosts
 	// Only override CreateConfig()'s default (5) when -max-depth is
