@@ -36,3 +36,4 @@ php-ext/tests/*.sh.log
 php-ext/tests/[a-z_]*.php
 php-ext/tests/[a-z_]*.sh
 !php-ext/tests/router.php
+!php-ext/tests/slow_router.php

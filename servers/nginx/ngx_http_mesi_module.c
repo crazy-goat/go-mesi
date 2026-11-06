@@ -169,6 +169,13 @@ typedef struct {
                                             // unlimited (the default)
   ngx_uint_t on_oversize;                   // MESI_ON_OVERSIZE_PASS (default) or
                                             // MESI_ON_OVERSIZE_ERROR (#537)
+  ngx_flag_t debug;                         // Parser debug logging (#223):
+                                            // NGX_CONF_UNSET = unset (legacy
+                                            // positional path, parser silent),
+                                            // 0 = explicit off, 1 = on — a
+                                            // stored value routes the parse
+                                            // through libgomesi ParseJson with
+                                            // {"debug":true|false}
 } ngx_http_mesi_loc_conf_t;
 
 typedef struct {
@@ -295,6 +302,16 @@ static ngx_command_t ngx_http_mesi_commands[] = {
     {ngx_string("mesi_max_workers"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_http_mesi_set_max_workers, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, max_workers), NULL},
+
+    // Parser debug logging (#223). A flag: `on` / `off`. The stock flag
+    // setter stores 1 / 0 and leaves the NGX_CONF_UNSET sentinel alone
+    // until merged; the sentinel is what keeps an unset directive on the
+    // byte-identical legacy positional path (parser silent) while an
+    // explicit `off` routes through ParseJson with {"debug":false}
+    // (honest configuration: the operator asked for silence).
+    {ngx_string("mesi_debug"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
+     ngx_conf_set_flag_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_mesi_loc_conf_t, debug), NULL},
 
     {ngx_string("mesi_cache_backend"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
@@ -1208,22 +1225,23 @@ static char *build_request_ctx_json(ngx_http_request_t *r, ngx_str_t *template,
 // defaultUrl, allowedHosts, blockPrivateIPs,
 // allowPrivateIPsForAllowedHosts, cacheKeyTemplate, requestCtx,
 // timeoutSeconds, maxResponseSize, maxConcurrentRequests,
-// maxWorkers). Only called when mesi_timeout, mesi_max_response_size,
-// mesi_max_concurrent_requests or mesi_max_workers is set (those are
-// what route a request through ParseJson, #184/#208/#214/#219 —
-// mirror of Apache's build_parse_json_config + used_parse_json
-// pattern from #167).
+// maxWorkers, debug). Only called when mesi_timeout,
+// mesi_max_response_size, mesi_max_concurrent_requests, mesi_max_workers
+// or mesi_debug is set (those are what route a request through
+// ParseJson, #184/#208/#214/#219/#223 — mirror of Apache's
+// build_parse_json_config + used_parse_json pattern from #167).
 // Every other key mirrors exactly what the legacy positional path
 // would pass, so behaviour is identical except for the values the
 // configured directives carry.
 // timeoutSeconds travels in SECONDS (the nanosecond conversion happens
 // Go-side in config.ResolveTimeout), maxResponseSize in BYTES, and
-// maxConcurrentRequests / maxWorkers as plain counts; all four are
-// rendered only when their directive is configured — an absent key
-// resolves Go-side to the same value the positional path applies (30s
-// / 0 = unlimited / 0 = unlimited / 0 = library default NumCPU*4), so
-// each key's presence is purely a function of its directive being
-// set. maxWorkers' explicit 0 IS rendered when the directive is set
+// maxConcurrentRequests / maxWorkers as plain counts; all four numeric
+// keys are rendered only when their directive is configured — an absent
+// key resolves Go-side to the same value the positional path applies
+// (30s / 0 = unlimited / 0 = unlimited / 0 = library default NumCPU*4),
+// so each key's presence is purely a function of its directive being
+// set (the boolean `debug` key follows the same conditional rule, #223).
+// maxWorkers' explicit 0 IS rendered when the directive is set
 // (same as Apache #171 / php-ext #211): 0 is the documented
 // "library default" value, not "unset" — the unset sentinel (-1)
 // is what keeps the two distinguishable, and it omits the key.
@@ -1233,6 +1251,9 @@ static char *build_request_ctx_json(ngx_http_request_t *r, ngx_str_t *template,
 // pre-rendered JSON and omitted when build_request_ctx_json returned
 // "", so a template without ${header:}/${cookie:} gets the exact same
 // dummy-request treatment as on the positional path).
+// debug is rendered only when mesi_debug is configured ("debug":true
+// or "debug":false), so an unset directive omits the key and keeps the
+// silent positional-path default (#223), matching Apache #173.
 // The key prefixes are local arrays so sizeof()-1 measures them —
 // hand-counted JSON lengths are a classic off-by-one; two passes
 // (measure, then write) keep the allocation exact because nginx pools
@@ -1251,6 +1272,7 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
   static const char pfx_maxrs[] = ",\"maxResponseSize\":";
   static const char pfx_maxcr[] = ",\"maxConcurrentRequests\":";
   static const char pfx_maxw[] = ",\"maxWorkers\":";
+  static const char pfx_debug[] = ",\"debug\":";
   static const char pfx_tmpl[] = ",\"cacheKeyTemplate\":";
   static const char pfx_ctx[] = ",\"requestCtx\":";
 
@@ -1258,6 +1280,7 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
   int has_maxrs = lcf->max_response_size != NGX_CONF_UNSET;
   int has_maxcr = lcf->max_concurrent_requests != NGX_CONF_UNSET;
   int has_maxw = lcf->max_workers != NGX_CONF_UNSET;
+  int has_debug = lcf->debug != NGX_CONF_UNSET;
   int has_tmpl = lcf->cache_key_template.len > 0;
   int has_ctx = has_tmpl && ctx_json != NULL && ctx_json[0] != '\0';
   const char *block_str = lcf->block_private_ips ? "true" : "false";
@@ -1290,6 +1313,9 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
   }
   if (has_maxw) {
     total += sizeof(pfx_maxw) - 1 + mesi_json_uint_len(lcf->max_workers);
+  }
+  if (has_debug) {
+    total += sizeof(pfx_debug) - 1 + (lcf->debug ? 4 : 5); // "true"/"false"
   }
   if (has_tmpl) {
     total += sizeof(pfx_tmpl) - 1 + 2 +
@@ -1350,6 +1376,16 @@ static char *build_parse_json_config(ngx_http_mesi_loc_conf_t *lcf,
     ngx_memcpy(w, pfx_maxw, sizeof(pfx_maxw) - 1);
     w += sizeof(pfx_maxw) - 1;
     mesi_json_write_uint(&w, lcf->max_workers);
+  }
+  if (has_debug) {
+    static const char true_str[] = "true";
+    static const char false_str[] = "false";
+    const char *debug_str = lcf->debug ? true_str : false_str;
+    size_t debug_len = lcf->debug ? 4 : 5;
+    ngx_memcpy(w, pfx_debug, sizeof(pfx_debug) - 1);
+    w += sizeof(pfx_debug) - 1;
+    ngx_memcpy(w, debug_str, debug_len);
+    w += debug_len;
   }
   if (has_tmpl) {
     ngx_memcpy(w, pfx_tmpl, sizeof(pfx_tmpl) - 1);
@@ -1592,27 +1628,29 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   char *message = NULL;
 
   // mesi_timeout / mesi_max_response_size / mesi_max_concurrent_requests
-  // / mesi_max_workers routing (#184/#208/#214/#219): when any of the
-  // four directives is set, the whole parse is routed through
-  // libgomesi's ParseJson entry point (the #167 schema) so
+  // / mesi_max_workers / mesi_debug routing (#184/#208/#214/#219/#223):
+  // when any of the five directives is set, the whole parse is routed
+  // through libgomesi's ParseJson entry point (the #167 schema) so
   // {"timeoutSeconds":N}, {"maxResponseSize":N},
-  // {"maxConcurrentRequests":N} and/or {"maxWorkers":N} reach the
-  // core — the same used_parse_json pattern Apache has used since
-  // #167. The blob carries every other resolved setting (depth, base
-  // URL, SSRF flags, optional cache key template + request context),
-  // so behaviour matches the legacy positional path exactly except for
-  // those values. When the symbol is missing (older libgomesi.so),
-  // fall through to the legacy chain below with a logged per-request
-  // warning naming each set directive — the directives are ignored
-  // (30s / unlimited / unlimited / library-default NumCPU*4 pool
-  // apply), never a crash and never a silently wrong config.
+  // {"maxConcurrentRequests":N}, {"maxWorkers":N} and/or
+  // {"debug":true|false} reach the core — the same used_parse_json
+  // pattern Apache has used since #167. The blob carries every other
+  // resolved setting (depth, base URL, SSRF flags, optional cache key
+  // template + request context), so behaviour matches the legacy
+  // positional path exactly except for those values. When the symbol is
+  // missing (older libgomesi.so), fall through to the legacy chain below
+  // with a logged per-request warning naming each set directive — the
+  // directives are ignored (30s / unlimited / unlimited / library-default
+  // NumCPU*4 pool / parser silent apply), never a crash and never a
+  // silently wrong config.
   // used_parse_json distinguishes "not attempted" from "ParseJson
   // returned NULL" — a NULL must NOT fall back silently; it fails the
   // request closed below (config errors are already logged Go-side).
   int configured = lcf->timeout_seconds != NGX_CONF_UNSET ||
                    lcf->max_response_size != NGX_CONF_UNSET ||
                    lcf->max_concurrent_requests != NGX_CONF_UNSET ||
-                   lcf->max_workers != NGX_CONF_UNSET;
+                   lcf->max_workers != NGX_CONF_UNSET ||
+                   lcf->debug != NGX_CONF_UNSET;
   int used_parse_json = 0;
   if (configured) {
     if (EsiParseJson != NULL) {
@@ -1662,6 +1700,12 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
                       "ParseJson — mesi_max_workers ignored (library "
                       "default NumCPU*4 worker pool applies, the "
                       "pre-#219 behaviour)");
+      }
+      if (lcf->debug != NGX_CONF_UNSET) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "mesi: mesi_debug is set but libgomesi lacks "
+                      "ParseJson — mesi_debug ignored (parser stays "
+                      "silent, the pre-#223 behaviour)");
       }
     }
   }
@@ -1863,15 +1907,15 @@ static ngx_int_t ngx_http_mesi_thread_init(ngx_cycle_t *cycle) {
   }
 
   // ParseJson is optional: the JSON config entry point that carries
-  // timeoutSeconds, maxResponseSize, maxConcurrentRequests and
-  // maxWorkers (the #167 schema, routed when mesi_timeout,
-  // mesi_max_response_size, mesi_max_concurrent_requests or
-  // mesi_max_workers is set, #184/#208/#214/#219). Older
+  // timeoutSeconds, maxResponseSize, maxConcurrentRequests, maxWorkers
+  // and debug (the #167 schema, routed when mesi_timeout,
+  // mesi_max_response_size, mesi_max_concurrent_requests, mesi_max_workers
+  // or mesi_debug is set, #184/#208/#214/#219/#223). Older
   // libgomesi.so builds without it keep working: the directives then
   // degrade to a per-request warning in parse() and the defaults
   // apply (30s / unlimited / unlimited / library-default NumCPU*4
-  // pool) — never a crash, never a link-time hard dependency (same
-  // pattern as ParseWithConfigEx /
+  // pool / parser silent) — never a crash, never a link-time hard
+  // dependency (same pattern as ParseWithConfigEx /
   // ParseWithConfigCtx above).
   EsiParseJson = (ParseJsonFunc)dlsym(go_module, "ParseJson");
   if (dlerror() != NULL) {
@@ -2423,6 +2467,11 @@ static void *ngx_http_mesi_create_loc_conf(ngx_conf_t *cf) {
   conf->cache_redis_db = NGX_CONF_UNSET;
   conf->block_private_ips = NGX_CONF_UNSET;
   conf->allow_private_ips_for_allowed = NGX_CONF_UNSET;
+  // Unset stays NGX_CONF_UNSET — not 0 — so the merge can tell a child
+  // that asked for `off` from one that inherits, and so an unset
+  // directive keeps the legacy positional path (parser silent) instead
+  // of routing every parse through ParseJson (#223).
+  conf->debug = NGX_CONF_UNSET;
   return conf;
 }
 
@@ -2518,6 +2567,14 @@ static char *ngx_http_mesi_merge_loc_conf(ngx_conf_t *cf, void *parent,
   // same secure default as Apache's MesiAllowPrivateIPsForAllowedHosts).
   ngx_conf_merge_value(conf->allow_private_ips_for_allowed,
                        prev->allow_private_ips_for_allowed, 0);
+  // Unset STAYS NGX_CONF_UNSET — deliberately NOT a merged 0 (off): the
+  // sentinel keeps an unset directive on the byte-identical legacy
+  // positional path (parser silent) and lets parse() distinguish "not
+  // configured" from "configured off". An explicit on/off survives the
+  // merge as 1/0, so a child's explicit off overrides an inherited on
+  // and an unset child inherits its parent's value (#223, the same
+  // sentinel rule as Apache's MesiDebug / this module's mesi_timeout).
+  ngx_conf_merge_value(conf->debug, prev->debug, NGX_CONF_UNSET);
   // Empty (unset) = URL-only DefaultCacheKey (backward compatible); an
   // explicitly empty value keeps the same meaning.
   ngx_conf_merge_str_value(conf->cache_key_template, prev->cache_key_template, "");

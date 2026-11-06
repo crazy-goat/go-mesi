@@ -220,6 +220,31 @@ if ($path === '/timeout-default') {
     return true;
 }
 
+// debug (#216): true enables the core parser's debug logger, which writes
+// DEBUG parse/include/fetch lines to STDERR; false/absent keep it silent.
+// Served by a DEDICATED `php -S` spawned by test.sh on 127.0.0.1:18083 with
+// its stderr redirected to a log (same split as the slow/bytes servers
+// above), so test.sh can prove both the messages and their destination
+// stream in CI mode (where the main server's stderr is /dev/null) and in
+// docker mode.
+if ($path === '/debug-on') {
+    header('Content-Type: text/plain');
+    echo \mesi\parse_with_config('<p>debug-on</p>', 5, 'http://127.0.0.1/', ['debug' => true]);
+    return true;
+}
+
+if ($path === '/debug-off') {
+    header('Content-Type: text/plain');
+    echo \mesi\parse_with_config('<p>debug-off</p>', 5, 'http://127.0.0.1/', ['debug' => false]);
+    return true;
+}
+
+if ($path === '/debug-absent') {
+    header('Content-Type: text/plain');
+    echo \mesi\parse_with_config('<p>debug-absent</p>', 5, 'http://127.0.0.1/', []);
+    return true;
+}
+
 // max_response_size (#201): fragment bodies come from a DEDICATED
 // size-serving server spawned by test.sh on 127.0.0.1:18082 (php -S is
 // single-threaded — the include must never be served by this process, same

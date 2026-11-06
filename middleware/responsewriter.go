@@ -87,6 +87,10 @@ func (rw *ResponseWriter) SetBodyLimit(maxBody int64, mode OnOversize, notify fu
 // ESI on: when fn returns false for the final response headers the body is
 // not counted. Without it every text/html response is limited. Call it
 // before the wrapped handler runs.
+//
+// It only skips the size decision, not buffering: Write still copies the
+// body into the buffer, so an exempt response is held in memory in full and
+// the integration sends it out unchanged afterwards (#253 follow-up).
 func (rw *ResponseWriter) LimitOnlyIf(fn func(h http.Header) bool) {
 	rw.appliesTo = fn
 }

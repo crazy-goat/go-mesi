@@ -38,6 +38,14 @@ type MesiMiddleware struct {
 	// range are rejected at Caddyfile parse and JSON provision.
 	MaxDepth *int `json:"max_depth,omitempty"`
 
+	// ParseOnHeader makes ESI processing conditional on the upstream response
+	// carrying `Edge-control: dca=esi` (case-insensitive, comma-separated
+	// value list, same as the core's IsEsiResponse). Without the header the
+	// HTML body is sent through unchanged and is not buffered for the parent
+	// body limit. The flag is passed to EsiParserConfig as well, so fetched
+	// fragments follow the same rule. Default: false (always parse HTML).
+	ParseOnHeader bool `json:"parse_on_header,omitempty"`
+
 	// SharedHTTPClient enables TCP connection reuse for ESI includes.
 	// When true, a shared http.Transport with SSRF protection is created
 	// in Provision() and reused for all requests. Without this, each
@@ -262,12 +270,29 @@ func (m *MesiMiddleware) Cleanup() error {
 	return nil
 }
 
+// esiOnHeader reports whether the response opted into ESI processing with
+// `Edge-control: dca=esi`. Header names are case-insensitive (http.Header.Get)
+// and the value may be a comma-separated list, matching mesi.IsEsiResponse.
+func esiOnHeader(h http.Header) bool {
+	for _, part := range strings.Split(strings.ToLower(h.Get("Edge-control")), ",") {
+		if strings.TrimSpace(part) == "dca=esi" {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	r.Header.Set("Surrogate-Capability", "ESI/1.0")
 
 	customWriter := middleware.NewResponseWriter(w)
 	if r.Method != http.MethodHead { // a HEAD Content-Length has no body behind it
 		customWriter.SetBodyLimit(m.MaxBodySize, m.onOversize, m.logOversize)
+		if m.ParseOnHeader {
+			// Without the header the page is not parsed, so it is not
+			// buffered for ESI either.
+			customWriter.LimitOnlyIf(esiOnHeader)
+		}
 	}
 
 	err := next.ServeHTTP(customWriter, r)
@@ -281,6 +306,11 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 
 	contentType := customWriter.Header().Get("Content-Type")
 	if strings.HasPrefix(contentType, "text/html") {
+		if m.ParseOnHeader && !esiOnHeader(customWriter.Header()) {
+			m.writeRawResponse(w, customWriter)
+			return nil
+		}
+
 		depth := 5
 		if m.MaxDepth != nil {
 			depth = *m.MaxDepth
@@ -292,6 +322,7 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 		config := mesi.EsiParserConfig{
 			Context:                        r.Context(),
 			MaxDepth:                       uint(depth),
+			ParseOnHeader:                  m.ParseOnHeader,
 			DefaultUrl:                     middleware.GetDefaultUrl(r),
 			Timeout:                        m.parsedTimeout,
 			BlockPrivateIPs:                blockPrivateIPs,
@@ -337,12 +368,22 @@ func (m *MesiMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next 
 		w.WriteHeader(customWriter.StatusCode())
 		_, _ = w.Write([]byte(processedResponse))
 	} else {
-		w.Header().Set("Content-Length", strconv.Itoa(customWriter.Body().Len()))
-		w.WriteHeader(customWriter.StatusCode())
-		_, _ = w.Write(customWriter.Body().Bytes())
+		m.writeRawResponse(w, customWriter)
 	}
 
 	return nil
+}
+
+// writeRawResponse copies the buffered response through unchanged. It is used
+// for non-HTML responses and for HTML responses that are not parsed because
+// parse_on_header is on and the upstream did not send `Edge-control: dca=esi`.
+func (m *MesiMiddleware) writeRawResponse(w http.ResponseWriter, customWriter *middleware.ResponseWriter) {
+	for k, v := range customWriter.Header() {
+		w.Header()[k] = v
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(customWriter.Body().Len()))
+	w.WriteHeader(customWriter.StatusCode())
+	_, _ = w.Write(customWriter.Body().Bytes())
 }
 
 // logOversize reports a parent body over max_body_size. A nil logger (the
@@ -440,6 +481,8 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				m.OnOversize = d.Val()
 			case "shared_http_client":
 				m.SharedHTTPClient = true
+			case "parse_on_header":
+				m.ParseOnHeader = true
 			case "block_private_ips":
 				if d.NextArg() {
 					v, err := strconv.ParseBool(d.Val())
