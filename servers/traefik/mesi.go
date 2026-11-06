@@ -108,6 +108,14 @@ type Config struct {
 	// without ESI processing and logs a warning; "error" logs an error
 	// and answers 502. Any other value fails New().
 	OnOversize string `json:"onOversize" yaml:"onOversize"`
+	// ParseOnHeader makes ESI processing conditional on the upstream
+	// response carrying `Edge-control: dca=esi` (case-insensitive,
+	// comma-separated value list, the same rule as mesi.IsEsiResponse).
+	// Without the header a text/html body is sent through unchanged and
+	// is not buffered for MaxBodySize. The flag is also passed to
+	// EsiParserConfig.ParseOnHeader, so fetched fragments follow the same
+	// rule. Default false: every text/html response is parsed.
+	ParseOnHeader bool `json:"parseOnHeader" yaml:"parseOnHeader"`
 }
 
 func CreateConfig() *Config {
@@ -423,10 +431,27 @@ func resolveMaxWorkers(v int) (int, error) {
 	return v, nil
 }
 
+// esiOnHeader reports whether the response opted into ESI processing with
+// `Edge-control: dca=esi`. Header names are case-insensitive (http.Header.Get)
+// and the value may be a comma-separated list, matching mesi.IsEsiResponse.
+func esiOnHeader(h http.Header) bool {
+	for _, part := range strings.Split(strings.ToLower(h.Get("Edge-control")), ",") {
+		if strings.TrimSpace(part) == "dca=esi" {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	customWriter := middleware.NewResponseWriter(rw)
 	if req.Method != http.MethodHead { // a HEAD Content-Length has no body behind it
 		customWriter.SetBodyLimit(p.config.MaxBodySize, p.onOversize, logOversize)
+		if p.config.ParseOnHeader {
+			// Without the header the page is not parsed, so it is not
+			// buffered for ESI either.
+			customWriter.LimitOnlyIf(esiOnHeader)
+		}
 	}
 
 	_, ok := req.Header["Surrogate-Capability"]
@@ -443,9 +468,19 @@ func (p *ResponsePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	contentType := customWriter.Header().Get("Content-Type")
 
 	if strings.HasPrefix(contentType, "text/html") {
+		if p.config.ParseOnHeader && !esiOnHeader(customWriter.Header()) {
+			// Not signalled for ESI: pass the buffered response through
+			// unchanged, without ESI processing or ESI response headers.
+			// Headers need no copy: customWriter shares rw's header map.
+			rw.WriteHeader(customWriter.StatusCode())
+			_, _ = rw.Write(customWriter.Body().Bytes())
+			return
+		}
+
 		config := mesi.EsiParserConfig{
 			Context:                        req.Context(),
 			MaxDepth:                       uint(p.maxDepth()),
+			ParseOnHeader:                  p.config.ParseOnHeader,
 			DefaultUrl:                     middleware.GetDefaultUrl(req),
 			Timeout:                        p.timeout,
 			MaxResponseSize:                p.maxResponseSize,
