@@ -184,6 +184,45 @@ class Handler(BaseHTTPRequestHandler):
                         TRACK_CURRENT[0] -= 1
                 return
 
+        parts = self.path.split('?', 1)[0].split('/')
+        if len(parts) == 3 and parts[1] == 'parse-on-header':
+            # /parse-on-header/<esi|plain|nested|case> (#188): a checked-in
+            # HTML fixture with `Edge-control: dca=esi` for "esi"/"nested",
+            # a case-insensitive comma-separated signal for "case", and no
+            # header for "plain". The nested page includes both fragments
+            # so the parser's ParseOnHeader flag decides whether each
+            # fragment's own <esi:include> is expanded.
+            modes = {
+                'esi': ('parse-on-header.html', 'dca=esi'),
+                'plain': ('parse-on-header.html', None),
+                'nested': ('parse-on-header-nested.html', 'dca=esi'),
+                'case': ('parse-on-header.html', 'no-cache, DCA=ESI'),
+                'nonsignal': ('parse-on-header.html', 'max-age=60'),
+            }
+            if parts[2] in modes:
+                name, edge_control = modes[parts[2]]
+                # Resolve next to this script, not against the process CWD,
+                # so a missing fixture is a loud 500 rather than an empty
+                # 200 body that looks like a parsing bug.
+                fixture = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+                try:
+                    with open(fixture, 'rb') as fh:
+                        body = fh.read()
+                except OSError:
+                    self.send_error(500, 'missing parse-on-header fixture')
+                    return
+                try:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html')
+                    if edge_control is not None:
+                        self.send_header('Edge-control', edge_control)
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+
         if self.path == '/track/reset':
             # Control endpoint for test.sh (#214), proxied through the
             # nginx /track/ location. text/plain.
