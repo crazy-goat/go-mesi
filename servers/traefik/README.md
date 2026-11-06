@@ -148,7 +148,7 @@ http:
 `maxBodySize` caps the **parent** HTML page, in bytes, that the plugin buffers before it runs ESI on it (#538). Without it a very large upstream response is held completely in memory. It is separate from `maxResponseSize`, which caps each include.
 
 - **Default / absent:** `0` = unlimited (the behaviour before #538).
-- **Scope:** only `text/html` responses are counted. `HEAD` requests are never limited.
+- **Scope:** only `text/html` responses are counted. With `parseOnHeader: true`, only pages carrying `Edge-control: dca=esi` are counted, because the others are never parsed. `HEAD` requests are never limited.
 - **`onOversize: pass`** (default): the page is sent to the client unchanged, without ESI processing, and a warning is logged.
 - **`onOversize: error`**: an error is logged and the client gets `502 Bad Gateway`. The rest of the upstream body is read and dropped, not buffered.
 - If the upstream `Content-Length` is known and over the limit, the decision is made before anything is buffered; otherwise when the buffered size crosses the limit.
@@ -162,6 +162,47 @@ http:
         mesi:
           maxBodySize: 1048576 # 1 MiB parent page
           onOversize: pass     # or: error
+```
+
+## Parse On Header
+
+`parseOnHeader: true` makes ESI processing conditional on the upstream
+response. Only `text/html` responses carrying `Edge-control: dca=esi` are
+parsed; every other response is passed through unchanged, byte for byte.
+
+- **Default / absent:** `false` — every `text/html` response is parsed
+  (backward compatible).
+- **Header matching:** the value is matched case-insensitively and may be a
+  comma-separated list, matching `mesi.IsEsiResponse` (the same rule nested
+  includes use). `Edge-Control` and `Edge-control` are the same header to
+  `http.Header.Get`.
+- **Pass-through:** an unsignalled HTML page keeps its upstream status,
+  headers and body. The plugin does not fetch its includes and does not add or
+  overwrite ESI response headers such as `Surrogate-Control`.
+- **Fragments:** the flag is also passed to
+  `EsiParserConfig.ParseOnHeader`, so a fetched fragment is parsed only when
+  its own response carries the header.
+- **Body limit:** `maxBodySize` only bounds pages that are actually parsed. An
+  unsignalled page is exempt from the cap
+  (`middleware.ResponseWriter.LimitOnlyIf`), but it is still buffered in full
+  by the shared response writer, so the cap is not a memory guard for pages
+  that are not parsed (same behaviour as the standalone proxy).
+- **Known cache caveat:** with a cache backend enabled, the core cache stores
+  only the fragment body, and a cache hit returns `isEsiResponse=false`
+  (`mesi/fetch.go`), so a signalling fragment is parsed on the first request
+  but its nested includes stay raw on later cached requests. Do not combine
+  `cacheBackend` with `parseOnHeader` until the core caches the ESI signal,
+  or avoid nested includes in cached fragments.
+
+```yaml
+http:
+  middlewares:
+    mesi:
+      plugin:
+        mesi:
+          # Only pages that opt in with Edge-control: dca=esi are
+          # parsed; everything else is a plain proxy pass-through.
+          parseOnHeader: true
 ```
 
 ## Response Size
@@ -476,6 +517,7 @@ http:
 | `maxWorkers` | int | `0` (`runtime.NumCPU()*4`) | Token-processing drain-pool cap per page-render parse/nesting level; each nested parse creates its own pool. Explicit `0` and absent both select the core library default (unlike `maxConcurrentRequests`, where `0` means unlimited); range `[0, 999999999]`. Negative values fail middleware creation rather than silently becoming the default (#456); over-cap values fail creation, decode-invalid values fail config loading. |
 | `maxBodySize` | int64 | `0` (unlimited) | Size cap in **bytes** for the **parent** HTML body that is buffered for ESI processing (#538); not the per-include `maxResponseSize`. Absent = unlimited. A negative value fails middleware creation. |
 | `onOversize` | string | `pass` | What happens when the parent body is over `maxBodySize`: `pass` sends it unchanged without ESI processing and logs a warning, `error` logs an error and answers `502 Bad Gateway`. Other values fail middleware creation. |
+| `parseOnHeader` | bool | `false` | Only parse `text/html` responses carrying `Edge-control: dca=esi` (case-insensitive, comma-separated list). Other responses are passed through unchanged; `maxBodySize` applies only to parsed pages. Absent and `false` are equivalent. |
 | `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
 | `debug` | bool | `false` | Enable verbose core diagnostics (`parse_start`, `include_*`, `fetch_*`) on stderr, captured in Traefik's logs. Absent and `false` are equivalent. Logs include every include URL — avoid in production |
 | `includeErrorMarker` | string | `""` | String rendered for failed includes (empty = silent) |

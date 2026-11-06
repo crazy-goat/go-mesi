@@ -330,6 +330,15 @@ func main() {
 		_, _ = w.Write([]byte(HtmlIncludeTemplate))
 	}))
 
+	// /esiheader serves the HTML page above with `Edge-control: dca=esi`,
+	// the upstream signal the parseOnHeader option requires. The root page
+	// stays header-free, so /esiheader is the controlled counter-fixture.
+	http.HandleFunc("/esiheader", echoHeaders(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Edge-control", "dca=esi")
+		_, _ = w.Write([]byte(HtmlTemplate))
+	}))
+
 	http.HandleFunc("/plain", echoHeaders(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte(PlainTextTemplate))
