@@ -7,6 +7,8 @@
 !cache-test.html
 !comment.html
 !fallback.html
+!include-error-marker.html
+!include-error-onerror.html
 !include.txt
 !index.html
 !large.html
