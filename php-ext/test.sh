@@ -514,6 +514,74 @@ else
     exit 1
 fi
 
+echo ""
+echo "=== Test 28: debug=true emits core DEBUG lines on stderr; false/absent stay silent (#216) ==="
+# A DEDICATED php -S (tests/router.php) on 127.0.0.1:18083 captures fd2 to
+# a log: the main app server's stderr is /dev/null in CI mode, so it cannot
+# prove the destination stream. Same CI/docker split as the slow (#181) and
+# bytes (#201) servers above. The three debug routes run in a fixed order:
+# false/absent first (the log must have zero DEBUG lines), true last (the
+# log must gain at least one) — proving the key flips the core logger.
+DEBUG_ERR=""
+DEBUG_PID=""
+if [ "${CI:-}" = "true" ]; then
+  DEBUG_ERR=$(mktemp)
+  php -d extension=mesi -S 127.0.0.1:18083 "$(dirname "${BASH_SOURCE[0]}")/tests/router.php" >/dev/null 2>"$DEBUG_ERR" &
+  DEBUG_PID=$!
+  for i in $(seq 1 50); do
+    if (exec 3<>/dev/tcp/127.0.0.1/18083) 2>/dev/null; then break; fi
+    sleep 0.2
+  done
+else
+  docker compose exec -d php-ext sh -c 'php -S 0.0.0.0:18083 /app/tests/router.php >/dev/null 2>/tmp/mesi-debug.err'
+  for i in $(seq 1 50); do
+    if docker compose exec -T php-ext php -r '$c=@fsockopen("127.0.0.1",18083,$e,$s,0.2); if($c){fclose($c);echo "ready";}' 2>/dev/null | grep -q ready; then
+      break
+    fi
+    sleep 0.2
+  done
+fi
+
+debug_request() {
+  if [ "${CI:-}" = "true" ]; then
+    curl -s "http://127.0.0.1:18083/$1"
+  else
+    docker compose exec -T php-ext php -r "echo file_get_contents('http://127.0.0.1:18083/$1');"
+  fi
+}
+
+debug_log_count() {
+  if [ "${CI:-}" = "true" ]; then
+    grep -c "DEBUG parse_start" "$DEBUG_ERR" 2>/dev/null || true
+  else
+    docker compose exec -T php-ext sh -c 'grep -c "DEBUG parse_start" /tmp/mesi-debug.err 2>/dev/null || true'
+  fi
+}
+
+RESP_OFF=$(debug_request debug-off)
+RESP_ABSENT=$(debug_request debug-absent)
+BEFORE=$(debug_log_count)
+RESP_ON=$(debug_request debug-on)
+AFTER=$(debug_log_count)
+
+if [ "$RESP_OFF" = "<p>debug-off</p>" ] \
+   && [ "$RESP_ABSENT" = "<p>debug-absent</p>" ] \
+   && [ "$RESP_ON" = "<p>debug-on</p>" ] \
+   && [ "${BEFORE:-0}" -eq 0 ] && [ "${AFTER:-0}" -gt 0 ]; then
+    echo "PASS: debug=false/absent silent (DEBUG lines: $BEFORE), debug=true emitted them on stderr ($AFTER)"
+else
+    echo "FAIL: debug routing broken (off='$RESP_OFF', absent='$RESP_ABSENT', on='$RESP_ON', DEBUG lines before=$BEFORE after=$AFTER)"
+    [ -n "$DEBUG_PID" ] && kill "$DEBUG_PID" 2>/dev/null
+    [ "${CI:-}" != "true" ] && docker compose down
+    exit 1
+fi
+
+if [ -n "$DEBUG_PID" ]; then
+    kill "$DEBUG_PID" 2>/dev/null || true
+    wait "$DEBUG_PID" 2>/dev/null || true
+fi
+[ -n "$DEBUG_ERR" ] && rm -f "$DEBUG_ERR"
+
 if [ "${CI:-}" != "true" ]; then
   docker compose down -v
 fi
