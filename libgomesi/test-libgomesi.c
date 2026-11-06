@@ -607,6 +607,67 @@ int main(void) {
         }
     }
 
+    /* ---- #165: includeErrorMarker through ParseJson ----
+     *
+     * The marker is rendered only for a failed include with neither
+     * onerror="continue" nor a fallback body. Absent/empty keeps the
+     * historical silent output. A loopback port that was bound and then
+     * closed gives a deterministic connection-refused failure.
+     */
+    {
+        printf("Test 23m: ParseJson includeErrorMarker rendered for failed include\n");
+        frag_server_t srv;
+        if (frag_server_start(&srv, 0) != 0) {
+            printf("  FAIL: could not reserve a closed loopback port\n");
+            failed++;
+        } else {
+            int port = srv.port;
+            frag_server_stop(&srv);
+            char src[256];
+            snprintf(src, sizeof(src),
+                     "before<esi:include src=\"http://127.0.0.1:%d/frag\" />after",
+                     port);
+            char *r = ParseJson(src, "{\"maxDepth\":5,\"blockPrivateIPs\":false,"
+                                     "\"includeErrorMarker\":\"<!-- ESI_MARKER -->\"}");
+            if (r == NULL) {
+                printf("  FAIL: ParseJson returned NULL\n");
+                failed++;
+            } else if (strstr(r, "<!-- ESI_MARKER -->") == NULL) {
+                printf("  FAIL: marker not rendered, got: %s\n", r);
+                failed++;
+            } else {
+                printf("  PASS: marker rendered in place of the failed include\n");
+            }
+            if (r) FreeString(r);
+        }
+    }
+    {
+        printf("Test 23n: ParseJson absent includeErrorMarker stays silent\n");
+        frag_server_t srv;
+        if (frag_server_start(&srv, 0) != 0) {
+            printf("  FAIL: could not reserve a closed loopback port\n");
+            failed++;
+        } else {
+            int port = srv.port;
+            frag_server_stop(&srv);
+            char src[256];
+            snprintf(src, sizeof(src),
+                     "before<esi:include src=\"http://127.0.0.1:%d/frag\" />after",
+                     port);
+            char *r = ParseJson(src, "{\"maxDepth\":5,\"blockPrivateIPs\":false}");
+            if (r == NULL) {
+                printf("  FAIL: ParseJson returned NULL\n");
+                failed++;
+            } else if (strcmp(r, "beforeafter") != 0) {
+                printf("  FAIL: absent marker must render nothing, got: %s\n", r);
+                failed++;
+            } else {
+                printf("  PASS: absent marker kept the failed include silent\n");
+            }
+            if (r) FreeString(r);
+        }
+    }
+
     /* ---- #196: shared-client yield for allowPrivateIPsForAllowedHosts ----
      *
      * The PHP extension (and any C consumer) runs with the shared HTTP

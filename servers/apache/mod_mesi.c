@@ -7,6 +7,8 @@
 #include "util_filter.h"
 #include "apr_strings.h"
 
+#include "parse_json_config.h"
+
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -187,6 +189,12 @@ typedef struct {
     // sent to libgomesi through ParseJson so fetched fragments follow the
     // same rule.
     int parse_on_header; // -1=unset, 0=off, 1=on
+    // Marker rendered in place of a failed <esi:include> when the tag
+    // has neither onerror="continue" nor a fallback body (#165). NULL
+    // (unset) or "" (explicit empty) = silent, the pre-#165 behaviour.
+    // Raw operator-supplied HTML: inserted into the response verbatim.
+    // Travels to libgomesi through ParseJson as "includeErrorMarker".
+    const char *include_error_marker;
 } mesi_config;
 
 // Default memory cache size when MesiCacheSize is not set.
@@ -288,6 +296,7 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     conf->max_workers = -1;             // -1 = unset: legacy parse path, libgomesi leaves 0 = library default NumCPU*4 (pre-#171 behaviour)
     conf->debug = -1;                   // -1 = unset: parser stays silent (pre-#173 behaviour)
     conf->parse_on_header = -1;         // -1 = unset: always parse HTML (pre-#172 behaviour)
+    conf->include_error_marker = NULL;  // NULL = silent (pre-#165 behaviour)
     return conf;
 }
 
@@ -361,6 +370,12 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     conf->parse_on_header = (add->parse_on_header != -1)
                                 ? add->parse_on_header
                                 : base->parse_on_header;
+    // Include error marker: child wins when explicitly set (including an
+    // explicit empty string, whose non-NULL pointer clears an inherited
+    // marker); NULL sentinel inherits.
+    conf->include_error_marker = add->include_error_marker
+                                     ? add->include_error_marker
+                                     : base->include_error_marker;
     return conf;
 }
 
@@ -1028,6 +1043,52 @@ static const char *parse_nonneg_off(apr_pool_t *pool, const char *arg,
                             directive, arg, (apr_int64_t)min, (apr_int64_t)max);
     }
     *out = val;
+    return NULL;
+}
+
+// MesiIncludeErrorMarker — raw HTML rendered in place of a failed
+// <esi:include> that has neither onerror="continue" nor a fallback body
+// (#165). AP_INIT_RAW_ARGS, server context. Unset (NULL) and explicit ""
+// both mean silent (the pre-#165 behaviour); an explicit empty value is
+// still stored as a non-NULL pointer so a vhost can clear a marker
+// inherited from the global config.
+//
+// RAW_ARGS + ap_getword_conf() rather than TAKE1: Apache's TAKE1 parser
+// rejects an empty word before the setter runs, so the documented
+// `MesiIncludeErrorMarker ""` (explicit clear) could never load.
+// ap_getword_conf() strips one layer of quotes and returns a non-NULL
+// empty string for `""`, while a genuinely missing argument is reported
+// below. Exactly one token is accepted; a marker containing spaces must
+// be quoted, and trailing tokens (`"" extra`) fail config load instead of
+// being silently folded into the marker. The value is inserted into the
+// response verbatim and is JSON-escaped by mesi_json_string() when it
+// travels through ParseJson, so quotes/backslashes/control characters
+// cannot break the config blob.
+static const char *set_include_error_marker(cmd_parms *cmd, void *cfg, const char *arg) {
+    mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
+    const char *p = arg;
+    // Apache trims config lines, but skip any leading whitespace anyway
+    // so a whitespace-only value is reported as missing, not as an empty
+    // marker (the same ASCII whitespace set ap_getword_conf() uses).
+    while (p && *p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\v' || *p == '\f')) {
+        p++;
+    }
+    if (!p || *p == '\0') {
+        return "MesiIncludeErrorMarker requires exactly one argument "
+               "(quote a marker containing spaces; use \"\" for explicit silent)";
+    }
+    const char *rest = p;
+    const char *marker = ap_getword_conf(cmd->pool, &rest);
+    // ap_getword_conf() already skipped whitespace after the token: a
+    // non-empty rest is a trailing argument. `"" ""` is rejected too,
+    // because the second (empty) token is still present in the raw line.
+    if (*rest != '\0') {
+        return "MesiIncludeErrorMarker takes exactly one argument "
+               "(quote a marker containing spaces; use \"\" for explicit silent)";
+    }
+    // `marker` lives in cmd->pool; store it directly (same lifetime as
+    // the server config). It is non-NULL even for `""`.
+    conf->include_error_marker = marker;
     return NULL;
 }
 
@@ -1730,47 +1791,12 @@ static const char *build_request_ctx_json(request_rec *r, mesi_config *conf, apr
     return buf;
 }
 
-// json_string renders s as a quoted, JSON-escaped string for the
-// ParseJson config blob: '"' / '\\' escaped, bytes < 0x20 as \u00XX.
-// Sized for the worst case (6 output bytes per input byte + quotes +
-// NUL) because APR pools have no realloc.
-static const char *json_string(apr_pool_t *pool, const char *s) {
-    if (!s) {
-        s = "";
-    }
-    apr_size_t len = strlen(s);
-    char *buf = apr_palloc(pool, len * 6 + 3);
-    char *w = buf;
-    *w++ = '"';
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        if (*p == '"') {
-            *w++ = '\\';
-            *w++ = '"';
-        } else if (*p == '\\') {
-            *w++ = '\\';
-            *w++ = '\\';
-        } else if (*p < 0x20) {
-            static const char hex[] = "0123456789abcdef";
-            *w++ = '\\';
-            *w++ = 'u';
-            *w++ = '0';
-            *w++ = '0';
-            *w++ = hex[(*p >> 4) & 0xf];
-            *w++ = hex[*p & 0xf];
-        } else {
-            *w++ = (char)*p;
-        }
-    }
-    *w++ = '"';
-    *w = '\0';
-    return buf;
-}
-
 // build_parse_json_config renders the fully-resolved per-request parse
 // configuration into the JSON blob accepted by libgomesi's ParseJson
 // entry point (#167). Only called when MesiTimeout,
-// MesiMaxResponseSize, MesiMaxConcurrentRequests, MesiMaxWorkers or
-// MesiDebug is set (those are what route a request through ParseJson).
+// MesiMaxResponseSize, MesiMaxConcurrentRequests, MesiMaxWorkers,
+// MesiDebug or a non-empty MesiIncludeErrorMarker is set (those are what
+// route a request through ParseJson).
 // Every other key mirrors exactly what the legacy positional path would
 // pass, so behaviour is identical except for the directives the blob
 // carries.
@@ -1793,6 +1819,13 @@ static const char *json_string(apr_pool_t *pool, const char *s) {
 // configured, mirroring ParseWithConfigCtx's contract (absent/empty
 // template → URL-only keys; requestCtx is passed through verbatim as
 // pre-rendered JSON, omitted when build_request_ctx_json returned "").
+// includeErrorMarker is included only when the directive is set to a
+// non-empty value (#165) — absent/empty means silent, so the key stays
+// out of the blob and the core leaves its zero value untouched.
+// The blob itself is rendered by mesi_build_parse_json_config()
+// (parse_json_config.h) so the C unit tests exercise the real assembly
+// instead of a copy; see that header for the placeholder/argument-safety
+// rationale.
 static const char *build_parse_json_config(mesi_config *conf,
                                            int depth,
                                            const char *base_url,
@@ -1801,62 +1834,23 @@ static const char *build_parse_json_config(mesi_config *conf,
                                            int allow_private_for_allowed,
                                            const char *ctx_json,
                                            apr_pool_t *pool) {
-    const char *timeout_part = "";
-    const char *mrs_part = "";
-    const char *maxcr_part = "";
-    const char *maxw_part = "";
-    const char *debug_part = "";
-    const char *poh_part = "";
-    const char *tmpl_part = "";
-    const char *ctx_part = "";
-    if (conf->timeout_seconds != -1) {
-        timeout_part = apr_psprintf(pool, ",\"timeoutSeconds\":%d",
-                                    conf->timeout_seconds);
-    }
-    if (conf->max_response_size != -1) {
-        mrs_part = apr_psprintf(pool, ",\"maxResponseSize\":%" APR_INT64_T_FMT,
-                                (apr_int64_t)conf->max_response_size);
-    }
-    if (conf->max_concurrent_requests != -1) {
-        maxcr_part = apr_psprintf(pool, ",\"maxConcurrentRequests\":%d",
-                                  conf->max_concurrent_requests);
-    }
-    if (conf->max_workers != -1) {
-        maxw_part = apr_psprintf(pool, ",\"maxWorkers\":%d",
-                                 conf->max_workers);
-    }
-    if (conf->debug != -1) {
-        debug_part = apr_psprintf(pool, ",\"debug\":%s",
-                                  conf->debug ? "true" : "false");
-    }
-    if (conf->parse_on_header != -1) {
-        poh_part = apr_psprintf(pool, ",\"parseOnHeader\":%s",
-                                conf->parse_on_header ? "true" : "false");
-    }
-    if (conf->cache_key_template && conf->cache_key_template[0] != '\0') {
-        tmpl_part = apr_psprintf(pool, ",\"cacheKeyTemplate\":%s",
-                                 json_string(pool, conf->cache_key_template));
-        if (ctx_json && ctx_json[0] != '\0') {
-            ctx_part = apr_psprintf(pool, ",\"requestCtx\":%s", ctx_json);
-        }
-    }
-    return apr_psprintf(pool,
-                        "{\"maxDepth\":%d,\"defaultUrl\":%s,\"allowedHosts\":%s,"
-                        "\"blockPrivateIPs\":%s,\"allowPrivateIPsForAllowedHosts\":%s"
-                        "%s%s%s%s%s%s%s%s}",
-                        depth,
-                        json_string(pool, base_url),
-                        json_string(pool, allowed_hosts_str),
-                        block_private ? "true" : "false",
-                        allow_private_for_allowed ? "true" : "false",
-                        timeout_part,
-                        mrs_part,
-                        maxcr_part,
-                        maxw_part,
-                        debug_part,
-                        poh_part,
-                        tmpl_part,
-                        ctx_part);
+    mesi_parse_json_config cfg = {
+        .depth = depth,
+        .base_url = base_url,
+        .allowed_hosts = allowed_hosts_str,
+        .block_private_ips = block_private,
+        .allow_private_for_allowed = allow_private_for_allowed,
+        .request_ctx_json = ctx_json,
+        .timeout_seconds = conf->timeout_seconds,
+        .max_response_size = conf->max_response_size,
+        .max_concurrent_requests = conf->max_concurrent_requests,
+        .max_workers = conf->max_workers,
+        .debug = conf->debug,
+        .parse_on_header = conf->parse_on_header,
+        .include_error_marker = conf->include_error_marker,
+        .cache_key_template = conf->cache_key_template,
+    };
+    return mesi_build_parse_json_config(pool, &cfg);
 }
 
 static int mesi_request_handler(request_rec *r) {
@@ -2158,26 +2152,27 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
 
     // MesiTimeout (#167) / MesiMaxResponseSize (#169) /
     // MesiMaxConcurrentRequests (#170) / MesiMaxWorkers (#171) /
-    // MesiDebug (#173) / MesiParseOnHeader (#172): when any is set AND
-    // libgomesi exports ParseJson, the whole parse is routed through the
-    // JSON entry point so timeoutSeconds / maxResponseSize /
-    // maxConcurrentRequests / maxWorkers / debug / parseOnHeader reach
-    // the core. The blob carries every other
-    // resolved setting (depth, base URL, SSRF flags, optional cache key
-    // template + request context), so behaviour matches the positional
-    // path exactly except for the directives it carries — and each key
-    // is only rendered when its directive is configured, so the other
+    // MesiDebug (#173) / MesiParseOnHeader (#172) /
+    // MesiIncludeErrorMarker (#165): when any is set AND libgomesi
+    // exports ParseJson, the whole parse is routed through the JSON entry
+    // point so timeoutSeconds / maxResponseSize / maxConcurrentRequests /
+    // maxWorkers / debug / parseOnHeader / includeErrorMarker reach the
+    // core. The blob carries every other resolved setting (depth, base
+    // URL, SSRF flags, optional cache key template + request context), so
+    // behaviour matches the positional path exactly except for the
+    // directives it carries — and each key is only rendered when its
+    // directive is configured, so the other
     // directives' absent keys keep their positional-path defaults
-    // (30s / unlimited / unlimited / library default / debug off). When
-    // the symbol is missing (older libgomesi.so), fall through to the
-    // legacy chain below with a logged warning per configured
-    // directive — the directive is ignored (its pre-existing default
+    // (30s / unlimited / unlimited / library default / debug off /
+    // silent). When the symbol is missing (older libgomesi.so), fall
+    // through to the legacy chain below with a logged warning per
+    // configured directive — the directive is ignored (its pre-existing default
     // applies), never a crash and never a silently wrong config.
     // used_parse_json distinguishes "not attempted" from "ParseJson
     // returned NULL" — a NULL must NOT fall back silently; it fails the
     // request closed below (config errors are already logged Go-side).
     int used_parse_json = 0;
-    if (conf->timeout_seconds != -1 || conf->max_response_size != -1 || conf->max_concurrent_requests != -1 || conf->max_workers != -1 || conf->debug != -1 || conf->parse_on_header != -1) {
+    if (conf->timeout_seconds != -1 || conf->max_response_size != -1 || conf->max_concurrent_requests != -1 || conf->max_workers != -1 || conf->debug != -1 || conf->parse_on_header != -1 || (conf->include_error_marker && conf->include_error_marker[0] != '\0')) {
         if (EsiParseJson) {
             used_parse_json = 1;
             const char *req_ctx_json = build_request_ctx_json(f->r, conf, f->r->pool);
@@ -2221,6 +2216,12 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
                               "MesiParseOnHeader ignored for fetched fragments (the top-level "
                               "response filter still honours it; nested includes always parse, "
                               "the pre-#172 behaviour). Upgrade libgomesi.so.");
+            }
+            if (conf->include_error_marker && conf->include_error_marker[0] != '\0') {
+                ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, f->r,
+                              "mesi: MesiIncludeErrorMarker set but libgomesi lacks ParseJson; "
+                              "MesiIncludeErrorMarker ignored (failed includes stay silent, "
+                              "the pre-#165 behaviour). Upgrade libgomesi.so.");
             }
         }
     }
@@ -2297,6 +2298,7 @@ static void register_hooks(apr_pool_t *p) {
 static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("EnableMesi", set_enable_mesi, NULL, RSRC_CONF, "Enable or disable the Mesi module"),
     AP_INIT_TAKE1("MesiMaxDepth", set_max_depth, NULL, RSRC_CONF, "Maximum ESI nesting depth (0..10000). Unset=5. 0=passthrough"),
+    AP_INIT_RAW_ARGS("MesiIncludeErrorMarker", set_include_error_marker, NULL, RSRC_CONF, "Raw HTML rendered for a failed ESI include with no onerror/fallback (quote values with spaces; \"\" = explicitly silent; unset = inherit)"),
     AP_INIT_TAKE1("MesiTimeout", set_timeout, NULL, RSRC_CONF, "ESI processing timeout per include in seconds (1..86400). Unset=30"),
     AP_INIT_TAKE1("MesiMaxResponseSize", set_max_response_size, NULL, RSRC_CONF, "Maximum ESI include response body size in bytes (0=unlimited). Unset=unlimited"),
     AP_INIT_TAKE1("MesiMaxBodySize", set_max_body_size, NULL, RSRC_CONF, "Maximum parent response body size in bytes buffered for ESI processing (0=unlimited). Unset=unlimited"),

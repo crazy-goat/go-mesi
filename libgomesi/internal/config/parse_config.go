@@ -30,7 +30,9 @@ const DefaultMaxDepth = 5
 // point leaves in EsiParserConfig.MaxConcurrentRequests), and
 // maxWorkers 0 (the library default runtime.NumCPU()*4 applied Go-side
 // when the value is <= 0 — likewise the value every positional
-// Parse* entry point leaves in EsiParserConfig.MaxWorkers).
+// Parse* entry point leaves in EsiParserConfig.MaxWorkers), and
+// includeErrorMarker "" (silent — the value every positional Parse*
+// entry point leaves in EsiParserConfig.IncludeErrorMarker).
 //
 // Unknown keys are ignored (forward compatibility — a newer caller
 // must be able to talk to an older libgomesi). Type mismatches and
@@ -117,6 +119,14 @@ type ParseConfig struct {
 	// value <= 0 with NO warning, mesi/parser.go — libgomesi fails
 	// loud instead).
 	MaxWorkers *int `json:"maxWorkers"`
+	// IncludeErrorMarker is raw HTML rendered in place of a failed
+	// <esi:include> that has neither onerror="continue" nor a fallback
+	// body. Absent or "" → silent (empty output), byte-identical to
+	// the positional Parse* entry points, which leave
+	// EsiParserConfig.IncludeErrorMarker at its zero value. The value
+	// is inserted into the response verbatim; callers must treat it as
+	// trusted operator configuration.
+	IncludeErrorMarker string `json:"includeErrorMarker"`
 }
 
 // ParseConfigFromJSON decodes the ParseJson config blob. Malformed
