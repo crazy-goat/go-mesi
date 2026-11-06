@@ -41,6 +41,7 @@
 !max-workers-pool.html
 !max-workers-zero.html
 !max-workers-unset.html
+!debug-failed-include.html
 !mw-lvl-1.html
 !mw-lvl-2.html
 !mw-lvl-3.html
