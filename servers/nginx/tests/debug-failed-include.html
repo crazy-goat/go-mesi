@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>ESI Debug Failed Include</title>
+</head>
+<body>
+    <!-- Deliberately missing upstream file: with mesi_debug on the core
+         logs include_failed (and the 404 fetch) to stderr, which Docker
+         captures in `docker compose logs nginx`. The unique name keeps
+         the assertion immune to other test traffic. -->
+    <esi:include src="http://backend:8000/missing-debug-fragment-223.txt" />
+    <p>After failed debug include</p>
+</body>
+</html>
