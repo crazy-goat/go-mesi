@@ -1,0 +1,36 @@
+# Traefik Debug Logging Configuration Example
+#
+# Enables the core parser's verbose diagnostics.
+#
+#   - Default / absent: false — the core discards debug events, so the
+#     plugin writes nothing (absent and explicit false are equivalent).
+#   - When true the core selects its DefaultLogger and writes DEBUG
+#     parse/include/fetch events synchronously to stderr. Traefik
+#     captures stderr in its own log stream (docker logs, journald, ...).
+#   - Scope: every text/html response parsed by this middleware instance;
+#     non-HTML responses are never parsed and never log.
+#   - Security: each line includes the include URL, so enable this only
+#     while diagnosing and turn it off for production traffic when URLs
+#     may carry tokens or other secrets.
+#
+# Usage: include this in Traefik's dynamic configuration.
+
+http:
+  middlewares:
+    mesi-debug:
+      plugin:
+        mesi:
+          debug: true
+
+  routers:
+    my-app:
+      middlewares:
+        - mesi-debug
+      service: my-app
+      rule: Host(`example.com`)
+
+  services:
+    my-app:
+      loadBalancer:
+        servers:
+          - url: http://backend:8080

@@ -86,6 +86,16 @@ http:
       service: test-server
       rule: Host(`maxworkers100.domain.com`)
 
+    # Debug fixture (#225): same backend, core debug logging enabled.
+    # The absent case is the default `mesi` middleware on `domain.com`.
+    debug:
+      middlewares:
+        - mesi-debug
+      entrypoints:
+        - http
+      service: test-server
+      rule: Host(`debug.domain.com`)
+
   services:
     test-server:
       loadBalancer:
@@ -140,3 +150,8 @@ http:
       plugin:
         mesi:
           maxWorkers: 100
+
+    mesi-debug:
+      plugin:
+        mesi:
+          debug: true
