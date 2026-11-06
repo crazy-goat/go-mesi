@@ -14,6 +14,10 @@
 #include <apr_tables.h>
 #include <apr_strings.h>
 
+/* The ParseJson blob builder is shared with mod_mesi.c so these tests
+ * exercise the real rendering code (#165). */
+#include "parse_json_config.h"
+
 static apr_pool_t *pool;
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -405,42 +409,6 @@ static const char *set_include_error_marker(mesi_config *conf, const char *raw) 
     }
     conf->include_error_marker = marker;
     return NULL;
-}
-
-/* json_string — copied verbatim from mod_mesi.c. Renders s as a
- * quoted JSON string for the ParseJson blob: '"' / '\\' escaped,
- * bytes < 0x20 as \u00XX. Used to pin marker escaping (quotes,
- * backslashes, control characters) without a real HTTP request. */
-static const char *json_string(apr_pool_t *pool_arg, const char *s) {
-    if (!s) {
-        s = "";
-    }
-    apr_size_t len = strlen(s);
-    char *buf = apr_palloc(pool_arg, len * 6 + 3);
-    char *w = buf;
-    *w++ = '"';
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        if (*p == '"') {
-            *w++ = '\\';
-            *w++ = '"';
-        } else if (*p == '\\') {
-            *w++ = '\\';
-            *w++ = '\\';
-        } else if (*p < 0x20) {
-            static const char hex[] = "0123456789abcdef";
-            *w++ = '\\';
-            *w++ = 'u';
-            *w++ = '0';
-            *w++ = '0';
-            *w++ = hex[(*p >> 4) & 0xf];
-            *w++ = hex[*p & 0xf];
-        } else {
-            *w++ = (char)*p;
-        }
-    }
-    *w++ = '"';
-    *w = '\0';
-    return buf;
 }
 
 /* MesiTimeout — mirrors set_timeout in mod_mesi.c (#167). Uses
@@ -2669,10 +2637,137 @@ TEST(merge_include_error_marker_child_empty_clears) {
 
 TEST(include_error_marker_json_escapes) {
     /* Quotes and backslashes must survive the ParseJson blob. */
-    ASSERT_STR_EQ(json_string(pool, "<!-- \"err\" \\ path -->"),
+    ASSERT_STR_EQ(mesi_json_string(pool, "<!-- \"err\" \\ path -->"),
                   "\"<!-- \\\"err\\\" \\\\ path -->\"");
     /* Control characters are \u00XX-escaped. */
-    ASSERT_STR_EQ(json_string(pool, "a\nb"), "\"a\\u000ab\"");
+    ASSERT_STR_EQ(mesi_json_string(pool, "a\nb"), "\"a\\u000ab\"");
+}
+
+/* --- ParseJson blob assembly (regression tests, #165/#167–#173) --- */
+
+/* every optional directive set at once must land in the blob. This is the
+ * regression test for #165: the merge that added the marker kept the
+ * seven-%s apr_psprintf format string while passing eight optional parts,
+ * so the last one (requestCtx) was silently dropped and a vhost that
+ * routed through ParseJson lost its cache-key template context — different
+ * Accept-Language values shared one URL-only cache entry. The assertion is
+ * on the exact blob so a dropped or reordered part fails loudly. */
+TEST(parse_json_blob_all_optional_keys) {
+    mesi_parse_json_config cfg = {
+        .depth = 3,
+        .base_url = "http://backend:8080/",
+        .allowed_hosts = "backend other",
+        .block_private_ips = 1,
+        .allow_private_for_allowed = 0,
+        .request_ctx_json = "{\"ctx\":{\"header:Accept-Language\":\"pl\"}}",
+        .timeout_seconds = 7,
+        .max_response_size = 1048576,
+        .max_concurrent_requests = 4,
+        .max_workers = 8,
+        .debug = 1,
+        .include_error_marker = "<!-- err -->",
+        .cache_key_template = "{header:Accept-Language}",
+    };
+    const char *blob = mesi_build_parse_json_config(pool, &cfg);
+    ASSERT_STR_EQ(blob,
+                  "{\"maxDepth\":3"
+                  ",\"defaultUrl\":\"http://backend:8080/\""
+                  ",\"allowedHosts\":\"backend other\""
+                  ",\"blockPrivateIPs\":true"
+                  ",\"allowPrivateIPsForAllowedHosts\":false"
+                  ",\"timeoutSeconds\":7"
+                  ",\"maxResponseSize\":1048576"
+                  ",\"maxConcurrentRequests\":4"
+                  ",\"maxWorkers\":8"
+                  ",\"debug\":true"
+                  ",\"includeErrorMarker\":\"<!-- err -->\""
+                  ",\"cacheKeyTemplate\":\"{header:Accept-Language}\""
+                  ",\"requestCtx\":{\"ctx\":{\"header:Accept-Language\":\"pl\"}}}");
+    /* Explicitly pin the two parts that share the "last argument" slot the
+     * 7-%s bug dropped: the request context must survive, and it must come
+     * after the template that consumes it. */
+    ASSERT_STR_CONTAINS(blob, ",\"requestCtx\":{");
+    ASSERT_STR_CONTAINS(blob, "\"cacheKeyTemplate\":\"{header:Accept-Language}\"");
+    assert(strstr(blob, "\"cacheKeyTemplate\"") < strstr(blob, "\"requestCtx\""));
+}
+
+/* A config with every optional directive unset keeps the legacy blob: no
+ * optional key at all (the core then applies its positional-path
+ * defaults). */
+TEST(parse_json_blob_minimal) {
+    mesi_parse_json_config cfg = {
+        .depth = 5,
+        .base_url = "http://127.0.0.1/",
+        .allowed_hosts = "backend",
+        .block_private_ips = 0,
+        .allow_private_for_allowed = 1,
+        .request_ctx_json = "",
+        .timeout_seconds = -1,
+        .max_response_size = -1,
+        .max_concurrent_requests = -1,
+        .max_workers = -1,
+        .debug = -1,
+        .include_error_marker = NULL,
+        .cache_key_template = NULL,
+    };
+    const char *blob = mesi_build_parse_json_config(pool, &cfg);
+    ASSERT_STR_EQ(blob,
+                  "{\"maxDepth\":5"
+                  ",\"defaultUrl\":\"http://127.0.0.1/\""
+                  ",\"allowedHosts\":\"backend\""
+                  ",\"blockPrivateIPs\":false"
+                  ",\"allowPrivateIPsForAllowedHosts\":true}");
+    ASSERT_NULL(strstr(blob, "\"requestCtx\""));
+    ASSERT_NULL(strstr(blob, "\"cacheKeyTemplate\""));
+    ASSERT_NULL(strstr(blob, "\"includeErrorMarker\""));
+}
+
+/* requestCtx is only meaningful next to a cache key template: without a
+ * configured template the core uses URL-only keys, so the context must not
+ * be rendered (mirrors ParseWithConfigCtx's contract). */
+TEST(parse_json_blob_request_ctx_needs_template) {
+    mesi_parse_json_config cfg = {
+        .depth = 5,
+        .base_url = "http://127.0.0.1/",
+        .allowed_hosts = "backend",
+        .block_private_ips = 0,
+        .allow_private_for_allowed = 0,
+        .request_ctx_json = "{\"ctx\":{\"header:Accept-Language\":\"pl\"}}",
+        .timeout_seconds = -1,
+        .max_response_size = -1,
+        .max_concurrent_requests = -1,
+        .max_workers = -1,
+        .debug = -1,
+        .include_error_marker = NULL,
+        .cache_key_template = "",
+    };
+    const char *blob = mesi_build_parse_json_config(pool, &cfg);
+    ASSERT_NULL(strstr(blob, "\"requestCtx\""));
+    ASSERT_NULL(strstr(blob, "\"cacheKeyTemplate\""));
+}
+
+/* A template without a resolved context still renders the template (the
+ * core then fails the request if a placeholder cannot be resolved) but
+ * omits requestCtx. */
+TEST(parse_json_blob_template_without_ctx) {
+    mesi_parse_json_config cfg = {
+        .depth = 5,
+        .base_url = "http://127.0.0.1/",
+        .allowed_hosts = "backend",
+        .block_private_ips = 0,
+        .allow_private_for_allowed = 0,
+        .request_ctx_json = "",
+        .timeout_seconds = -1,
+        .max_response_size = -1,
+        .max_concurrent_requests = -1,
+        .max_workers = -1,
+        .debug = -1,
+        .include_error_marker = NULL,
+        .cache_key_template = "{header:Accept-Language}",
+    };
+    const char *blob = mesi_build_parse_json_config(pool, &cfg);
+    ASSERT_STR_CONTAINS(blob, "\"cacheKeyTemplate\":\"{header:Accept-Language}\"");
+    ASSERT_NULL(strstr(blob, "\"requestCtx\""));
 }
 
 /* --- MesiTimeout directive tests (#167) --- */
@@ -3709,6 +3804,12 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_include_error_marker_child_inherits);
     RUN_TEST(merge_include_error_marker_child_empty_clears);
     RUN_TEST(include_error_marker_json_escapes);
+
+    printf("\nTesting ParseJson blob assembly (#165/#167-#173):\n");
+    RUN_TEST(parse_json_blob_all_optional_keys);
+    RUN_TEST(parse_json_blob_minimal);
+    RUN_TEST(parse_json_blob_request_ctx_needs_template);
+    RUN_TEST(parse_json_blob_template_without_ctx);
 
     printf("\nTesting set_timeout() (#167):\n");
     RUN_TEST(timeout_default_unset);

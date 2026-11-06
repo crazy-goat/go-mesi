@@ -7,6 +7,8 @@
 #include "util_filter.h"
 #include "apr_strings.h"
 
+#include "parse_json_config.h"
+
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1036,9 +1038,9 @@ static const char *parse_nonneg_off(apr_pool_t *pool, const char *arg,
 // below. Exactly one token is accepted; a marker containing spaces must
 // be quoted, and trailing tokens (`"" extra`) fail config load instead of
 // being silently folded into the marker. The value is inserted into the
-// response verbatim and is JSON-escaped by json_string() when it travels
-// through ParseJson, so quotes/backslashes/control characters cannot
-// break the config blob.
+// response verbatim and is JSON-escaped by mesi_json_string() when it
+// travels through ParseJson, so quotes/backslashes/control characters
+// cannot break the config blob.
 static const char *set_include_error_marker(cmd_parms *cmd, void *cfg, const char *arg) {
     mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     const char *p = arg;
@@ -1766,47 +1768,12 @@ static const char *build_request_ctx_json(request_rec *r, mesi_config *conf, apr
     return buf;
 }
 
-// json_string renders s as a quoted, JSON-escaped string for the
-// ParseJson config blob: '"' / '\\' escaped, bytes < 0x20 as \u00XX.
-// Sized for the worst case (6 output bytes per input byte + quotes +
-// NUL) because APR pools have no realloc.
-static const char *json_string(apr_pool_t *pool, const char *s) {
-    if (!s) {
-        s = "";
-    }
-    apr_size_t len = strlen(s);
-    char *buf = apr_palloc(pool, len * 6 + 3);
-    char *w = buf;
-    *w++ = '"';
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        if (*p == '"') {
-            *w++ = '\\';
-            *w++ = '"';
-        } else if (*p == '\\') {
-            *w++ = '\\';
-            *w++ = '\\';
-        } else if (*p < 0x20) {
-            static const char hex[] = "0123456789abcdef";
-            *w++ = '\\';
-            *w++ = 'u';
-            *w++ = '0';
-            *w++ = '0';
-            *w++ = hex[(*p >> 4) & 0xf];
-            *w++ = hex[*p & 0xf];
-        } else {
-            *w++ = (char)*p;
-        }
-    }
-    *w++ = '"';
-    *w = '\0';
-    return buf;
-}
-
 // build_parse_json_config renders the fully-resolved per-request parse
 // configuration into the JSON blob accepted by libgomesi's ParseJson
 // entry point (#167). Only called when MesiTimeout,
-// MesiMaxResponseSize, MesiMaxConcurrentRequests, MesiMaxWorkers or
-// MesiDebug is set (those are what route a request through ParseJson).
+// MesiMaxResponseSize, MesiMaxConcurrentRequests, MesiMaxWorkers,
+// MesiDebug or a non-empty MesiIncludeErrorMarker is set (those are what
+// route a request through ParseJson).
 // Every other key mirrors exactly what the legacy positional path would
 // pass, so behaviour is identical except for the directives the blob
 // carries.
@@ -1829,6 +1796,10 @@ static const char *json_string(apr_pool_t *pool, const char *s) {
 // includeErrorMarker is included only when the directive is set to a
 // non-empty value (#165) — absent/empty means silent, so the key stays
 // out of the blob and the core leaves its zero value untouched.
+// The blob itself is rendered by mesi_build_parse_json_config()
+// (parse_json_config.h) so the C unit tests exercise the real assembly
+// instead of a copy; see that header for the placeholder/argument-safety
+// rationale.
 static const char *build_parse_json_config(mesi_config *conf,
                                            int depth,
                                            const char *base_url,
@@ -1837,62 +1808,22 @@ static const char *build_parse_json_config(mesi_config *conf,
                                            int allow_private_for_allowed,
                                            const char *ctx_json,
                                            apr_pool_t *pool) {
-    const char *timeout_part = "";
-    const char *mrs_part = "";
-    const char *maxcr_part = "";
-    const char *maxw_part = "";
-    const char *debug_part = "";
-    const char *marker_part = "";
-    const char *tmpl_part = "";
-    const char *ctx_part = "";
-    if (conf->timeout_seconds != -1) {
-        timeout_part = apr_psprintf(pool, ",\"timeoutSeconds\":%d",
-                                    conf->timeout_seconds);
-    }
-    if (conf->max_response_size != -1) {
-        mrs_part = apr_psprintf(pool, ",\"maxResponseSize\":%" APR_INT64_T_FMT,
-                                (apr_int64_t)conf->max_response_size);
-    }
-    if (conf->max_concurrent_requests != -1) {
-        maxcr_part = apr_psprintf(pool, ",\"maxConcurrentRequests\":%d",
-                                  conf->max_concurrent_requests);
-    }
-    if (conf->max_workers != -1) {
-        maxw_part = apr_psprintf(pool, ",\"maxWorkers\":%d",
-                                 conf->max_workers);
-    }
-    if (conf->debug != -1) {
-        debug_part = apr_psprintf(pool, ",\"debug\":%s",
-                                  conf->debug ? "true" : "false");
-    }
-    if (conf->include_error_marker && conf->include_error_marker[0] != '\0') {
-        marker_part = apr_psprintf(pool, ",\"includeErrorMarker\":%s",
-                                   json_string(pool, conf->include_error_marker));
-    }
-    if (conf->cache_key_template && conf->cache_key_template[0] != '\0') {
-        tmpl_part = apr_psprintf(pool, ",\"cacheKeyTemplate\":%s",
-                                 json_string(pool, conf->cache_key_template));
-        if (ctx_json && ctx_json[0] != '\0') {
-            ctx_part = apr_psprintf(pool, ",\"requestCtx\":%s", ctx_json);
-        }
-    }
-    return apr_psprintf(pool,
-                        "{\"maxDepth\":%d,\"defaultUrl\":%s,\"allowedHosts\":%s,"
-                        "\"blockPrivateIPs\":%s,\"allowPrivateIPsForAllowedHosts\":%s"
-                        "%s%s%s%s%s%s%s}",
-                        depth,
-                        json_string(pool, base_url),
-                        json_string(pool, allowed_hosts_str),
-                        block_private ? "true" : "false",
-                        allow_private_for_allowed ? "true" : "false",
-                        timeout_part,
-                        mrs_part,
-                        maxcr_part,
-                        maxw_part,
-                        debug_part,
-                        marker_part,
-                        tmpl_part,
-                        ctx_part);
+    mesi_parse_json_config cfg = {
+        .depth = depth,
+        .base_url = base_url,
+        .allowed_hosts = allowed_hosts_str,
+        .block_private_ips = block_private,
+        .allow_private_for_allowed = allow_private_for_allowed,
+        .request_ctx_json = ctx_json,
+        .timeout_seconds = conf->timeout_seconds,
+        .max_response_size = conf->max_response_size,
+        .max_concurrent_requests = conf->max_concurrent_requests,
+        .max_workers = conf->max_workers,
+        .debug = conf->debug,
+        .include_error_marker = conf->include_error_marker,
+        .cache_key_template = conf->cache_key_template,
+    };
+    return mesi_build_parse_json_config(pool, &cfg);
 }
 
 static int mesi_request_handler(request_rec *r) {
