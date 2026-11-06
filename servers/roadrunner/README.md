@@ -48,7 +48,7 @@ http:
 | `on_oversize` | string | `"pass"` | What happens when the parent body is over `max_body_size`: `"pass"` sends it unchanged without ESI processing and logs a warning, `"error"` logs an error and answers `502 Bad Gateway`. Other values are rejected. |
 | `max_concurrent_requests` | int | `0` (unlimited) | Maximum concurrent ESI include HTTP fetches within one page render. Includes beyond the cap wait for a slot and are not dropped; negative values and values above `999999999` are rejected. |
 | `max_workers` | int | `0` (`runtime.NumCPU()*4`) | Maximum token-processing drain-pool workers per `MESIParse` call. Each nested parse creates its own pool and inherits the cap; negative values and values above `999999999` are rejected. |
-| `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
+| `include_error_marker` | string | `""` | Raw HTML rendered for a failed include that has no fallback body and no `onerror="continue"`. Never include error details, URLs, hostnames or IP addresses (see the security warning below). |
 | `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`, `"memcached"`. |
 | `cache_size` | int | `10000` | Max entries for memory cache backend. |
 | `cache_ttl` | string | `""` | Default TTL for cached entries, e.g. `"60s"`. |
@@ -96,6 +96,29 @@ http:
   middleware:
     mesi:
       max_response_size: 1048576 # 1 MiB per include
+```
+
+#### Include error marker
+
+`include_error_marker` is raw HTML inserted in place of an `<esi:include>`
+whose processing fails and that has neither a fallback body nor
+`onerror="continue"`. That covers a failed fetch and also parse-time include
+errors that never reach the network, such as an exhausted `max_depth`. The
+default `""` renders nothing, which is the historical behaviour.
+`onerror="continue"` and fallback bodies take precedence, so the marker is not
+rendered for them.
+
+> **Security warning:** the marker is inserted into the page verbatim — it is
+> not escaped or sanitized. Never put error details, exception text, URLs,
+> hostnames or IP addresses in it: the marker is sent to the client and can
+> leak internal topology or upstream diagnostics. Use a static, generic value
+> and keep diagnostics in the server log.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      include_error_marker: "<!-- esi include failed -->"
 ```
 
 #### Maximum parent body size
