@@ -11,6 +11,11 @@ build-test:
 build-php-ext: build-libgomesi
 	cd php-ext && phpize && ./configure --with-gomesi=../libgomesi && make
 
+# #443: macOS only — verifies the @rpath install id on libgomesi.so and, when
+# the extension has been built, its @rpath dependency. Prints SKIP elsewhere.
+check-darwin: build-libgomesi
+	scripts/check-darwin-rpath.sh libgomesi/libgomesi.so $(if $(wildcard php-ext/modules/mesi.so),php-ext/modules/mesi.so)
+
 test-php-ext: build-php-ext
 	cd php-ext && make -f GNUmakefile test
 
