@@ -309,12 +309,11 @@ func resolveMaxResponseSize(v int64) (int64, error) {
 // nginx's MESI_MAX_MAX_CONCURRENT_REQUESTS (#214,
 // servers/nginx/ngx_http_mesi_module.c:76), the PHP extension's
 // MESI_MAX_MAX_CONCURRENT_REQUESTS (php-ext/mesi.c:71) and the CLI's
-// maxMaxConcurrentRequests (cli/mesi-cli.go:72). Neither the core (a
-// bare int documented only as "0 = unlimited", mesi/config.go:33) nor
-// Caddy (uncapped strconv.Atoi, servers/caddy/mesi.go:347-355 — the
-// #452 gap family, deliberately not inherited, same reasoning as
-// #187's timeout upper bound) defines a maximum: the bound is derived
-// from the transport — the value crosses to Apache as a C `int`
+// maxMaxConcurrentRequests (cli/mesi-cli.go:72). The core (a bare int
+// documented only as "0 = unlimited", mesi/config.go:33) does not define
+// a maximum, but Caddy validates the same [0, 999999999] bound at
+// Caddyfile parse and Provision (#452). The bound is derived from the
+// transport — the value crosses to Apache as a C `int`
 // (32-bit on every platform Apache 2.4 supports) guarded at 9 digits
 // by the shared strict parsers. The semaphore is a `chan struct{}` of
 // zero-size elements, so the cap exists for portability, not memory.

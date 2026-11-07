@@ -279,8 +279,7 @@ Traefik plugin had no way to configure this limit.
   behaviour: `ServeHTTP` is Go-direct — it builds `mesi.EsiParserConfig`
   itself and never set the field, so it stayed at its zero value `0`, and
   the core only installs the admission-control semaphore when the value is
-  `> 0` and no semaphore is already installed (`mesi/parser.go:99`), so a
-  nested parse inherits the parent render's. There is no hidden default on this path
+  `> 0` (`mesi/parser.go:99`). There is no hidden default on this path
   (`mesi.CreateDefaultConfig()` never sets the field either —
   `mesi/config.go`).
 - **Range:** `[0, 999999999]` — the same cap as Apache
@@ -288,9 +287,9 @@ Traefik plugin had no way to configure this limit.
   (#214), the PHP extension's `max_concurrent_requests` (#206) and the CLI
   `-max-concurrent-requests` (#192) — libgomesi's
   `config.MaxMaxConcurrentRequests`. The bound is transport-derived (a C
-  `int` + the shared 9-digit strict parsers) — neither the core nor Caddy
-  caps the value (Caddy's uncapped `strconv.Atoi` belongs to the #452 gap
-  family and is deliberately not inherited).
+  `int` + the shared 9-digit strict parsers) — the core does not cap the
+  value, but Caddy validates the same bound at Caddyfile parse and `Provision`
+  (#452).
 - **Scope: per-page-render, NOT Traefik-global.** The limit applies within
   ONE `mesi.MESIParse` call — one page render. Each concurrent request's own
   parse builds its own admission semaphore, so with 4 Traefik workers each
@@ -322,9 +321,11 @@ Traefik plugin had no way to configure this limit.
   `New()`: the config decode into the typed field fails first, which also
   fails middleware creation.
 
-Nested `MESIParse` calls made for fetched fragments inherit the same
-admission semaphore, so the cap holds across nesting levels too, not only for
-flat pages (#453).
+> **Known core limitation (#453):** nested `MESIParse` calls (a fetched
+> fragment containing further includes) replace the inherited semaphore with
+> a fresh one, so with NESTED includes the effective cap can reach cap ×
+> nesting depth for one page render. Flat pages (the common case) are capped
+> exactly; #453 is tracked separately and is not fixed by this option.
 
 ```yaml
 http:
@@ -347,7 +348,8 @@ Each nested parse creates its own pool and inherits the configured cap.
   `MesiMaxWorkers`, nginx `mesi_max_workers`, the PHP extension `max_workers`
   and CLI `-max-workers`.
 - **Default / absent:** `0` = the core's library default
-  `runtime.NumCPU()*4` (`mesi/parser.go:119-122`) — byte-identical to prior
+  `runtime.NumCPU()*4` (`mesi/parser.go` `normalizeMaxWorkers`, called at the
+  start of `MESIParse`) — byte-identical to prior
   behaviour, because `ServeHTTP` did not set the field and
   `CreateConfig()` does not seed it. Explicit `0` has the same library-default
   meaning as absent. This differs from `maxConcurrentRequests`, where `0`
@@ -513,7 +515,7 @@ http:
 | `timeout` | string | `"10s"` | Per-include fetch budget as a Go duration (e.g. `"5s"`, `"1m"`); range `[1s, 24h]`. Malformed or out-of-range explicit values fail middleware creation (no silent default). |
 | `maxResponseSize` | int64 | `0` (unlimited) | Per-include response body cap in **bytes** (per SINGLE include, not per page; over-limit includes fail closed through the include-error path — never truncated); range `[0, 9223372036854775806]`. Absent = unlimited (no implicit 10 MB). Negative / `MaxInt64` explicit values fail middleware creation; above-`int64` values fail the config decode (no silent default). |
 | `maxConcurrentRequests` | int | `0` (unlimited) | Concurrent `<esi:include>` fetch cap per **page render** (one `MESIParse` — not Traefik-global; each concurrent request's own parse builds its own semaphore, 4 workers × 5 → up to 20 outbound); range `[0, 999999999]`. Absent = unlimited. Includes beyond the cap **wait** for a slot (bounded by `timeout`), never dropped. Negative / `1000000000` explicit values fail middleware creation; non-integers / overflow fail the config decode (no silent default). The cap is page-wide across nesting levels (#453) |
-| `maxWorkers` | int | `0` (`runtime.NumCPU()*4`) | Token-processing drain-pool cap per page-render parse/nesting level; each nested parse creates its own pool. Explicit `0` and absent both select the core library default (unlike `maxConcurrentRequests`, where `0` means unlimited); range `[0, 999999999]`. Negative values fail middleware creation rather than silently becoming the default (#456); over-cap values fail creation, decode-invalid values fail config loading. |
+| `maxWorkers` | int | `0` (`runtime.NumCPU()*4`) | Token-processing drain-pool cap per page-render parse/nesting level; each nested parse creates its own pool. Explicit `0` and absent both select the core library default (unlike `maxConcurrentRequests`, where `0` means unlimited); range `[0, 999999999]`. Negative values fail middleware creation rather than being accepted and relying on the core's `max_workers_invalid` warn+normalize (#456); over-cap values fail creation, decode-invalid values fail config loading. |
 | `maxBodySize` | int64 | `0` (unlimited) | Size cap in **bytes** for the **parent** HTML body that is buffered for ESI processing (#538); not the per-include `maxResponseSize`. Absent = unlimited. A negative value fails middleware creation. |
 | `onOversize` | string | `pass` | What happens when the parent body is over `maxBodySize`: `pass` sends it unchanged without ESI processing and logs a warning, `error` logs an error and answers `502 Bad Gateway`. Other values fail middleware creation. |
 | `parseOnHeader` | bool | `false` | Only parse `text/html` responses carrying `Edge-control: dca=esi` (case-insensitive, comma-separated list). Other responses are passed through unchanged; `maxBodySize` applies only to parsed pages. Absent and `false` are equivalent. |
