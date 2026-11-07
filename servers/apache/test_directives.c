@@ -17,6 +17,9 @@
 /* The ParseJson blob builder is shared with mod_mesi.c so these tests
  * exercise the real rendering code (#165). */
 #include "parse_json_config.h"
+/* The cache-field merge is shared with mod_mesi.c so these tests exercise
+ * the real NULL-vs-"" selection instead of a mirror (#617). */
+#include "cache_config.h"
 
 static apr_pool_t *pool;
 static int tests_passed = 0;
@@ -45,10 +48,12 @@ typedef struct {
     int allow_private_ips_for_allowed;
     int shared_http_client;
     /* Cache backend (parity with mod_mesi.c mesi_config) */
+    /* NULL = unset/inherit; "" = explicitly disabled; non-empty = backend. */
     const char *cache_backend;
     int cache_size;
     int cache_ttl;
-    /* Redis backend fields (#175) */
+    /* Redis backend fields (#175). NULL = unset/inherit; a non-NULL
+     * empty string is an explicit clear (#617). */
     const char *cache_redis_addr;
     const char *cache_redis_password;
     int cache_redis_db;
@@ -623,9 +628,38 @@ static const char *set_max_workers(mesi_config *conf, const char *arg) {
     return NULL;
 }
 
-static const char *set_cache_backend(mesi_config *conf, const char *arg) {
-    if (!arg) {
-        return "MesiCacheBackend requires an argument (use empty string to disable)";
+/* Mirrors parse_one_conf_word() in mod_mesi.c (#617): exactly one
+ * ap_getword_conf() token; `""` is a non-NULL empty value; a missing
+ * argument or trailing token is rejected. */
+static const char *parse_one_conf_word(const char *raw, const char *directive,
+                                       const char **out) {
+    const char *p = raw;
+    while (p && *p && conf_space(*p)) {
+        p++;
+    }
+    if (!p || *p == '\0') {
+        return apr_psprintf(pool,
+                            "%s requires exactly one argument "
+                            "(quote values containing spaces; use \"\" for an explicit empty value)",
+                            directive);
+    }
+    const char *rest = p;
+    const char *word = parse_conf_word(&rest);
+    if (*rest != '\0') {
+        return apr_psprintf(pool,
+                            "%s takes exactly one argument "
+                            "(quote values containing spaces; use \"\" for an explicit empty value)",
+                            directive);
+    }
+    *out = word;
+    return NULL;
+}
+
+static const char *set_cache_backend(mesi_config *conf, const char *raw) {
+    const char *arg = NULL;
+    const char *err = parse_one_conf_word(raw, "MesiCacheBackend", &arg);
+    if (err) {
+        return err;
     }
     if (strcmp(arg, "memory") == 0) {
         conf->cache_backend = "memory";
@@ -640,6 +674,7 @@ static const char *set_cache_backend(mesi_config *conf, const char *arg) {
         return NULL;
     }
     if (arg[0] == '\0') {
+        /* Non-NULL empty = explicitly disabled (#617). */
         conf->cache_backend = "";
         return NULL;
     }
@@ -674,12 +709,15 @@ static const char *set_cache_ttl(mesi_config *conf, const char *arg) {
 /* MesiCacheRedisAddr — host:port. Empty arg clears config (default
  * localhost:6379 in libgomesi). Must contain ':' and a valid port
  * (1..65535). No whitespace, control chars, or JSON-meta chars. */
-static const char *set_cache_redis_addr(mesi_config *conf, const char *arg) {
-    if (!arg) {
-        return "MesiCacheRedisAddr requires a host:port argument";
+static const char *set_cache_redis_addr(mesi_config *conf, const char *raw) {
+    const char *arg = NULL;
+    const char *err = parse_one_conf_word(raw, "MesiCacheRedisAddr", &arg);
+    if (err) {
+        return err;
     }
     if (arg[0] == '\0') {
-        conf->cache_redis_addr = NULL;
+        /* Non-NULL empty = explicit clear; libgomesi default applies (#617). */
+        conf->cache_redis_addr = "";
         return NULL;
     }
     for (const char *p = arg; *p; p++) {
@@ -696,9 +734,9 @@ static const char *set_cache_redis_addr(mesi_config *conf, const char *arg) {
                             "MesiCacheRedisAddr: must be host:port (got: %s)", arg);
     }
     int port = 0;
-    const char *err = parse_nonneg_int(pool, colon + 1, "MesiCacheRedisAddr",
-                                       1, 65535, &port);
-    if (err) {
+    const char *perr = parse_nonneg_int(pool, colon + 1, "MesiCacheRedisAddr",
+                                        1, 65535, &port);
+    if (perr) {
         return apr_psprintf(pool,
                             "MesiCacheRedisAddr: port invalid: %s", arg);
     }
@@ -707,12 +745,14 @@ static const char *set_cache_redis_addr(mesi_config *conf, const char *arg) {
 }
 
 /* MesiCacheRedisPassword — raw Redis AUTH password. No control chars.
- * Empty arg sets empty password (auth disabled). Mock must not leak
- * the password into error messages. */
-static const char *set_cache_redis_password(mesi_config *conf, const char *arg) {
-    if (!arg) {
-        conf->cache_redis_password = "";
-        return NULL;
+ * Empty arg sets an explicit empty password (auth disabled) and is
+ * non-NULL, so it overrides an inherited password (#617). The mock must
+ * not leak the password into error messages. */
+static const char *set_cache_redis_password(mesi_config *conf, const char *raw) {
+    const char *arg = NULL;
+    const char *err = parse_one_conf_word(raw, "MesiCacheRedisPassword", &arg);
+    if (err) {
+        return err;
     }
     for (const char *p = arg; *p; p++) {
         unsigned char c = (unsigned char)*p;
@@ -887,7 +927,8 @@ static void init_config(mesi_config *conf) {
     conf->block_private_ips = -1;
     conf->allow_private_ips_for_allowed = -1;
     conf->shared_http_client = -1;
-    conf->cache_backend = "";
+    /* NULL = unset/inherit; "" = explicitly disabled (#617). */
+    conf->cache_backend = NULL;
     conf->cache_size = 0;
     conf->cache_ttl = -1;
     conf->cache_redis_addr = NULL;
@@ -919,18 +960,37 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
     merged->shared_http_client = (add->shared_http_client != -1)
                                      ? add->shared_http_client
                                      : base->shared_http_client;
-    merged->cache_backend = (add->cache_backend && add->cache_backend[0] != '\0')
-                                ? add->cache_backend
-                                : base->cache_backend;
-    merged->cache_size = (add->cache_size > 0) ? add->cache_size : base->cache_size;
-    merged->cache_ttl = (add->cache_ttl >= 0) ? add->cache_ttl : base->cache_ttl;
-    merged->cache_redis_addr = add->cache_redis_addr ? add->cache_redis_addr : base->cache_redis_addr;
-    merged->cache_redis_password = add->cache_redis_password ? add->cache_redis_password : base->cache_redis_password;
-    merged->cache_redis_db = (add->cache_redis_db >= 0) ? add->cache_redis_db : base->cache_redis_db;
-    merged->cache_memcached_servers = (add->cache_memcached_servers->nelts > 0)
-                                          ? add->cache_memcached_servers
-                                          : base->cache_memcached_servers;
-    merged->cache_key_template = add->cache_key_template ? add->cache_key_template : base->cache_key_template;
+    /* Cache fields use the production merge from cache_config.h (#617). */
+    mesi_cache_config base_cache = {
+        .backend = base->cache_backend,
+        .size = base->cache_size,
+        .ttl = base->cache_ttl,
+        .redis_addr = base->cache_redis_addr,
+        .redis_password = base->cache_redis_password,
+        .redis_db = base->cache_redis_db,
+        .memcached_servers = base->cache_memcached_servers,
+        .key_template = base->cache_key_template,
+    };
+    mesi_cache_config add_cache = {
+        .backend = add->cache_backend,
+        .size = add->cache_size,
+        .ttl = add->cache_ttl,
+        .redis_addr = add->cache_redis_addr,
+        .redis_password = add->cache_redis_password,
+        .redis_db = add->cache_redis_db,
+        .memcached_servers = add->cache_memcached_servers,
+        .key_template = add->cache_key_template,
+    };
+    mesi_cache_config merged_cache;
+    mesi_merge_cache_config(&merged_cache, &base_cache, &add_cache);
+    merged->cache_backend = merged_cache.backend;
+    merged->cache_size = merged_cache.size;
+    merged->cache_ttl = merged_cache.ttl;
+    merged->cache_redis_addr = merged_cache.redis_addr;
+    merged->cache_redis_password = merged_cache.redis_password;
+    merged->cache_redis_db = merged_cache.redis_db;
+    merged->cache_memcached_servers = merged_cache.memcached_servers;
+    merged->cache_key_template = merged_cache.key_template;
     merged->max_depth = (add->max_depth != -1) ? add->max_depth : base->max_depth;
     merged->timeout_seconds = (add->timeout_seconds != -1) ? add->timeout_seconds : base->timeout_seconds;
     merged->max_response_size = (add->max_response_size != -1) ? add->max_response_size : base->max_response_size;
@@ -1484,9 +1544,48 @@ TEST(cache_backend_empty_disables) {
     init_config(&conf);
     conf.cache_backend = "memory";
 
-    /* empty string explicitly disables (visible operator action) */
-    ASSERT_NULL(set_cache_backend(&conf, ""));
+    /* `""` is the explicit empty token (the raw form Apache passes for the
+     * quoted directive value); it disables caching as a configured value. */
+    ASSERT_NULL(set_cache_backend(&conf, "\"\""));
+    ASSERT_NOT_NULL(conf.cache_backend);
     ASSERT_STR_EQ(conf.cache_backend, "");
+}
+
+TEST(cache_backend_quoted_accepted) {
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_backend(&conf, "\"memory\""));
+    ASSERT_STR_EQ(conf.cache_backend, "memory");
+}
+
+TEST(cache_backend_missing_argument_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_backend(&conf, "");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "requires exactly one argument");
+    ASSERT_NULL(conf.cache_backend);
+
+    ASSERT_NOT_NULL(set_cache_backend(&conf, "   "));
+    ASSERT_NOT_NULL(set_cache_backend(&conf, NULL));
+    ASSERT_NULL(conf.cache_backend);
+}
+
+TEST(cache_backend_trailing_argument_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_backend(&conf, "memory extra");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "takes exactly one argument");
+    ASSERT_NULL(conf.cache_backend);
+
+    /* `"" ""` has a second (empty) token, so it is still trailing input. */
+    err = set_cache_backend(&conf, "\"\" \"\"");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "takes exactly one argument");
 }
 
 TEST(cache_backend_unknown_rejected) {
@@ -1501,8 +1600,9 @@ TEST(cache_backend_unknown_rejected) {
     ASSERT_STR_CONTAINS(err, "memory");
     ASSERT_STR_CONTAINS(err, "redis");
     ASSERT_STR_CONTAINS(err, "memcached");
-    /* config left at default "" instead of being polluted with bogus value */
-    ASSERT_STR_EQ(conf.cache_backend, "");
+    /* config left at the default NULL (unset/inherit) rather than being
+     * polluted with a bogus value */
+    ASSERT_NULL(conf.cache_backend);
 }
 
 TEST(cache_backend_redis_accepted) {
@@ -1533,7 +1633,7 @@ TEST(cache_backend_unknown_variant_rejected) {
     const char *err = set_cache_backend(&conf, "rediscluster");
     ASSERT_NOT_NULL(err);
     /* value was NOT stored */
-    ASSERT_STR_EQ(conf.cache_backend, "");
+    ASSERT_NULL(conf.cache_backend);
 }
 
 TEST(cache_size_default_unset) {
@@ -1734,7 +1834,22 @@ TEST(merge_cache_backend_child_overrides) {
 }
 
 TEST(merge_cache_backend_child_inherits) {
-    /* Child unset ("" from default-initialized config) inherits parent */
+    /* Child unset (NULL) inherits the parent's backend (#617). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.cache_backend = "memory";
+    add.cache_backend = NULL;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_STR_EQ(merged.cache_backend, "memory");
+}
+
+TEST(merge_cache_backend_child_clears) {
+    /* A child's explicit empty value disables an inherited backend (#617).
+     * Before this, "" was treated like unset and the global cache leaked
+     * into every vhost. */
     mesi_config base, add, merged;
     init_config(&base);
     init_config(&add);
@@ -1743,7 +1858,8 @@ TEST(merge_cache_backend_child_inherits) {
     add.cache_backend = "";
 
     merge_configs(&base, &add, &merged);
-    ASSERT_STR_EQ(merged.cache_backend, "memory");
+    ASSERT_NOT_NULL(merged.cache_backend);
+    ASSERT_STR_EQ(merged.cache_backend, "");
 }
 
 TEST(merge_cache_size_child_overrides) {
@@ -1829,14 +1945,47 @@ TEST(redis_addr_hostname_with_port) {
 }
 
 TEST(redis_addr_empty_clears) {
-    /* Empty arg explicitly clears the address (operator action: use
-     * libgomesi defaults localhost:6379). Mirrors mod_mesi.c
-     * set_cache_redis_addr() behavior. */
+    /* `""` explicitly clears the address (operator action: use libgomesi
+     * defaults localhost:6379). It must stay non-NULL so the merge treats
+     * it as a configured value instead of inheriting a global address. */
     mesi_config conf;
     init_config(&conf);
     conf.cache_redis_addr = "10.0.0.5:6379"; // existing value
 
-    ASSERT_NULL(set_cache_redis_addr(&conf, ""));
+    ASSERT_NULL(set_cache_redis_addr(&conf, "\"\""));
+    ASSERT_NOT_NULL(conf.cache_redis_addr);
+    ASSERT_STR_EQ(conf.cache_redis_addr, "");
+}
+
+TEST(redis_addr_quoted_accepted) {
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_redis_addr(&conf, "\"10.0.0.5:6379\""));
+    ASSERT_STR_EQ(conf.cache_redis_addr, "10.0.0.5:6379");
+}
+
+TEST(redis_addr_missing_argument_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_addr(&conf, "");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "requires exactly one argument");
+    ASSERT_NULL(conf.cache_redis_addr);
+
+    ASSERT_NOT_NULL(set_cache_redis_addr(&conf, "   "));
+    ASSERT_NOT_NULL(set_cache_redis_addr(&conf, NULL));
+    ASSERT_NULL(conf.cache_redis_addr);
+}
+
+TEST(redis_addr_trailing_argument_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_addr(&conf, "10.0.0.5:6379 extra");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "takes exactly one argument");
     ASSERT_NULL(conf.cache_redis_addr);
 }
 
@@ -1905,21 +2054,23 @@ TEST(redis_addr_port_negative_rejected) {
 
 TEST(redis_addr_with_whitespace_rejected) {
     /* JSON cannot be safely generated with embedded whitespace or
-     * tabs. Reject so misconfig never silently produces odd JSON. */
+     * tabs. The value must be quoted to reach the setter as one token,
+     * so the rejection is the character check, not the tokenizer. */
     mesi_config conf;
     init_config(&conf);
 
-    const char *err = set_cache_redis_addr(&conf, "10.0.0.5 :6379");
+    const char *err = set_cache_redis_addr(&conf, "\"10.0.0.5 :6379\"");
     ASSERT_NOT_NULL(err);
     ASSERT_STR_CONTAINS(err, "invalid character");
 }
 
 TEST(redis_addr_with_quote_rejected) {
-    /* Embedded '"' would inject JSON keys. Reject. */
+    /* Embedded '"' would inject JSON keys. Reject. The raw form escapes
+     * the inner quote so ap_getword_conf() yields it inside the token. */
     mesi_config conf;
     init_config(&conf);
 
-    const char *err = set_cache_redis_addr(&conf, "10.0.0.5\" :6379");
+    const char *err = set_cache_redis_addr(&conf, "\"10.0.0.5\\\":6379\"");
     ASSERT_NOT_NULL(err);
     ASSERT_STR_CONTAINS(err, "invalid character");
 }
@@ -1962,12 +2113,48 @@ TEST(redis_password_default_unset) {
 }
 
 TEST(redis_password_empty_accepted) {
-    /* Empty password explicitly set = no auth. */
+    /* `""` is an explicit empty password = no auth, non-NULL so it
+     * overrides an inherited password (#617). */
     mesi_config conf;
     init_config(&conf);
 
-    ASSERT_NULL(set_cache_redis_password(&conf, ""));
+    ASSERT_NULL(set_cache_redis_password(&conf, "\"\""));
+    ASSERT_NOT_NULL(conf.cache_redis_password);
     ASSERT_STR_EQ(conf.cache_redis_password, "");
+}
+
+TEST(redis_password_quoted_with_space_accepted) {
+    /* A password containing spaces must be quoted; the quotes are
+     * stripped by ap_getword_conf(), the space survives. */
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NULL(set_cache_redis_password(&conf, "\"p@ss word\""));
+    ASSERT_STR_EQ(conf.cache_redis_password, "p@ss word");
+}
+
+TEST(redis_password_missing_argument_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_password(&conf, "");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "requires exactly one argument");
+    ASSERT_NULL(conf.cache_redis_password);
+
+    ASSERT_NOT_NULL(set_cache_redis_password(&conf, "   "));
+    ASSERT_NOT_NULL(set_cache_redis_password(&conf, NULL));
+    ASSERT_NULL(conf.cache_redis_password);
+}
+
+TEST(redis_password_trailing_argument_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_cache_redis_password(&conf, "secret extra");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "takes exactly one argument");
+    ASSERT_NULL(conf.cache_redis_password);
 }
 
 TEST(redis_password_valid) {
@@ -2000,14 +2187,16 @@ TEST(redis_password_with_control_char_rejected) {
     ASSERT_STR_CONTAINS(err, "control character");
 }
 
-TEST(redis_password_null_accepted) {
-    /* AP_INIT_TAKE1 args are never NULL per Apache contract, but the
-     * parser must guard anyway — treat NULL as "clear password". */
+TEST(redis_password_null_rejected) {
+    /* RAW_ARGS passes the raw line; a NULL/empty line is a missing
+     * argument, not an implicit clear (#617). */
     mesi_config conf;
     init_config(&conf);
 
-    ASSERT_NULL(set_cache_redis_password(&conf, NULL));
-    ASSERT_STR_EQ(conf.cache_redis_password, "");
+    const char *err = set_cache_redis_password(&conf, NULL);
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "requires exactly one argument");
+    ASSERT_NULL(conf.cache_redis_password);
 }
 
 TEST(redis_db_default_unset) {
@@ -2114,6 +2303,20 @@ TEST(merge_redis_addr_child_inherits) {
     ASSERT_STR_EQ(merged.cache_redis_addr, "10.0.0.5:6379");
 }
 
+TEST(merge_redis_addr_child_clears) {
+    /* Explicit empty (non-NULL) clears an inherited address (#617). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.cache_redis_addr = "10.0.0.5:6379";
+    add.cache_redis_addr = "";
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_NOT_NULL(merged.cache_redis_addr);
+    ASSERT_STR_EQ(merged.cache_redis_addr, "");
+}
+
 TEST(merge_redis_db_child_overrides) {
     mesi_config base, add, merged;
     init_config(&base);
@@ -2148,6 +2351,32 @@ TEST(merge_redis_password_child_overrides) {
 
     merge_configs(&base, &add, &merged);
     ASSERT_STR_EQ(merged.cache_redis_password, "secret");
+}
+
+TEST(merge_redis_password_child_inherits) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.cache_redis_password = "secret";
+    add.cache_redis_password = NULL;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_STR_EQ(merged.cache_redis_password, "secret");
+}
+
+TEST(merge_redis_password_child_clears) {
+    /* Explicit empty (non-NULL) clears an inherited password (#617). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.cache_redis_password = "secret";
+    add.cache_redis_password = "";
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_NOT_NULL(merged.cache_redis_password);
+    ASSERT_STR_EQ(merged.cache_redis_password, "");
 }
 
 /* --- Memcached backend directive tests (#176) --- */
@@ -3953,6 +4182,9 @@ int main(int argc, char *argv[]) {
     printf("\nTesting set_cache_backend() (#174):\n");
     RUN_TEST(cache_backend_memory);
     RUN_TEST(cache_backend_empty_disables);
+    RUN_TEST(cache_backend_quoted_accepted);
+    RUN_TEST(cache_backend_missing_argument_rejected);
+    RUN_TEST(cache_backend_trailing_argument_rejected);
     RUN_TEST(cache_backend_unknown_rejected);
     // (#175): "redis_rejected" test renamed -> "redis_accepted" (and added
     // memcached variant) — see below.
@@ -3984,6 +4216,7 @@ int main(int argc, char *argv[]) {
     printf("\nTesting merge_server_config() cache fields (#174):\n");
     RUN_TEST(merge_cache_backend_child_overrides);
     RUN_TEST(merge_cache_backend_child_inherits);
+    RUN_TEST(merge_cache_backend_child_clears);
     RUN_TEST(merge_cache_size_child_overrides);
     RUN_TEST(merge_cache_size_child_inherits);
     RUN_TEST(merge_cache_ttl_child_overrides);
@@ -4000,6 +4233,9 @@ int main(int argc, char *argv[]) {
     RUN_TEST(redis_addr_localhost_default_port);
     RUN_TEST(redis_addr_hostname_with_port);
     RUN_TEST(redis_addr_empty_clears);
+    RUN_TEST(redis_addr_quoted_accepted);
+    RUN_TEST(redis_addr_missing_argument_rejected);
+    RUN_TEST(redis_addr_trailing_argument_rejected);
     RUN_TEST(redis_addr_missing_port_rejected);
     RUN_TEST(redis_addr_missing_host_rejected);
     RUN_TEST(redis_addr_missing_port_value_rejected);
@@ -4016,10 +4252,13 @@ int main(int argc, char *argv[]) {
     printf("\nTesting set_cache_redis_password() (#175):\n");
     RUN_TEST(redis_password_default_unset);
     RUN_TEST(redis_password_empty_accepted);
+    RUN_TEST(redis_password_quoted_with_space_accepted);
+    RUN_TEST(redis_password_missing_argument_rejected);
+    RUN_TEST(redis_password_trailing_argument_rejected);
     RUN_TEST(redis_password_valid);
     RUN_TEST(redis_password_with_special_chars_accepted);
     RUN_TEST(redis_password_with_control_char_rejected);
-    RUN_TEST(redis_password_null_accepted);
+    RUN_TEST(redis_password_null_rejected);
 
     printf("\nTesting set_cache_redis_db() (#175):\n");
     RUN_TEST(redis_db_default_unset);
@@ -4035,9 +4274,12 @@ int main(int argc, char *argv[]) {
     printf("\nTesting merge_server_config() redis fields (#175):\n");
     RUN_TEST(merge_redis_addr_child_overrides);
     RUN_TEST(merge_redis_addr_child_inherits);
+    RUN_TEST(merge_redis_addr_child_clears);
     RUN_TEST(merge_redis_db_child_overrides);
     RUN_TEST(merge_redis_db_child_inherits);
     RUN_TEST(merge_redis_password_child_overrides);
+    RUN_TEST(merge_redis_password_child_inherits);
+    RUN_TEST(merge_redis_password_child_clears);
 
     printf("\nTesting set_cache_memcached_servers() (#176):\n");
     RUN_TEST(memcached_servers_default_unset);

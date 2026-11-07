@@ -271,6 +271,83 @@ else
     exit 1
 fi
 
+echo "=== Test 6h: MesiCache* explicit empty values reach the real parser (#617) ==="
+# These three directives used AP_INIT_TAKE1, so `MesiCacheBackend ""`,
+# `MesiCacheRedisAddr ""` and `MesiCacheRedisPassword ""` failed config
+# load ("takes one argument") before the setter could store the
+# documented explicit empty value. They are AP_INIT_RAW_ARGS now and
+# parse exactly one ap_getword_conf() token (the #165/PR #607 pattern).
+# Each reject case names its expected message so a different failure
+# cannot make the test pass by accident.
+check_cache_directive_config() {
+    local expect="$1" directive="$2" label="$3" value="$4" msg="${5:-}" out
+    if out=$(docker compose exec -T apache sh -c '. /etc/apache2/envvars && exec apache2 -t -c "$1 $2"' sh "$directive" "$value" 2>&1); then
+        if [ "$expect" = "reject" ]; then
+            echo "FAIL: $directive $label was accepted by apache2 -t"
+            echo "Output: $out"
+            docker compose down
+            exit 1
+        fi
+        echo "PASS: $directive $label accepted"
+    else
+        if [ "$expect" = "accept" ] || ! echo "$out" | grep -q "$msg"; then
+            echo "FAIL: $directive $label: unexpected apache2 -t result (expected $expect, message /$msg/)"
+            echo "Output: $out"
+            docker compose down
+            exit 1
+        fi
+        echo "PASS: $directive $label rejected at config load"
+    fi
+}
+check_cache_directive_config accept MesiCacheBackend "explicit empty" '""'
+check_cache_directive_config accept MesiCacheBackend "quoted backend" '"memory"'
+check_cache_directive_config accept MesiCacheBackend "unquoted backend" 'memory'
+check_cache_directive_config reject MesiCacheBackend "missing argument" '' "requires exactly one argument"
+check_cache_directive_config reject MesiCacheBackend "whitespace-only argument" '   ' "requires exactly one argument"
+check_cache_directive_config reject MesiCacheBackend "trailing argument" 'memory extra' "takes exactly one argument"
+check_cache_directive_config reject MesiCacheBackend "trailing empty argument" '"" ""' "takes exactly one argument"
+check_cache_directive_config accept MesiCacheRedisAddr "explicit empty" '""'
+check_cache_directive_config accept MesiCacheRedisAddr "quoted host:port" '"10.0.0.5:6379"'
+check_cache_directive_config accept MesiCacheRedisAddr "unquoted host:port" '10.0.0.5:6379'
+check_cache_directive_config reject MesiCacheRedisAddr "missing argument" '' "requires exactly one argument"
+check_cache_directive_config reject MesiCacheRedisAddr "trailing argument" '"10.0.0.5:6379" extra' "takes exactly one argument"
+check_cache_directive_config accept MesiCacheRedisPassword "explicit empty" '""'
+check_cache_directive_config accept MesiCacheRedisPassword "quoted password" '"secret"'
+check_cache_directive_config accept MesiCacheRedisPassword "password with spaces (quoted)" '"p@ss word"'
+check_cache_directive_config reject MesiCacheRedisPassword "missing argument" '' "requires exactly one argument"
+check_cache_directive_config reject MesiCacheRedisPassword "trailing argument" '"secret" extra' "takes exactly one argument"
+
+echo "=== Test 6i: explicit empty cache directives in a vhost override globals (#617) ==="
+# The issue's second half: even when the empty value reached the setter,
+# merge_server_config() treated "" as "inherit", so a vhost could not
+# disable a global cache. This parses a real config with a global
+# backend and a vhost that clears all three values. apache2 -t only
+# proves the directive layer accepts the vhost form; the NULL-vs-""
+# merge semantics are pinned by test_directives.c
+# (merge_cache_backend_child_clears, merge_redis_addr_child_clears,
+# merge_redis_password_child_clears).
+if out=$(docker compose exec -T apache sh -c '
+    cp /etc/apache2/apache2.conf /tmp/mesi-617-vhost.conf
+    cat >> /tmp/mesi-617-vhost.conf <<"EOF"
+MesiCacheBackend memory
+<VirtualHost *:80>
+    ServerName localhost
+    MesiCacheBackend ""
+    MesiCacheRedisAddr ""
+    MesiCacheRedisPassword ""
+</VirtualHost>
+EOF
+    . /etc/apache2/envvars
+    exec apache2 -t -f /tmp/mesi-617-vhost.conf
+' 2>&1); then
+    echo "PASS: vhost explicit empty cache directives accepted by apache2 -t"
+else
+    echo "FAIL: vhost explicit empty cache directives were rejected by apache2 -t"
+    echo "Output: $out"
+    docker compose down
+    exit 1
+fi
+
 echo "=== Test 7: Large response (multi-brigade) - direct ==="
 RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/large.html)
 if echo "$RESPONSE" | grep -q "After include"; then
