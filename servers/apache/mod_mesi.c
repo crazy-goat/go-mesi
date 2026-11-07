@@ -7,6 +7,7 @@
 #include "util_filter.h"
 #include "apr_strings.h"
 
+#include "filter_lifecycle.h"
 #include "cache_config.h"
 #include "parse_json_config.h"
 
@@ -192,7 +193,8 @@ typedef struct {
     // (case-insensitive, comma-separated list — the core's
     // mesi.IsEsiResponse contract) is buffered and parsed; every other
     // HTML response is streamed through untouched, without buffering and
-    // without the module's Surrogate-Capability header. The flag is also
+    // without ESI processing (the module's Surrogate-Capability request
+    // header is still advertised to the origin). The flag is also
     // sent to libgomesi through ParseJson so fetched fragments follow the
     // same rule.
     int parse_on_header; // -1=unset, 0=off, 1=on
@@ -868,6 +870,16 @@ static apr_size_t mesi_unicode_space(const unsigned char *p, apr_size_t len) {
     return 0;
 }
 
+// mesi_ascii_space reports whether c is ASCII whitespace under Go's
+// strings.Fields tokenization: space, tab, CR, LF, VT and FF. Every
+// caller that tokenizes a directive value uses this helper (and
+// mesi_unicode_space) so no third whitespace table can drift from
+// libgomesi (#358, #559).
+static int mesi_ascii_space(unsigned char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n' ||
+           c == '\v' || c == '\f';
+}
+
 // mesi_has_hostname_token reports whether s contains at least one token
 // under Go's strings.Fields tokenization, which libgomesi applies to the
 // joined allowlist: ASCII whitespace (space, tab, CR, LF, VT, FF) and every
@@ -880,7 +892,7 @@ static int mesi_has_hostname_token(const char *s) {
     while (i < len) {
         unsigned char c = p[i];
         apr_size_t ws_width;
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f') {
+        if (mesi_ascii_space(c)) {
             i++;
             continue;
         }
@@ -891,6 +903,54 @@ static int mesi_has_hostname_token(const char *s) {
         i += ws_width;
     }
     return 0;
+}
+
+// mesi_next_field advances *pp past separators and returns the start of
+// the next token, storing its byte length in *tok_len (NULL at end of
+// input). The tokenization is exactly mesi_has_hostname_token's, i.e.
+// Go's strings.Fields (the rule libgomesi applies to allowedHosts):
+// the full ASCII whitespace set and every Unicode whitespace rune
+// separate tokens, while any other byte —
+// including invalid or truncated UTF-8, which Go decodes as U+FFFD, not
+// a space — is part of a token.
+static const char *mesi_next_field(const char **pp, apr_size_t *tok_len) {
+    const unsigned char *p = (const unsigned char *)*pp;
+    apr_size_t remaining = strlen(*pp);
+    const unsigned char *start;
+    while (remaining > 0) {
+        apr_size_t ws_width;
+        if (mesi_ascii_space(*p)) {
+            p++;
+            remaining--;
+            continue;
+        }
+        ws_width = mesi_unicode_space(p, remaining);
+        if (ws_width == 0) {
+            break;
+        }
+        p += ws_width;
+        remaining -= ws_width;
+    }
+    if (remaining == 0) {
+        *pp = (const char *)p;
+        return NULL;
+    }
+    start = p;
+    while (remaining > 0) {
+        apr_size_t ws_width;
+        if (mesi_ascii_space(*p)) {
+            break;
+        }
+        ws_width = mesi_unicode_space(p, remaining);
+        if (ws_width != 0) {
+            break;
+        }
+        p++;
+        remaining--;
+    }
+    *tok_len = (apr_size_t)(p - start);
+    *pp = (const char *)p;
+    return (const char *)start;
 }
 
 static const char *set_allowed_hosts(cmd_parms *cmd, void *cfg, const char *arg) {
@@ -1507,7 +1567,13 @@ static const char *set_cache_redis_db(cmd_parms *cmd, void *cfg, const char *arg
 // localhost:11211 — if the directive is omitted, the empty server list
 // is logged as a missing-config error at runtime and ESI runs without
 // cache. AP_INIT_RAW_ARGS gives us the full line, so parsing is
-// line-based (splitting on space/tab) just like set_allowed_hosts.
+// line-based and tokenizes with Go's strings.Fields rule
+// (mesi_next_field): ASCII whitespace and every Unicode whitespace
+// rune separate entries, while invalid UTF-8 stays part of a token
+// (#559). A Unicode whitespace byte must never be stored inside an
+// entry: the entry is rendered verbatim as one element of the
+// `servers` JSON array, so its host can never resolve and the cache
+// fails silently at request time, with no config-load diagnostic.
 static const char *set_cache_memcached_servers(cmd_parms *cmd, void *cfg, const char *arg) {
     mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
     if (!arg) {
@@ -1517,32 +1583,26 @@ static const char *set_cache_memcached_servers(cmd_parms *cmd, void *cfg, const 
     // create_server_config). We append to the array that this server
     // config owns, mirroring set_allowed_hosts behaviour.
     const char *tok;
+    apr_size_t tok_len;
     int count = 0;
-    while (*arg) {
-        while (*arg && (*arg == ' ' || *arg == '\t')) arg++;
-        tok = arg;
-        while (*arg && *arg != ' ' && *arg != '\t') arg++;
-        if (tok == arg) {
-            continue;
-        }
-        // Reject embedded whitespace/control chars/JSON-meta chars.
-        // (The token was extracted by stopping on space/tab, so
-        // whitespace inside the token is impossible; but we recheck
-        // for control chars and JSON-meta to be safe.)
-        // Quote characters get their own message (#542): the directive
-        // is AP_INIT_RAW_ARGS, so Apache does not unquote the line and
-        // 'mc':11211 stores the host 'mc', which can never resolve. Say
-        // so instead of the generic "invalid character", the same way
-        // MesiAllowedHosts does after #532.
+    while ((tok = mesi_next_field(&arg, &tok_len)) != NULL) {
+        const char *end = tok + tok_len;
+        // Reject control chars (including DEL, which `c < 0x20` missed
+        // before #559) and JSON-meta chars. Quote characters get their
+        // own message (#542): the directive is AP_INIT_RAW_ARGS, so
+        // Apache does not unquote the line and 'mc':11211 stores the
+        // host 'mc', which can never resolve. Say so instead of the
+        // generic "invalid character", the same way MesiAllowedHosts
+        // does after #532.
         int has_quote = 0;
         int has_invalid = 0;
-        for (const char *p = tok; p < arg; p++) {
+        for (const char *p = tok; p < end; p++) {
             unsigned char c = (unsigned char)*p;
             if (c == '"' || c == '\'') {
                 has_quote = 1;
                 break;
             }
-            if (c == '\\' || c < 0x20) {
+            if (c == '\\' || c < 0x20 || c == 0x7f) {
                 has_invalid = 1;
                 break;
             }
@@ -1551,38 +1611,38 @@ static const char *set_cache_memcached_servers(cmd_parms *cmd, void *cfg, const 
             return apr_psprintf(cmd->pool,
                                 "MesiCacheMemcachedServers: quote characters are not allowed in entries; "
                                 "write the host:port entries unquoted, separated by spaces (got: %.*s)",
-                                (int)(arg - tok), tok);
+                                (int)tok_len, tok);
         }
         if (has_invalid) {
             return apr_psprintf(cmd->pool,
                                 "MesiCacheMemcachedServers: invalid character in entry %.*s",
-                                (int)(arg - tok), tok);
+                                (int)tok_len, tok);
         }
         // Find last ':' (matches redis-addr parser). IPv4/IPv6/hostname
         // forms all end with :port.
         const char *colon = NULL;
-        for (const char *p = arg - 1; p >= tok; p--) {
+        for (const char *p = end - 1; p >= tok; p--) {
             if (*p == ':') {
                 colon = p;
                 break;
             }
         }
-        if (!colon || colon == tok || colon + 1 == arg) {
+        if (!colon || colon == tok || colon + 1 == end) {
             return apr_psprintf(cmd->pool,
                                 "MesiCacheMemcachedServers: entry must be host:port (got: %.*s)",
-                                (int)(arg - tok), tok);
+                                (int)tok_len, tok);
         }
-        // Validate port over [colon+1, arg) so digits inside the host
+        // Validate port over [colon+1, end) so digits inside the host
         // (which can include '1', '0', ...) aren't accidentally
-        // consumed. parse_nonneg_int_bounded stops exactly at `arg`.
+        // consumed. parse_nonneg_int_bounded stops exactly at `end`.
         int port = 0;
-        const char *err = parse_nonneg_int_bounded(cmd->pool, colon + 1, arg,
+        const char *err = parse_nonneg_int_bounded(cmd->pool, colon + 1, end,
                                                    "MesiCacheMemcachedServers",
                                                    1, 65535, &port);
         if (err) {
             return apr_psprintf(cmd->pool,
                                 "MesiCacheMemcachedServers: port invalid in %.*s",
-                                (int)(arg - tok), tok);
+                                (int)tok_len, tok);
         }
         if (count >= MESI_MAX_MEMCACHED_SERVERS) {
             return apr_psprintf(cmd->pool,
@@ -1592,7 +1652,7 @@ static const char *set_cache_memcached_servers(cmd_parms *cmd, void *cfg, const 
         const char **slot = apr_array_push(conf->cache_memcached_servers);
         // Copy into the server config's pool so it survives past the
         // current request (raw arg pointer is request-scoped).
-        *slot = apr_pstrndup(cmd->pool, tok, arg - tok);
+        *slot = apr_pstrndup(cmd->pool, tok, tok_len);
         count++;
     }
     if (count == 0) {
@@ -1917,13 +1977,59 @@ static const char *build_parse_json_config(mesi_config *conf,
     return mesi_build_parse_json_config(pool, &cfg);
 }
 
-static int mesi_request_handler(request_rec *r) {
+// mesi_fixups advertises this surrogate's ESI capability to the origin as a
+// request header. It runs after authentication and authorization (a denied
+// request never advertises anything) and before the content handler (so
+// mod_proxy, CGI and friends forward it). The Edge Architecture
+// Specification defines Surrogate-Capability as a request header and the
+// response-side header is Surrogate-Control, so this deliberately does not
+// touch headers_out: the module never adds the header to the client
+// response. Existing client capability sets are preserved (#97).
+static int mesi_fixups(request_rec *r) {
     mesi_config *conf = (mesi_config *)ap_get_module_config(r->server->module_config, &mesi_module);
-    if (conf->enable_mesi) {
-        apr_table_set(r->headers_out, "Surrogate-Capability", "ESI/1.0");
-        ap_add_output_filter("MESI_RESPONSE", NULL, r, r->connection);
+    if (conf->enable_mesi && r->headers_in) {
+        apr_table_set(r->headers_in, "Surrogate-Capability",
+                      mesi_surrogate_capability(
+                          r->pool,
+                          apr_table_get(r->headers_in, "Surrogate-Capability")));
     }
     return DECLINED;
+}
+
+// mesi_is_dynamic_request reports whether the final Content-Type is decided
+// by a handler rather than by the static-file type map. mod_proxy is the
+// important case: mod_mime may have guessed a type from the proxy filename
+// ("proxy:http://host/path.txt") before insert_filter runs, and the origin
+// can still return text/html. An explicitly configured (non-default) handler
+// is treated the same way: its output type is not known yet either.
+static int mesi_is_dynamic_request(request_rec *r) {
+    if (r->proxyreq != PROXYREQ_NONE) {
+        return 1;
+    }
+    return r->handler != NULL && r->handler[0] != '\0' &&
+           strcmp(r->handler, "default-handler") != 0;
+}
+
+// mesi_insert_filter runs from ap_invoke_handler, after the request passed
+// authentication, type_checker and fixups, but before the content handler.
+// It replaces the old post_read_request registration (#97): requests that
+// are never handled (auth-denied, translate-phase redirects) no longer get
+// the filter, and static non-HTML responses skip it entirely. Subrequests
+// keep the pre-#97 behaviour (no filter).
+//
+// The Content-Type is not trusted here for a proxy or dynamic request: it
+// may be only an extension-derived guess. Those responses get the filter
+// and mesi_response_filter applies the final content-type/status gate on the
+// first brigade, together with 3xx/4xx/5xx/204/304 handling.
+static void mesi_insert_filter(request_rec *r) {
+    mesi_config *conf = (mesi_config *)ap_get_module_config(r->server->module_config, &mesi_module);
+    if (!mesi_insert_filter_wanted(conf->enable_mesi, r->status,
+                                   r->content_type, r->header_only,
+                                   r->main != NULL,
+                                   mesi_is_dynamic_request(r))) {
+        return;
+    }
+    ap_add_output_filter("MESI_RESPONSE", NULL, r, r->connection);
 }
 
 static char *build_base_url(request_rec *r, apr_pool_t *pool) {
@@ -1981,17 +2087,22 @@ static int mesi_header_signals_esi(const char *value) {
     }
 }
 
-static int is_html_content(const char *ct) {
-    if (!ct) return 0;
-    // Skip leading whitespace (OWS per RFC 7230 §3.2.6)
-    while (*ct == ' ' || *ct == '\t') ct++;
-    // Case-insensitive media-type comparison (RFC 9110 §8.3.1)
-    if (strncasecmp(ct, "text/html", 9) != 0) return 0;
-    char delim = ct[9];
-    // Must be followed by delimiter, parameter separator, or end-of-string
-    return delim == '\0' || delim == ';' || delim == ' ' || delim == '\t' || delim == '\r' || delim == '\n';
+// A response body with a Content-Encoding other than "identity" is
+// compressed or otherwise transformed. Parsing those bytes as HTML would
+// corrupt the body (a gzip stream is not NUL-terminated text), so the
+// filter must pass the response through untouched. nginx has the
+// equivalent check in its head filter (ngx_test_content_compression).
+static int mesi_is_encoded_response(request_rec *r) {
+    const char *ce = apr_table_get(r->headers_out, "Content-Encoding");
+    if (!ce) return 0;
+    while (*ce == ' ' || *ce == '\t') ce++;
+    if (strncasecmp(ce, "identity", sizeof("identity") - 1) != 0) return 1;
+    ce += sizeof("identity") - 1;
+    while (*ce == ' ' || *ce == '\t') ce++;
+    // "identity" alone means no transformation; anything else ("identity,
+    // gzip", a parameter, ...) means the body may be encoded.
+    return *ce != '\0';
 }
-
 // Flatten brigade into a single NUL-terminated string.
 // Returns 1 on success, 0 on failure.
 // On failure, *html is set to NULL (no dangling pointer to uninitialized memory)
@@ -2030,7 +2141,16 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         return ap_pass_brigade(f->next, bb);
     }
 
-    if (!is_html_content(f->r->content_type) || f->r->status >= 400) {
+    // 204/304 cannot carry a body. Apache hands the handler body to
+    // output filters even for HEAD, so parsing it would fetch includes
+    // that are never sent. An encoded body cannot be parsed as HTML.
+    // All of these pass through untouched. mesi_response_is_eligible
+    // already covers non-HTML and non-2xx/204 statuses (#97); the explicit
+    // checks below keep the #98 HEAD/304/encoding contract.
+    int bodiless = f->r->header_only || f->r->status == HTTP_NO_CONTENT ||
+                   f->r->status == HTTP_NOT_MODIFIED;
+    if (!mesi_response_is_eligible(f->r->content_type, f->r->status) ||
+        bodiless || mesi_is_encoded_response(f->r)) {
         ap_remove_output_filter(f);
         return ap_pass_brigade(f->next, bb);
     }
@@ -2044,7 +2164,6 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     int parse_on_header = (conf->parse_on_header != -1) ? conf->parse_on_header : 0;
     if (parse_on_header &&
         !mesi_header_signals_esi(apr_table_get(f->r->headers_out, "Edge-control"))) {
-        apr_table_unset(f->r->headers_out, "Surrogate-Capability");
         ap_remove_output_filter(f);
         return ap_pass_brigade(f->next, bb);
     }
@@ -2063,9 +2182,9 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     apr_off_t limit = (conf->max_body_size > 0) ? conf->max_body_size : 0;
     int oversize = 0;
     // Declared Content-Length over the limit: decide before buffering.
-    // Bodiless responses (HEAD, 204, 304) are never limited.
-    int bodiless = f->r->header_only || f->r->status == HTTP_NO_CONTENT || f->r->status == HTTP_NOT_MODIFIED;
-    if (limit > 0 && !bodiless) {
+    // Bodiless responses (HEAD, 204, 304) were passed through above and
+    // never reach this point.
+    if (limit > 0) {
         apr_off_t declared = f->r->clength;
         const char *cl = apr_table_get(f->r->headers_out, "Content-Length");
         apr_off_t hdr = 0;
@@ -2087,7 +2206,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
             apr_bucket_delete(b);
             continue;
         }
-        if (limit > 0 && !bodiless && !APR_BUCKET_IS_METADATA(b)) {
+        if (limit > 0 && !APR_BUCKET_IS_METADATA(b)) {
             apr_size_t blen = b->length;
             if (b->length == (apr_size_t)-1) {
                 // Unknown length (pipe, socket): reading splits the bucket
@@ -2355,7 +2474,8 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
 
 static void register_hooks(apr_pool_t *p) {
     ap_hook_child_init(mesi_child_init, NULL, NULL, APR_HOOK_MIDDLE);
-    ap_hook_post_read_request(mesi_request_handler, NULL, NULL, APR_HOOK_MIDDLE);
+    ap_hook_fixups(mesi_fixups, NULL, NULL, APR_HOOK_MIDDLE);
+    ap_hook_insert_filter(mesi_insert_filter, NULL, NULL, APR_HOOK_MIDDLE);
     ap_register_output_filter("MESI_RESPONSE", mesi_response_filter, NULL, AP_FTYPE_CONTENT_SET);
 }
 
