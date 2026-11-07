@@ -451,9 +451,20 @@ make LIBGOMESI_PATH=/opt/libgomesi.so
 ## Testing
 
 ```bash
+# C unit tests: no Docker, no running Apache (APR development headers required)
+make test-unit
+
+# End-to-end Docker suite (Apache + backend)
 docker compose up --build
 ./test.sh
 ```
+
+`make test-unit` builds and runs two harnesses: `test_directives.c`
+(directive parsers and server/vhost config merge) and `test_pure.c` (the real
+`is_html_content`, `mesi_base_url_host` and `mesi_build_base_url` from
+`mesi_pure.h`, not copies). `make test` runs both plus the integration,
+`build.sh`, and APR-include suites. CI runs `make test-unit` before building
+the Docker image.
 
 ## MPM Compatibility
 
