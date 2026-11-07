@@ -472,6 +472,14 @@ docker compose up --build
 > code paths. See [#94](https://github.com/crazy-goat/go-mesi/issues/94)
 > for the full discussion.
 
+> **Integration-suite scope:** `servers/apache/Dockerfile` pins
+> `mpm_prefork` and `servers/apache/test.sh` runs only against that MPM.
+> Worker/Event are not exercised by CI today: a second image build would
+> double the suite's build time, and the concurrency behaviour needs a
+> dedicated stress run (see the closed [#94](https://github.com/crazy-goat/go-mesi/issues/94)).
+> The functional suite therefore pins the single-process guarantees and
+> does not claim Worker/Event coverage.
+
 ## How It Works
 
 1. Registers as output filter in Apache's filter chain.
@@ -479,6 +487,10 @@ docker compose up --build
    `MesiParseOnHeader On`, only a response whose `Edge-control` header
    carries `dca=esi` is intercepted; every other HTML response is passed
    through before buffering starts (and without `Surrogate-Capability`).
+   Bodiless responses (`HEAD`, `204`, `304`) and responses with a
+   `Content-Encoding` other than `identity` (for example `gzip`) are
+   always passed through untouched — there is nothing to parse, or the
+   body is compressed and parsing it would corrupt it.
 3. Adds `Surrogate-Capability: ESI/1.0` header.
 4. Buffers response body until complete.
 5. Calls `InitCache(...)` from libgomesi once per worker process when
