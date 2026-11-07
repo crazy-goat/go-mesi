@@ -292,8 +292,8 @@ MesiCacheTTL 60
   naming the directive (parsed via `parse_nonneg_int` — no silent
   `atoi` coercion, which would turn `abc`/`""` into `0` = library
   default). A negative in particular must never reach the core, which
-  substitutes the default for any `<= 0` **silently, with no warning**
-  (no `#329`-style diagnostic exists for `MaxWorkers`).
+  now warns (`max_workers_invalid`) and normalizes any negative to the
+  default (#456); config-load rejection remains the directive's contract.
   **Merge:** a vhost's value overrides the global one; unset vhosts
   inherit it. The value travels to libgomesi through the `ParseJson`
   entry point as the `{"maxWorkers":N}` count key; requires a
