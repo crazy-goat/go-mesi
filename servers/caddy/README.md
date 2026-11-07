@@ -378,12 +378,13 @@ mesi {
 
 | Value | Behaviour |
 |---|---|
-| `1–N` | Include responses larger than N bytes are rejected. |
+| `1–9223372036854775806` | Include responses larger than N bytes are rejected. |
 | `0` | Unlimited (no size check). |
 | absent | Unlimited — the field stays `0`, so no size check applies. |
 
 **Notes:**
 - Values are in bytes. For common sizes: `1048576` = 1 MB, `10485760` = 10 MB, `1073741824` = 1 GB.
+- Accepted range is `[0, 9223372036854775806]` (`math.MaxInt64 - 1`, the core's `mesi.MaxMaxResponseSize`). Negative values — which the core would silently treat as unlimited — and values above the cap are rejected when the Caddyfile is parsed and again at provision (JSON config). There is no silent default or clamp.
 - The 10 MB (`10485760`) value comes from `mesi.CreateDefaultConfig()` and
   only applies to Go callers that use it (such as `mesi-cli`); the Caddy path
   does not apply that constructor default.
