@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>ESI Include Error Marker</title>
+</head>
+<body>
+    <!-- Deliberately missing upstream file: the failed include has
+         neither onerror="continue" nor a fallback body, so the
+         configured IncludeErrorMarker must be rendered in its place. -->
+    <esi:include src="http://backend:8000/missing-include-error-marker-228.txt" />
+    <p>After marker include</p>
+</body>
+</html>

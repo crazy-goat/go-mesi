@@ -7,11 +7,15 @@
 !cache-test.html
 !comment.html
 !fallback.html
+!include-error-marker.html
+!include-error-onerror.html
 !include.txt
 !index.html
 !large.html
 !nested.html
 !nested.txt
+!parse-on-header.html
+!parse-on-header-nested.html
 !noesi.css
 !noesi.json
 !noesi.txt
@@ -41,6 +45,7 @@
 !max-workers-pool.html
 !max-workers-zero.html
 !max-workers-unset.html
+!debug-failed-include.html
 !mw-lvl-1.html
 !mw-lvl-2.html
 !mw-lvl-3.html

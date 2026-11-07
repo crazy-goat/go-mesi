@@ -1,5 +1,7 @@
 # Stage 1: Build plugin source tree for Yaegi interpreter
-FROM golang:1.24-alpine AS deps
+FROM golang:1.26-alpine AS deps
+
+ENV GOTOOLCHAIN=local
 
 RUN apk add --no-cache git jq
 

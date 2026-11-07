@@ -8,6 +8,9 @@
 ignored:
   # Pinning apt/apk packages and `go install` versions: test images track
   # the distribution; pinning needs a refresh process first.
+  # servers/frankenphp/Dockerfile is the deliberate exception: its build
+  # dependency decides how the image is built, not which distribution it runs
+  # on, so it is pinned there and checked by scripts/check-docker-build-pins.sh.
   - DL3008
   - DL3018
   - DL3062

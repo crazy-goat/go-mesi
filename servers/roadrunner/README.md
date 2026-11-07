@@ -38,6 +38,7 @@ http:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `max_depth` | int | `5` | Maximum ESI nesting depth. Set to `0` to disable ESI processing. |
+| `parse_on_header` | bool | `false` | Parse `text/html` only when the response carries `Edge-control: dca=esi` (case-insensitive, comma-separated list allowed). Without the header the response is passed through unchanged. Absent and `false` keep the historical always-parse behaviour. |
 | `shared_http_client` | bool | `false` | Reuse a single HTTP client for all ESI includes (SSRF-safe, connection pooling). |
 | `block_private_ips` | bool | `true` | Block ESI includes to private/reserved IPs (loopback, RFC 1918, CGNAT, link-local, cloud metadata `169.254.169.254`, benchmark/documentation ranges) at dial time. Set `false` to allow internal includes (e.g. service meshes). |
 | `allowed_hosts` | array | `[]` | Host whitelist restricting which ESI include destinations are fetched. Exact or subdomain-suffix match with a `.` boundary (rejects suffix injection); case-insensitive; ports ignored. Empty list = all hosts allowed (subject to `block_private_ips`). The whitelist check runs by hostname before the dial-time private-IP check and does NOT bypass it. |
@@ -48,7 +49,8 @@ http:
 | `on_oversize` | string | `"pass"` | What happens when the parent body is over `max_body_size`: `"pass"` sends it unchanged without ESI processing and logs a warning, `"error"` logs an error and answers `502 Bad Gateway`. Other values are rejected. |
 | `max_concurrent_requests` | int | `0` (unlimited) | Maximum concurrent ESI include HTTP fetches within one page render. Includes beyond the cap wait for a slot and are not dropped; negative values and values above `999999999` are rejected. |
 | `max_workers` | int | `0` (`runtime.NumCPU()*4`) | Maximum token-processing drain-pool workers per `MESIParse` call. Each nested parse creates its own pool and inherits the cap; negative values and values above `999999999` are rejected. |
-| `include_error_marker` | string | `""` | HTML marker rendered for failed includes (no `onerror="continue"`). |
+| `debug` | bool | `false` | Enable verbose ESI diagnostics (parse progress, include fetches, cache read/write errors). The core's default logger writes them to stderr, so they appear wherever the `rr` process's stderr goes. Absent and explicit `false` both keep logging off. |
+| `include_error_marker` | string | `""` | Raw HTML rendered for a failed include that has no fallback body and no `onerror="continue"`. Never include error details, URLs, hostnames or IP addresses (see the security warning below). |
 | `cache_backend` | string | `""` | Cache backend: `""` (off), `"memory"`, `"redis"`, `"memcached"`. |
 | `cache_size` | int | `10000` | Max entries for memory cache backend. |
 | `cache_ttl` | string | `""` | Default TTL for cached entries, e.g. `"60s"`. |
@@ -57,6 +59,35 @@ http:
 | `cache_redis_password` | string | `""` | Redis AUTH password. |
 | `cache_redis_db` | int | `0` | Redis database number. |
 | `cache_memcached_servers` | array | `[]` | Memcached server addresses (host:port). |
+
+#### Parse on header
+
+`parse_on_header: true` makes ESI processing conditional on the upstream
+response. Only `text/html` responses carrying `Edge-control: dca=esi`
+(case-insensitive, comma-separated value list, matching `mesi.IsEsiResponse`)
+are parsed; every other response is passed through byte for byte with its
+upstream headers and without `Surrogate-Control`. The flag is also passed to
+`mesi.EsiParserConfig.ParseOnHeader`, so a fetched fragment is parsed only
+when its own response signals ESI. Absent and explicit `false` keep the
+historical behaviour of parsing every `text/html` response.
+
+`max_body_size` only bounds pages that are parsed: an unsignalled page is
+exempt from the cap (`middleware.ResponseWriter.LimitOnlyIf`), but the shared
+response writer still buffers it in full, so the cap is not a memory guard for
+unparsed pages.
+
+> **Known cache caveat:** with `cache_backend` enabled, the core cache stores
+> only the fragment body and a cache hit returns `isEsiResponse=false`
+> (`mesi/fetch.go`), so a signalling fragment is parsed on the first request
+> and its nested includes stay raw on later cached requests. Do not combine
+> `cache_backend` with `parse_on_header` until the core caches the ESI signal.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      parse_on_header: true
+```
 
 #### Per-include timeout
 
@@ -96,6 +127,29 @@ http:
   middleware:
     mesi:
       max_response_size: 1048576 # 1 MiB per include
+```
+
+#### Include error marker
+
+`include_error_marker` is raw HTML inserted in place of an `<esi:include>`
+whose processing fails and that has neither a fallback body nor
+`onerror="continue"`. That covers a failed fetch and also parse-time include
+errors that never reach the network, such as an exhausted `max_depth`. The
+default `""` renders nothing, which is the historical behaviour.
+`onerror="continue"` and fallback bodies take precedence, so the marker is not
+rendered for them.
+
+> **Security warning:** the marker is inserted into the page verbatim — it is
+> not escaped or sanitized. Never put error details, exception text, URLs,
+> hostnames or IP addresses in it: the marker is sent to the client and can
+> leak internal topology or upstream diagnostics. Use a static, generic value
+> and keep diagnostics in the server log.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      include_error_marker: "<!-- esi include failed -->"
 ```
 
 #### Maximum parent body size
@@ -156,6 +210,25 @@ http:
     mesi:
       max_workers: 8
 ```
+
+#### Debug logging
+
+`debug: true` turns on the core's verbose ESI diagnostics: parsing progress,
+each `<esi:include>` fetch (URL, status, duration), timeouts, SSRF decisions
+and cache read/write errors. The core's default logger writes these lines to
+**stderr**, so they appear wherever the `rr` process's stderr goes; no
+separate log target has to be configured. Absent and explicit `false` both
+keep debug logging off.
+
+```yaml
+http:
+  middleware:
+    mesi:
+      debug: true
+```
+
+Debug lines can contain include URLs and upstream error details. Enable the
+option only while diagnosing a problem, not in production.
 
 #### Shared HTTP Client
 Enables TCP connection reuse across ESI includes. The shared client uses an SSRF-safe transport that blocks private IPs.
@@ -277,8 +350,8 @@ http:
 
 **Template placeholders:**
 - `${url}` — the include URL
-- `${header:Name}` — request header value (supports canonical, lowercase, uppercase forms)
-- `${cookie:Name}` — cookie value (supports canonical, lowercase, uppercase forms)
+- `${header:Name}` — request header value (case-insensitive)
+- `${cookie:Name}` — cookie value (case-insensitive)
 
 Unknown placeholders are left as literals.
 

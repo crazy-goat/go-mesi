@@ -1,0 +1,25 @@
+# Parse ESI only when the backend asks for it.
+#
+# With parse_on_header, a text/html response is parsed only when it carries
+# `Edge-control: dca=esi` (case-insensitive, comma-separated list allowed).
+# Every other response is sent through unchanged. Without the option, every
+# text/html response is parsed, which is the backward-compatible default.
+#
+# Note: max_body_size only bounds the pages that ARE parsed. An unsignalled
+# page is exempt from the cap, but the shared response writer still buffers
+# it in full, so max_body_size is not a memory guard for those pages.
+#
+# Note: do not combine parse_on_header with a cache_backend. The core cache
+# does not store the ESI signal, so a signalling fragment served from cache
+# is not re-parsed and its nested <esi:include> tags stay raw.
+http:
+  address: "0.0.0.0:8080"
+  middleware:
+    mesi:
+      parse_on_header: true
+
+      # Optional: bound the pages that ARE parsed. Unsignalled pages are
+      # exempt from this cap, but they are still buffered; see the notes
+      # above.
+      max_body_size: 1048576
+      on_oversize: pass

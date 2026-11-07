@@ -1,4 +1,5 @@
-FROM golang:alpine AS build
+FROM golang:1.26-alpine AS build
+ENV GOTOOLCHAIN=local
 COPY . /tmp/mesi-proxy
 WORKDIR /tmp/mesi-proxy
 ENV CGO_ENABLED=0

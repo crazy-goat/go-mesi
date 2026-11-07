@@ -452,6 +452,93 @@ else
 fi
 rm -f /tmp/mesi-traefik-maxworkers-absent.txt
 
+echo "=== Test 19: debug true emits core logs, absent stays silent (#225) ==="
+BEFORE=$(docker compose logs traefik 2>&1 | grep -c "parse_start" || true)
+curl -s --max-time 30 -H "Host: domain.com" http://localhost:"$HTTP_PORT"/ >/dev/null
+AFTER_ABSENT=$(docker compose logs traefik 2>&1 | grep -c "parse_start" || true)
+if [ "$AFTER_ABSENT" -ne "$BEFORE" ]; then
+    echo "FAIL: absent debug emitted parse_start ($BEFORE -> $AFTER_ABSENT)"
+    docker compose down
+    exit 1
+fi
+echo "PASS: absent debug wrote no core debug lines"
+RESPONSE=$(curl -s --max-time 30 -H "Host: debug.domain.com" http://localhost:"$HTTP_PORT"/)
+AFTER_DEBUG=$(docker compose logs traefik 2>&1 | grep -c "parse_start" || true)
+if [ "$AFTER_DEBUG" -gt "$AFTER_ABSENT" ]; then
+    echo "PASS: debug true emitted parse_start in Traefik logs"
+else
+    echo "FAIL: debug true emitted no parse_start ($AFTER_ABSENT -> $AFTER_DEBUG)"
+    echo "Response: $RESPONSE"
+    docker compose logs traefik
+    docker compose down
+    exit 1
+fi
+
+# --- parseOnHeader tests (#191) ---
+# / on the parseonheader route has no Edge-control header: the page must
+# be passed through byte for byte, without ESI processing or an added
+# Surrogate-Control. /esiheader carries `Edge-control: dca=esi`, so the
+# same middleware must process it.
+echo "=== Test 20: parseOnHeader true — no Edge-control passes through (#191) ==="
+POH_HEADERS=$(curl -s -D - -H "Host: parseonheader.domain.com" http://localhost:"$HTTP_PORT"/ -o /tmp/mesi-traefik-poh-nohdr.txt)
+POH_BODY=$(cat /tmp/mesi-traefik-poh-nohdr.txt)
+rm -f /tmp/mesi-traefik-poh-nohdr.txt
+if echo "$POH_BODY" | grep -q "Welcome to ESI Test" \
+    && echo "$POH_BODY" | grep -q '<esi:include src="http://test-server/esi"' \
+    && echo "$POH_BODY" | grep -q "Failed to include ESI" \
+    && ! echo "$POH_BODY" | grep -q "Hurray: Esi included!"; then
+    echo "PASS: unsignalled HTML page passed through unchanged (raw ESI preserved)"
+else
+    echo "FAIL: parseOnHeader true parsed a page without Edge-control"
+    echo "Response: $(echo "$POH_BODY" | head -c 500)"
+    docker compose down
+    exit 1
+fi
+if echo "$POH_HEADERS" | grep -qi "^Surrogate-Control:"; then
+    echo "FAIL: unsignalled page gained a Surrogate-Control header"
+    echo "Headers: $(echo "$POH_HEADERS" | head -20)"
+    docker compose down
+    exit 1
+fi
+echo "PASS: unsignalled page kept its upstream headers (no Surrogate-Control)"
+
+echo "=== Test 21: parseOnHeader true — Edge-control enables ESI (#191) ==="
+RESPONSE=$(curl -s -H "Host: parseonheader.domain.com" http://localhost:"$HTTP_PORT"/esiheader)
+if echo "$RESPONSE" | grep -q "Hurray: Esi included!" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include' \
+    && ! echo "$RESPONSE" | grep -q "Failed to include ESI"; then
+    echo "PASS: Edge-control dca=esi triggered ESI processing"
+else
+    echo "FAIL: signalled page was not processed"
+    echo "Response: $(echo "$RESPONSE" | head -c 500)"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 22: parseOnHeader false — HTML is always parsed (#191) ==="
+RESPONSE=$(curl -s -H "Host: parseonheaderfalse.domain.com" http://localhost:"$HTTP_PORT"/)
+if echo "$RESPONSE" | grep -q "Hurray: Esi included!" \
+    && ! echo "$RESPONSE" | grep -q '<esi:include' \
+    && ! echo "$RESPONSE" | grep -q "Failed to include ESI"; then
+    echo "PASS: explicit parseOnHeader false kept the always-parse behaviour"
+else
+    echo "FAIL: parseOnHeader false did not parse the HTML page"
+    echo "Response: $(echo "$RESPONSE" | head -c 500)"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 23: parseOnHeader scopes maxBodySize to signalled pages (#191) ==="
+POH_PLAIN_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: parseonheaderbody.domain.com" http://localhost:"$HTTP_PORT"/)
+POH_ESI_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: parseonheaderbody.domain.com" http://localhost:"$HTTP_PORT"/esiheader)
+if [ "$POH_PLAIN_STATUS" = "200" ] && [ "$POH_ESI_STATUS" = "502" ]; then
+    echo "PASS: unsignalled page skipped the 10-byte cap (200), signalled page answered 502"
+else
+    echo "FAIL: maxBodySize scoping wrong (unsignalled $POH_PLAIN_STATUS, signalled $POH_ESI_STATUS)"
+    docker compose down
+    exit 1
+fi
+
 docker compose down
 
 echo ""

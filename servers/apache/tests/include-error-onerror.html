@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>ESI Include Error onerror Test</title>
+</head>
+<body>
+    <h1>ESI Include Error onerror Test</h1>
+    <esi:include src="http://backend:8000/nonexistent.txt" onerror="continue" />
+    <p>After onerror include</p>
+</body>
+</html>

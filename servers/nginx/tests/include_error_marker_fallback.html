@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>ESI Include Error Marker with fallback</title>
+</head>
+<body>
+    <!-- A fallback body must win over IncludeErrorMarker. -->
+    <esi:include src="http://backend:8000/missing-include-error-marker-228.txt">
+        fallback content rendered
+    </esi:include>
+    <p>After fallback include</p>
+</body>
+</html>

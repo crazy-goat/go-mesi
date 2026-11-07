@@ -220,6 +220,82 @@ if ($path === '/timeout-default') {
     return true;
 }
 
+// debug (#216): true enables the core parser's debug logger, which writes
+// DEBUG parse/include/fetch lines to STDERR; false/absent keep it silent.
+// Served by a DEDICATED `php -S` spawned by test.sh on 127.0.0.1:18083 with
+// its stderr redirected to a log (same split as the slow/bytes servers
+// above), so test.sh can prove both the messages and their destination
+// stream in CI mode (where the main server's stderr is /dev/null) and in
+// docker mode.
+if ($path === '/debug-on') {
+    header('Content-Type: text/plain');
+    echo \mesi\parse_with_config('<p>debug-on</p>', 5, 'http://127.0.0.1/', ['debug' => true]);
+    return true;
+}
+
+if ($path === '/debug-off') {
+    header('Content-Type: text/plain');
+    echo \mesi\parse_with_config('<p>debug-off</p>', 5, 'http://127.0.0.1/', ['debug' => false]);
+    return true;
+}
+
+if ($path === '/debug-absent') {
+    header('Content-Type: text/plain');
+    echo \mesi\parse_with_config('<p>debug-absent</p>', 5, 'http://127.0.0.1/', []);
+    return true;
+}
+
+// include_error_marker (#221): a deterministic connection-refused include
+// (127.0.0.1:1 — nothing listens there) proves the marker is rendered in
+// place of a failed include. block_private_ips=false is required for the
+// loopback dial to be attempted at all, so the only failure mode is the
+// refused connection. onerror="continue" and a fallback body always take
+// priority over the marker.
+if ($path === '/include-error-marker') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>marker test</p><esi:include src="http://127.0.0.1:1/frag" />',
+        5,
+        $backend,
+        ['block_private_ips' => false, 'include_error_marker' => '<!-- MESI_ERROR_MARKER -->']
+    );
+    return true;
+}
+
+if ($path === '/include-error-marker-onerror') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>marker onerror</p><esi:include src="http://127.0.0.1:1/frag" onerror="continue" />',
+        5,
+        $backend,
+        ['block_private_ips' => false, 'include_error_marker' => '<!-- MESI_ERROR_MARKER -->']
+    );
+    return true;
+}
+
+if ($path === '/include-error-marker-fallback') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>marker fallback</p><esi:include src="http://127.0.0.1:1/frag">fallback body</esi:include>',
+        5,
+        $backend,
+        ['block_private_ips' => false, 'include_error_marker' => '<!-- MESI_ERROR_MARKER -->']
+    );
+    return true;
+}
+
+// Key absent: silent, legacy positional path (pre-#221 behaviour).
+if ($path === '/include-error-marker-absent') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        '<p>marker absent</p><esi:include src="http://127.0.0.1:1/frag" />',
+        5,
+        $backend,
+        ['block_private_ips' => false]
+    );
+    return true;
+}
+
 // max_response_size (#201): fragment bodies come from a DEDICATED
 // size-serving server spawned by test.sh on 127.0.0.1:18082 (php -S is
 // single-threaded — the include must never be served by this process, same
@@ -271,6 +347,95 @@ if ($path === '/max-response-size-zero') {
         5,
         $backend,
         ['max_response_size' => 0, 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// max_body_size / on_oversize (#538): the PARENT body cap is enforced by
+// the extension before ESI processing. The input below is exactly what this
+// route hands to parse_with_config(); its strlen() is the boundary the
+// limit is compared against (PHP has the whole body already, so there is no
+// Content-Length notion here).
+$body_limit_input = '<p>body limit test</p><esi:include src="' . $esiIncludeUrl . '" />';
+
+// Exact boundary: limit == body length -> still processed (rejects only
+// len > cap).
+if ($path === '/max-body-size-exact') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        $body_limit_input,
+        5,
+        $backend,
+        ['max_body_size' => strlen($body_limit_input), 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// Under the limit: processed normally.
+if ($path === '/max-body-size-under') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        $body_limit_input,
+        5,
+        $backend,
+        ['max_body_size' => strlen($body_limit_input) + 1, 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// limit+1 over, on_oversize=pass: the body is returned unchanged (the raw
+// <esi:include> tag stays and the backend is never fetched).
+if ($path === '/max-body-size-over-pass') {
+    header('Content-Type: text/html');
+    echo @\mesi\parse_with_config(
+        $body_limit_input,
+        5,
+        $backend,
+        ['max_body_size' => strlen($body_limit_input) - 1, 'on_oversize' => 'pass', 'block_private_ips' => false]
+    );
+    return true;
+}
+
+// limit+1 over, on_oversize=error: parse_with_config() returns false; this
+// route turns that into a 500 + marker so the functional test can observe
+// the deterministic failure.
+if ($path === '/max-body-size-over-error') {
+    header('Content-Type: text/html');
+    $r = @\mesi\parse_with_config(
+        $body_limit_input,
+        5,
+        $backend,
+        ['max_body_size' => strlen($body_limit_input) - 1, 'on_oversize' => 'error', 'block_private_ips' => false]
+    );
+    if ($r === false) {
+        http_response_code(500);
+        echo 'BODY-ERROR';
+    } else {
+        echo $r;
+    }
+    return true;
+}
+
+// Absent limit: unlimited (legacy path).
+if ($path === '/max-body-size-absent') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        $body_limit_input,
+        5,
+        $backend,
+        ['block_private_ips' => false]
+    );
+    return true;
+}
+
+// Explicit 0: the documented "unlimited" value.
+if ($path === '/max-body-size-zero') {
+    header('Content-Type: text/html');
+    echo \mesi\parse_with_config(
+        $body_limit_input,
+        5,
+        $backend,
+        ['max_body_size' => 0, 'block_private_ips' => false]
     );
     return true;
 }

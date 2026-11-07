@@ -14,6 +14,10 @@
 #include <apr_tables.h>
 #include <apr_strings.h>
 
+/* The ParseJson blob builder is shared with mod_mesi.c so these tests
+ * exercise the real rendering code (#165). */
+#include "parse_json_config.h"
+
 static apr_pool_t *pool;
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -72,6 +76,16 @@ typedef struct {
      * a storable configured value — the same "library default" — so
      * the sentinel must stay -1. */
     int max_workers;
+    /* Parser debug logging (#173). -1 = unset (off, legacy path),
+     * 0 = explicit Off, 1 = On. */
+    int debug;
+    /* Parse only signalled HTML responses (#172). -1 = unset (always
+     * parse), 0 = explicit Off, 1 = On. */
+    int parse_on_header;
+    /* Include-error marker (#165). NULL = unset, non-NULL (possibly "")
+     * = explicitly configured; non-NULL empty clears an inherited
+     * marker and renders nothing. */
+    const char *include_error_marker;
 } mesi_config;
 
 /* Sentinel/constant values copied from mod_mesi.c */
@@ -205,6 +219,44 @@ static const char *parse_shared_http_client(mesi_config *conf, int flag) {
     return NULL;
 }
 
+static const char *parse_debug(mesi_config *conf, int flag) {
+    conf->debug = flag;
+    return NULL;
+}
+
+static const char *parse_parse_on_header(mesi_config *conf, int flag) {
+    conf->parse_on_header = flag;
+    return NULL;
+}
+
+/* Header matcher copied from mod_mesi.c — mirrors mesi.IsEsiResponse:
+ * comma-separated list, case-insensitive, ASCII whitespace trimmed. */
+static int mesi_is_header_space(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
+}
+
+static int mesi_header_signals_esi(const char *value) {
+    if (!value) {
+        return 0;
+    }
+    const char *p = value;
+    for (;;) {
+        while (mesi_is_header_space(*p)) p++;
+        const char *start = p;
+        while (*p && *p != ',') p++;
+        const char *end = p;
+        while (end > start && mesi_is_header_space(end[-1])) end--;
+        if ((size_t)(end - start) == sizeof("dca=esi") - 1 &&
+            strncasecmp(start, "dca=esi", sizeof("dca=esi") - 1) == 0) {
+            return 1;
+        }
+        if (*p == '\0') {
+            return 0;
+        }
+        p++;
+    }
+}
+
 /* Parse helper copied verbatim from mod_mesi.c — verifies the
  * validator rejects malformed integers silently rather than falling
  * back to a default.
@@ -305,6 +357,93 @@ static const char *set_max_depth(mesi_config *conf, const char *arg) {
         return err;
     }
     conf->max_depth = v;
+    return NULL;
+}
+
+/* MesiIncludeErrorMarker — mirrors set_include_error_marker in
+ * mod_mesi.c (#165). The directive is AP_INIT_RAW_ARGS, so the module
+ * receives the raw argument text and parses one ap_getword_conf()
+ * token: quotes are stripped, `""` is a non-NULL empty value that lets
+ * a vhost clear an inherited marker, and a missing argument or any
+ * trailing token is an error. parse_conf_word() below mirrors the
+ * single-token subset of ap_getword_conf(); the real Apache parser is
+ * exercised by the `apache2 -t` cases in test.sh. */
+static int conf_space(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' ||
+           c == '\f';
+}
+
+/* Mirrors the single-token subset of Apache's ap_getword_conf():
+ * skip leading ASCII whitespace, strip one layer of '...' or "..."
+ * quotes (honouring \\ and \" / \' escapes inside them), then skip
+ * trailing whitespace. The caller still has to reject missing input
+ * (empty *line) and trailing tokens (non-empty *line afterwards). */
+static const char *parse_conf_word(const char **line) {
+    const char *str = *line, *strend;
+    char *res;
+    char quote;
+
+    while (conf_space(*str)) {
+        ++str;
+    }
+    if (!*str) {
+        *line = str;
+        return "";
+    }
+
+    if ((quote = *str) == '"' || quote == '\'') {
+        strend = str + 1;
+        while (*strend && *strend != quote) {
+            if (*strend == '\\' && strend[1] &&
+                (strend[1] == quote || strend[1] == '\\')) {
+                strend += 2;
+            } else {
+                ++strend;
+            }
+        }
+        res = apr_palloc(pool, (apr_size_t)(strend - str));
+        char *w = res;
+        for (const char *s = str + 1; s < strend; ++s) {
+            if (*s == '\\' && s + 1 < strend &&
+                (s[1] == quote || s[1] == '\\')) {
+                *w++ = *++s;
+            } else {
+                *w++ = *s;
+            }
+        }
+        *w = '\0';
+        if (*strend == quote) {
+            ++strend;
+        }
+    } else {
+        strend = str;
+        while (*strend && !conf_space(*strend)) {
+            ++strend;
+        }
+        res = apr_pstrndup(pool, str, (apr_size_t)(strend - str));
+    }
+
+    while (conf_space(*strend)) {
+        ++strend;
+    }
+    *line = strend;
+    return res;
+}
+
+static const char *set_include_error_marker(mesi_config *conf, const char *raw) {
+    const char *p = raw;
+    while (p && *p && conf_space(*p)) {
+        p++;
+    }
+    if (!p || *p == '\0') {
+        return "MesiIncludeErrorMarker requires exactly one argument";
+    }
+    const char *rest = p;
+    const char *marker = parse_conf_word(&rest);
+    if (*rest != '\0') {
+        return "MesiIncludeErrorMarker takes exactly one argument";
+    }
+    conf->include_error_marker = marker;
     return NULL;
 }
 
@@ -709,6 +848,9 @@ static void init_config(mesi_config *conf) {
     conf->on_oversize = -1;
     conf->max_concurrent_requests = -1;
     conf->max_workers = -1;
+    conf->debug = -1;
+    conf->parse_on_header = -1;
+    conf->include_error_marker = NULL;
 }
 
 static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merged) {
@@ -744,6 +886,13 @@ static void merge_configs(mesi_config *base, mesi_config *add, mesi_config *merg
     merged->max_workers = (add->max_workers != -1)
                               ? add->max_workers
                               : base->max_workers;
+    merged->debug = (add->debug != -1) ? add->debug : base->debug;
+    merged->parse_on_header = (add->parse_on_header != -1)
+                                  ? add->parse_on_header
+                                  : base->parse_on_header;
+    merged->include_error_marker = add->include_error_marker
+                                       ? add->include_error_marker
+                                       : base->include_error_marker;
 }
 
 /* Test cases */
@@ -1081,6 +1230,188 @@ TEST(merge_shared_http_client_child_inherits) {
 
     merge_configs(&base, &add, &merged);
     ASSERT_EQ(merged.shared_http_client, 1);
+}
+
+/* --- MesiDebug directive tests (#173) --- */
+
+TEST(debug_default_unset) {
+    /* A freshly-created config has the sentinel -1 (unset → off): the
+     * parser stays silent, byte-identical to pre-#173 behaviour. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_EQ(conf.debug, -1);
+}
+
+TEST(debug_on) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = parse_debug(&conf, 1);
+    ASSERT_NULL(err);
+    ASSERT_EQ(conf.debug, 1);
+}
+
+TEST(debug_off) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = parse_debug(&conf, 0);
+    ASSERT_NULL(err);
+    ASSERT_EQ(conf.debug, 0);
+}
+
+TEST(merge_debug_child_overrides) {
+    /* Child On / parent Off → On (add overrides base). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.debug = 0;
+    add.debug = 1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.debug, 1);
+}
+
+TEST(merge_debug_child_off_overrides) {
+    /* Explicit Off must override an inherited On — 0 is configured,
+     * not unset (the whole reason the sentinel is -1). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.debug = 1;
+    add.debug = 0;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.debug, 0);
+}
+
+TEST(merge_debug_child_inherits) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.debug = 1;
+    add.debug = -1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.debug, 1);
+}
+
+TEST(merge_debug_both_unset) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.debug, -1);
+}
+
+/* --- MesiParseOnHeader directive + Edge-control matcher tests (#172) --- */
+
+TEST(parse_on_header_default_unset) {
+    /* A freshly-created config has the sentinel -1 (unset → off): every
+     * HTML response is parsed, byte-identical to pre-#172 behaviour. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_EQ(conf.parse_on_header, -1);
+}
+
+TEST(parse_on_header_on) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = parse_parse_on_header(&conf, 1);
+    ASSERT_NULL(err);
+    ASSERT_EQ(conf.parse_on_header, 1);
+}
+
+TEST(parse_on_header_off) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = parse_parse_on_header(&conf, 0);
+    ASSERT_NULL(err);
+    ASSERT_EQ(conf.parse_on_header, 0);
+}
+
+TEST(merge_parse_on_header_child_overrides) {
+    /* Child On / parent Off → On (add overrides base). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.parse_on_header = 0;
+    add.parse_on_header = 1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.parse_on_header, 1);
+}
+
+TEST(merge_parse_on_header_child_off_overrides) {
+    /* Explicit Off must override an inherited On — 0 is configured,
+     * not unset (the whole reason the sentinel is -1). */
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.parse_on_header = 1;
+    add.parse_on_header = 0;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.parse_on_header, 0);
+}
+
+TEST(merge_parse_on_header_child_inherits) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.parse_on_header = 1;
+    add.parse_on_header = -1;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.parse_on_header, 1);
+}
+
+TEST(merge_parse_on_header_both_unset) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_EQ(merged.parse_on_header, -1);
+}
+
+TEST(header_signals_esi_matches) {
+    ASSERT_EQ(mesi_header_signals_esi("dca=esi"), 1);
+}
+
+TEST(header_signals_esi_case_insensitive) {
+    ASSERT_EQ(mesi_header_signals_esi("DCA=ESI"), 1);
+    ASSERT_EQ(mesi_header_signals_esi("Dca=Esi"), 1);
+}
+
+TEST(header_signals_esi_comma_list) {
+    ASSERT_EQ(mesi_header_signals_esi("no-cache, dca=esi"), 1);
+    ASSERT_EQ(mesi_header_signals_esi("no-cache,dca=esi,private"), 1);
+    ASSERT_EQ(mesi_header_signals_esi("  dca=esi  "), 1);
+    ASSERT_EQ(mesi_header_signals_esi("dca=esi,"), 1);
+}
+
+TEST(header_signals_esi_no_match) {
+    ASSERT_EQ(mesi_header_signals_esi("max-age=60"), 0);
+    ASSERT_EQ(mesi_header_signals_esi("esi"), 0);
+    ASSERT_EQ(mesi_header_signals_esi("dca=esi-extra"), 0);
+    ASSERT_EQ(mesi_header_signals_esi("xdca=esi"), 0);
+    ASSERT_EQ(mesi_header_signals_esi(""), 0);
+}
+
+TEST(header_signals_esi_null) {
+    ASSERT_EQ(mesi_header_signals_esi(NULL), 0);
 }
 
 /* --- Cache backend directive tests (#174) --- */
@@ -2337,6 +2668,258 @@ TEST(merge_max_depth_child_zero_overrides) {
     ASSERT_EQ(merged.max_depth, 0);
 }
 
+/* --- MesiIncludeErrorMarker directive tests (#165) --- */
+
+TEST(include_error_marker_default_unset) {
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(conf.include_error_marker);
+}
+
+TEST(include_error_marker_set_unquoted) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err = set_include_error_marker(&conf, "<!--marker-->");
+    ASSERT_NULL(err);
+    ASSERT_STR_EQ(conf.include_error_marker, "<!--marker-->");
+}
+
+TEST(include_error_marker_set_quoted_spaces) {
+    mesi_config conf;
+    init_config(&conf);
+
+    const char *err =
+        set_include_error_marker(&conf, "\"<!-- ESI include failed -->\"");
+    ASSERT_NULL(err);
+    ASSERT_STR_EQ(conf.include_error_marker, "<!-- ESI include failed -->");
+}
+
+TEST(include_error_marker_empty_stored) {
+    /* Explicit "" reaches the setter as a quoted-empty raw argument
+     * (Apache's TAKE1 parser would reject it before the setter), and is
+     * stored as a non-NULL pointer so it can clear an inherited marker;
+     * it renders nothing (same as unset). */
+    mesi_config conf;
+    init_config(&conf);
+    conf.include_error_marker = "<!-- parent -->";
+
+    const char *err = set_include_error_marker(&conf, "\"\"");
+    ASSERT_NULL(err);
+    ASSERT_NOT_NULL(conf.include_error_marker);
+    ASSERT_STR_EQ(conf.include_error_marker, "");
+}
+
+TEST(include_error_marker_empty_single_quotes) {
+    mesi_config conf;
+    init_config(&conf);
+    conf.include_error_marker = "<!-- parent -->";
+
+    const char *err = set_include_error_marker(&conf, "''");
+    ASSERT_NULL(err);
+    ASSERT_NOT_NULL(conf.include_error_marker);
+    ASSERT_STR_EQ(conf.include_error_marker, "");
+}
+
+TEST(include_error_marker_missing_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    conf.include_error_marker = "<!-- keep -->";
+
+    ASSERT_NOT_NULL(set_include_error_marker(&conf, ""));
+    ASSERT_NOT_NULL(set_include_error_marker(&conf, " \t "));
+    ASSERT_NOT_NULL(set_include_error_marker(&conf, NULL));
+    /* A rejected directive must not overwrite the configured marker. */
+    ASSERT_STR_EQ(conf.include_error_marker, "<!-- keep -->");
+}
+
+TEST(include_error_marker_trailing_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+
+    ASSERT_NOT_NULL(
+        set_include_error_marker(&conf, "\"<!-- ESI include failed -->\" extra"));
+    ASSERT_NOT_NULL(set_include_error_marker(&conf, "\"\" \"\""));
+    ASSERT_NULL(conf.include_error_marker);
+}
+
+TEST(merge_include_error_marker_child_overrides) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.include_error_marker = NULL;
+    add.include_error_marker = "<!-- add -->";
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_STR_EQ(merged.include_error_marker, "<!-- add -->");
+}
+
+TEST(merge_include_error_marker_child_inherits) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.include_error_marker = "<!-- base -->";
+    add.include_error_marker = NULL;
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_STR_EQ(merged.include_error_marker, "<!-- base -->");
+}
+
+TEST(merge_include_error_marker_child_empty_clears) {
+    mesi_config base, add, merged;
+    init_config(&base);
+    init_config(&add);
+    init_config(&merged);
+    base.include_error_marker = "<!-- base -->";
+    add.include_error_marker = "";
+
+    merge_configs(&base, &add, &merged);
+    ASSERT_NOT_NULL(merged.include_error_marker);
+    ASSERT_STR_EQ(merged.include_error_marker, "");
+}
+
+TEST(include_error_marker_json_escapes) {
+    /* Quotes and backslashes must survive the ParseJson blob. */
+    ASSERT_STR_EQ(mesi_json_string(pool, "<!-- \"err\" \\ path -->"),
+                  "\"<!-- \\\"err\\\" \\\\ path -->\"");
+    /* Control characters are \u00XX-escaped. */
+    ASSERT_STR_EQ(mesi_json_string(pool, "a\nb"), "\"a\\u000ab\"");
+}
+
+/* --- ParseJson blob assembly (regression tests, #165/#167–#173) --- */
+
+/* every optional directive set at once must land in the blob. This is the
+ * regression test for #165: the merge that added the marker kept the
+ * seven-%s apr_psprintf format string while passing eight optional parts,
+ * so the last one (requestCtx) was silently dropped and a vhost that
+ * routed through ParseJson lost its cache-key template context — different
+ * Accept-Language values shared one URL-only cache entry. The assertion is
+ * on the exact blob so a dropped or reordered part fails loudly. */
+TEST(parse_json_blob_all_optional_keys) {
+    mesi_parse_json_config cfg = {
+        .depth = 3,
+        .base_url = "http://backend:8080/",
+        .allowed_hosts = "backend other",
+        .block_private_ips = 1,
+        .allow_private_for_allowed = 0,
+        .request_ctx_json = "{\"ctx\":{\"header:Accept-Language\":\"pl\"}}",
+        .timeout_seconds = 7,
+        .max_response_size = 1048576,
+        .max_concurrent_requests = 4,
+        .max_workers = 8,
+        .debug = 1,
+        .parse_on_header = 1,
+        .include_error_marker = "<!-- err -->",
+        .cache_key_template = "{header:Accept-Language}",
+    };
+    const char *blob = mesi_build_parse_json_config(pool, &cfg);
+    ASSERT_STR_EQ(blob,
+                  "{\"maxDepth\":3"
+                  ",\"defaultUrl\":\"http://backend:8080/\""
+                  ",\"allowedHosts\":\"backend other\""
+                  ",\"blockPrivateIPs\":true"
+                  ",\"allowPrivateIPsForAllowedHosts\":false"
+                  ",\"timeoutSeconds\":7"
+                  ",\"maxResponseSize\":1048576"
+                  ",\"maxConcurrentRequests\":4"
+                  ",\"maxWorkers\":8"
+                  ",\"debug\":true"
+                  ",\"parseOnHeader\":true"
+                  ",\"includeErrorMarker\":\"<!-- err -->\""
+                  ",\"cacheKeyTemplate\":\"{header:Accept-Language}\""
+                  ",\"requestCtx\":{\"ctx\":{\"header:Accept-Language\":\"pl\"}}}");
+    /* Explicitly pin the two parts that share the "last argument" slot the
+     * 7-%s bug dropped: the request context must survive, and it must come
+     * after the template that consumes it. */
+    ASSERT_STR_CONTAINS(blob, ",\"requestCtx\":{");
+    ASSERT_STR_CONTAINS(blob, "\"cacheKeyTemplate\":\"{header:Accept-Language}\"");
+    assert(strstr(blob, "\"cacheKeyTemplate\"") < strstr(blob, "\"requestCtx\""));
+}
+
+/* A config with every optional directive unset keeps the legacy blob: no
+ * optional key at all (the core then applies its positional-path
+ * defaults). */
+TEST(parse_json_blob_minimal) {
+    mesi_parse_json_config cfg = {
+        .depth = 5,
+        .base_url = "http://127.0.0.1/",
+        .allowed_hosts = "backend",
+        .block_private_ips = 0,
+        .allow_private_for_allowed = 1,
+        .request_ctx_json = "",
+        .timeout_seconds = -1,
+        .max_response_size = -1,
+        .max_concurrent_requests = -1,
+        .max_workers = -1,
+        .debug = -1,
+        .parse_on_header = -1,
+        .include_error_marker = NULL,
+        .cache_key_template = NULL,
+    };
+    const char *blob = mesi_build_parse_json_config(pool, &cfg);
+    ASSERT_STR_EQ(blob,
+                  "{\"maxDepth\":5"
+                  ",\"defaultUrl\":\"http://127.0.0.1/\""
+                  ",\"allowedHosts\":\"backend\""
+                  ",\"blockPrivateIPs\":false"
+                  ",\"allowPrivateIPsForAllowedHosts\":true}");
+    ASSERT_NULL(strstr(blob, "\"requestCtx\""));
+    ASSERT_NULL(strstr(blob, "\"cacheKeyTemplate\""));
+    ASSERT_NULL(strstr(blob, "\"includeErrorMarker\""));
+}
+
+/* requestCtx is only meaningful next to a cache key template: without a
+ * configured template the core uses URL-only keys, so the context must not
+ * be rendered (mirrors ParseWithConfigCtx's contract). */
+TEST(parse_json_blob_request_ctx_needs_template) {
+    mesi_parse_json_config cfg = {
+        .depth = 5,
+        .base_url = "http://127.0.0.1/",
+        .allowed_hosts = "backend",
+        .block_private_ips = 0,
+        .allow_private_for_allowed = 0,
+        .request_ctx_json = "{\"ctx\":{\"header:Accept-Language\":\"pl\"}}",
+        .timeout_seconds = -1,
+        .max_response_size = -1,
+        .max_concurrent_requests = -1,
+        .max_workers = -1,
+        .debug = -1,
+        .parse_on_header = -1,
+        .include_error_marker = NULL,
+        .cache_key_template = "",
+    };
+    const char *blob = mesi_build_parse_json_config(pool, &cfg);
+    ASSERT_NULL(strstr(blob, "\"requestCtx\""));
+    ASSERT_NULL(strstr(blob, "\"cacheKeyTemplate\""));
+}
+
+/* A template without a resolved context still renders the template (the
+ * core then fails the request if a placeholder cannot be resolved) but
+ * omits requestCtx. */
+TEST(parse_json_blob_template_without_ctx) {
+    mesi_parse_json_config cfg = {
+        .depth = 5,
+        .base_url = "http://127.0.0.1/",
+        .allowed_hosts = "backend",
+        .block_private_ips = 0,
+        .allow_private_for_allowed = 0,
+        .request_ctx_json = "",
+        .timeout_seconds = -1,
+        .max_response_size = -1,
+        .max_concurrent_requests = -1,
+        .max_workers = -1,
+        .debug = -1,
+        .parse_on_header = -1,
+        .include_error_marker = NULL,
+        .cache_key_template = "{header:Accept-Language}",
+    };
+    const char *blob = mesi_build_parse_json_config(pool, &cfg);
+    ASSERT_STR_CONTAINS(blob, "\"cacheKeyTemplate\":\"{header:Accept-Language}\"");
+    ASSERT_NULL(strstr(blob, "\"requestCtx\""));
+}
+
 /* --- MesiTimeout directive tests (#167) --- */
 
 TEST(timeout_default_unset) {
@@ -3195,6 +3778,29 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_shared_http_client_child_overrides);
     RUN_TEST(merge_shared_http_client_child_inherits);
 
+    printf("\nTesting set_debug() (#173):\n");
+    RUN_TEST(debug_default_unset);
+    RUN_TEST(debug_on);
+    RUN_TEST(debug_off);
+    RUN_TEST(merge_debug_child_overrides);
+    RUN_TEST(merge_debug_child_off_overrides);
+    RUN_TEST(merge_debug_child_inherits);
+    RUN_TEST(merge_debug_both_unset);
+
+    printf("\nTesting MesiParseOnHeader + Edge-control matcher (#172):\n");
+    RUN_TEST(parse_on_header_default_unset);
+    RUN_TEST(parse_on_header_on);
+    RUN_TEST(parse_on_header_off);
+    RUN_TEST(merge_parse_on_header_child_overrides);
+    RUN_TEST(merge_parse_on_header_child_off_overrides);
+    RUN_TEST(merge_parse_on_header_child_inherits);
+    RUN_TEST(merge_parse_on_header_both_unset);
+    RUN_TEST(header_signals_esi_matches);
+    RUN_TEST(header_signals_esi_case_insensitive);
+    RUN_TEST(header_signals_esi_comma_list);
+    RUN_TEST(header_signals_esi_no_match);
+    RUN_TEST(header_signals_esi_null);
+
     printf("\nTesting set_cache_backend() (#174):\n");
     RUN_TEST(cache_backend_memory);
     RUN_TEST(cache_backend_empty_disables);
@@ -3350,6 +3956,25 @@ int main(int argc, char *argv[]) {
     RUN_TEST(merge_max_depth_child_overrides);
     RUN_TEST(merge_max_depth_child_inherits);
     RUN_TEST(merge_max_depth_child_zero_overrides);
+
+    printf("\nTesting MesiIncludeErrorMarker (#165):\n");
+    RUN_TEST(include_error_marker_default_unset);
+    RUN_TEST(include_error_marker_set_unquoted);
+    RUN_TEST(include_error_marker_set_quoted_spaces);
+    RUN_TEST(include_error_marker_empty_stored);
+    RUN_TEST(include_error_marker_empty_single_quotes);
+    RUN_TEST(include_error_marker_missing_rejected);
+    RUN_TEST(include_error_marker_trailing_rejected);
+    RUN_TEST(merge_include_error_marker_child_overrides);
+    RUN_TEST(merge_include_error_marker_child_inherits);
+    RUN_TEST(merge_include_error_marker_child_empty_clears);
+    RUN_TEST(include_error_marker_json_escapes);
+
+    printf("\nTesting ParseJson blob assembly (#165/#167-#173):\n");
+    RUN_TEST(parse_json_blob_all_optional_keys);
+    RUN_TEST(parse_json_blob_minimal);
+    RUN_TEST(parse_json_blob_request_ctx_needs_template);
+    RUN_TEST(parse_json_blob_template_without_ctx);
 
     printf("\nTesting set_timeout() (#167):\n");
     RUN_TEST(timeout_default_unset);

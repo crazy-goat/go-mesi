@@ -214,6 +214,71 @@ location / {
 
 See [examples/nginx-max-response-size.conf](../../examples/nginx-max-response-size.conf) for a full example file.
 
+## Include Error Marker
+
+The `mesi_include_error_marker` directive renders a static HTML marker in place of a failed `<esi:include>` when the tag has neither `onerror="continue"` nor a fallback body. Until #228 a failed include silently disappeared from the rendered page — a "ghost include" with no trace for developers, QA or monitoring. The directive maps to `mesi.EsiParserConfig.IncludeErrorMarker` (the same field Apache's `MesiIncludeErrorMarker` and Caddy's `include_error_marker` set).
+
+### Directive
+
+#### `mesi_include_error_marker`
+
+- **Syntax:** `mesi_include_error_marker <marker>`
+- **Default:** unset → **silent** (the pre-#228 behaviour: a failed include is replaced with nothing)
+- **Context:** `location`
+
+Semantics:
+
+- **Unset** → silent and the request stays on the byte-identical legacy positional path.
+- **A non-empty marker** → rendered **verbatim** in place of each failed include that has no `onerror="continue"` and no fallback tag body.
+- **An explicit empty value** (`mesi_include_error_marker "";`) → configured but silent. It still routes the parse through `ParseJson` as `{"includeErrorMarker":""}` (the same value the positional path applies), and it clears an inherited marker in a nested location.
+- **`onerror="continue"` and fallback bodies always win:** the marker is used only on the include-error path where neither mechanism applies.
+
+The value is passed through libgomesi's **`ParseJson`** entry point as the additive `{"includeErrorMarker":"…"}` string key, JSON-escaped by the module's shared helper (quotes, backslashes and control characters cannot break the blob) and then inserted into the response verbatim by the core. The blob also carries the other resolved settings (`maxDepth`, `defaultUrl`, `allowedHosts`, SSRF flags, optional `timeoutSeconds` / `maxResponseSize` / `maxConcurrentRequests` / `maxWorkers` / `debug` / `cacheKeyTemplate` + `requestCtx`), so behaviour matches the positional path except for the marker. A `ParseJson` NULL fails the request closed; an older `libgomesi.so` without the symbol logs a per-request warning (`mesi: mesi_include_error_marker is set but libgomesi lacks ParseJson — mesi_include_error_marker ignored (failed includes stay silent, the pre-#228 behaviour)`) and stays silent — never a crash.
+
+Nested `location` blocks inherit the marker: an unset child takes the parent's value (the `ngx_str_t` `data == NULL` sentinel survives the merge), and a child's explicit empty value clears an inherited marker. The directive accepts one token, so a marker containing spaces must be quoted; `mesi_include_error_marker "";` is a real explicit-empty value, and a missing argument, an unquoted marker with spaces or a trailing token fails `nginx -t`.
+
+> **Security — read before choosing a marker:** the marker is **public response output**, inserted as raw HTML with no escaping or filtering. It must be a **static, operator-controlled string** and must **never** contain internal error details, upstream URLs, host names, IP addresses, stack traces or any value derived from the request or the failing include. Common safe choices are an invisible HTML comment (`<!-- ESI include failed -->`), a visible placeholder (`[ESI ERROR]`), or the explicit empty value for production silence. Never use it to echo the error message.
+
+### Example
+
+```nginx
+# Debug-friendly: an invisible marker in the rendered HTML.
+location /debug/ {
+    enable_mesi on;
+    mesi_include_error_marker "<!-- ESI include failed -->";
+    proxy_pass http://backend;
+}
+
+# Visible placeholder for staging.
+location /staging/ {
+    enable_mesi on;
+    mesi_include_error_marker "[ESI ERROR]";
+    proxy_pass http://backend;
+}
+
+# Production: explicit empty marker clears a marker inherited from a
+# broader location and keeps failed includes silent.
+location /prod/ {
+    enable_mesi on;
+    mesi_include_error_marker "";
+    proxy_pass http://backend;
+
+    location /prod/inherits/ {
+        enable_mesi on;
+        # No directive: inherits the parent's explicit empty (silent).
+        proxy_pass http://backend;
+    }
+}
+
+location / {
+    enable_mesi on;
+    # mesi_include_error_marker unset → silent (legacy path)
+    proxy_pass http://backend;
+}
+```
+
+See [examples/nginx-include-error-marker.conf](../../examples/nginx-include-error-marker.conf) for a full example file.
+
 ## Max Concurrent Requests
 
 The `mesi_max_concurrent_requests` directive caps how many `<esi:include>` HTTP fetches may run at the same time during a single ESI parse. Until #214 the nginx module had no way to configure this limit.
@@ -319,6 +384,98 @@ location / {
 ```
 
 See [examples/nginx-max-workers.conf](../../examples/nginx-max-workers.conf) for a full example file.
+
+## Debug Logging
+
+The `mesi_debug` directive turns on the Go parser's debug logger (`mesi.EsiParserConfig.Debug`). Until #223 the nginx module had no way to enable it, so a failing or empty `<esi:include>` produced no diagnostics at all.
+
+### Directive
+
+#### `mesi_debug`
+
+- **Syntax:** `mesi_debug on | off`
+- **Default:** `off` (unset stays on the byte-identical legacy path, parser silent)
+- **Context:** `location`
+
+Semantics:
+
+- **Unset** → **off**. Omitting the directive keeps the request on the legacy positional path and the core's discard logger, exactly like previous releases.
+- **`on`** enables `DEBUG` lines for parse, include and fetch events: `parse_start`, `include_start` / `include_failed` (with `src`), `fetch_start` / `fetch_done` (URL, HTTP status, duration), `fetch_timeout`, SSRF rejections, depth-limit enforcement and A/B selection.
+- **`off`** is an explicit request for silence. It is a *configured* value (not the unset sentinel), so it routes the parse through `ParseJson` with `{"debug":false}` — the same honest-configuration rule as the other sentinel-based directives.
+
+**Where the output goes:** the core's default logger writes to **`stderr`** (Go's `os.Stderr`), which is the nginx worker's file descriptor 2. Docker captures that stream (`docker compose logs nginx`); a bare-metal nginx started by systemd or a shell writes it to the same place as its own stderr, and nginx's `error_log stderr;` directive likewise targets fd 2. Debug lines are **never sent to the client**. If your `error_log` points at a file rather than `stderr`, redirect the process's stderr (for example `nginx ... 2>> /var/log/nginx/error.log`) or use `error_log stderr;` — the Go logger does not go through nginx's own log pipeline.
+
+When the directive is set, the whole parse is routed through libgomesi's **`ParseJson`** entry point with the additive `{"debug":true}` / `{"debug":false}` key (the `debug` key exists in `config.ParseConfig`; absent → `false`, so every positional `Parse*` entry point stays silent). The blob also carries the other resolved settings (`maxDepth`, `defaultUrl`, `allowedHosts`, SSRF flags, optional `timeoutSeconds` / `maxResponseSize` / `maxConcurrentRequests` / `maxWorkers` / `cacheKeyTemplate` + `requestCtx`), so behaviour matches the positional path except for the debug logger. Nested `location` blocks inherit the value over the `NGX_CONF_UNSET` sentinel: an unset child takes the parent's value, and a child's explicit `off` overrides an inherited `on`.
+
+With an older `libgomesi.so` that lacks `ParseJson`, the directive is ignored with a per-request warning (`mesi: mesi_debug is set but libgomesi lacks ParseJson — mesi_debug ignored (parser stays silent, the pre-#223 behaviour)`) and the parser stays silent — never a crash and never a silently wrong config. A `ParseJson` NULL fails the request closed (config errors are logged Go-side).
+
+> **Operational warning:** debug output is high-volume (multiple lines per include) and contains every fetched include URL, which may leak internal hostnames or signed query strings if logs are shared. Enable it only while troubleshooting, for the specific location that needs it — not globally and not as a long-term production setting.
+
+### Example
+
+```nginx
+location /troubleshoot/ {
+    enable_mesi on;
+    mesi_debug on;         # parser diagnostics → stderr (Docker logs / error log)
+    proxy_pass http://backend;
+}
+
+location / {
+    enable_mesi on;
+    # mesi_debug unset → off (silent, legacy path)
+    proxy_pass http://backend;
+}
+```
+
+See [examples/nginx-debug.conf](../../examples/nginx-debug.conf) for a full example file.
+
+## Parse On Header
+
+The `mesi_parse_on_header` directive makes ESI processing conditional on the upstream response carrying an ESI signal. Until #188 the nginx module always parsed every `text/html` response.
+
+### Directive
+
+#### `mesi_parse_on_header`
+
+- **Syntax:** `mesi_parse_on_header on | off`
+- **Default:** `off` (unset stays on the byte-identical legacy path, always parse)
+- **Context:** `location`
+
+Semantics:
+
+- **Unset** → **off**. Omitting the directive keeps the request on the legacy positional path: every `text/html` response is parsed, exactly like previous releases.
+- **`on`** processes a `text/html` response only when its upstream headers carry:
+
+  ```text
+  Edge-control: dca=esi
+  ```
+
+  The value is a case-insensitive, comma-separated list, so `Edge-control: no-cache, dca=esi` matches while `Edge-control: max-age=60` does not — the same contract as `mesi.IsEsiResponse`, Caddy's `parse_on_header` and Apache's `MesiParseOnHeader`. The check runs in the head filter **before** any body is buffered: an unsignalled page is passed through byte for byte with its upstream headers, is not limited by `mesi_max_body_size`, and does not get the module's `Surrogate-Capability: ESI/1.0` header. Non-HTML responses are unaffected either way.
+- **`off`** is an explicit request for the always-parse behaviour. It is a *configured* value (not the unset sentinel), so it routes the parse through `ParseJson` with `{"parseOnHeader":false}` — honest configuration, and it overrides an inherited `on` in a nested location.
+
+When the directive is set, the whole parse is routed through libgomesi's **`ParseJson`** entry point with the additive `{"parseOnHeader":true|false}` key (absent → `false`, so every positional `Parse*` entry point keeps the always-parse behaviour). The blob also carries the other resolved settings (`maxDepth`, `defaultUrl`, `allowedHosts`, SSRF flags, optional `timeoutSeconds` / `maxResponseSize` / `maxConcurrentRequests` / `maxWorkers` / `debug` / `cacheKeyTemplate` + `requestCtx`). The flag also reaches the core parser, so a fetched HTML fragment is parsed only when its own response signals ESI. Nested `location` blocks inherit the value over the `NGX_CONF_UNSET` sentinel: an unset child takes the parent's value, and a child's explicit `off` overrides an inherited `on`.
+
+With an older `libgomesi.so` that lacks `ParseJson`, the nested-fragment half is ignored with a per-request warning (`mesi: mesi_parse_on_header is set but libgomesi lacks ParseJson — mesi_parse_on_header ignored for fetched fragments ...`); the top-level head filter still honours the directive. A `ParseJson` NULL fails the request closed (config errors are logged Go-side).
+
+> **Known cache caveat (shared with Caddy and Apache):** the core cache stores only the fragment body, and a cache hit reports no ESI signal. With `mesi_cache_backend` enabled, a signalling fragment is parsed on the first request but its nested includes stay raw on later cached requests. Do not combine `mesi_cache_backend` with `mesi_parse_on_header` until the core caches the ESI signal.
+
+### Example
+
+```nginx
+location /esi/ {
+    enable_mesi on;
+    mesi_parse_on_header on;   # only parse when the backend sends Edge-control: dca=esi
+    proxy_pass http://backend;
+}
+
+location /always/ {
+    enable_mesi on;
+    # mesi_parse_on_header unset → every text/html response is parsed
+    proxy_pass http://backend;
+}
+```
+
+See [examples/nginx-parse-on-header.conf](../../examples/nginx-parse-on-header.conf) for a full example file.
 
 ## Shared HTTP Client
 

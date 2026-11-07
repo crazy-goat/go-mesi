@@ -41,6 +41,7 @@ step "clang-format" bash -c 'git ls-files -z -- "*.c" "*.h" | xargs -0 -r clang-
 step "php -l" bash -c 'git ls-files -z -- "*.php" | xargs -0 -r -n1 php -l >/dev/null'
 step "shellcheck" bash -c 'git ls-files -z "*.sh" | xargs -0 -r shellcheck'
 step "hadolint" bash -c 'git ls-files -z "*Dockerfile" "*Dockerfile.*" | xargs -0 -r hadolint'
+step "docker build pins" scripts/check-docker-build-pins.sh
 step "generated artifacts" scripts/check-no-generated-artifacts.sh
 
 if [ "${#failed[@]}" -gt 0 ]; then

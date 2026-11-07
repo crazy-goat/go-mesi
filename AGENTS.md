@@ -30,10 +30,9 @@ They record decisions, for example that errors are never silent defaults.
 
 ## Commands
 
-Go version: 1.25 (CI). This is the highest `go` directive declared by any module in the
-repo (`servers/caddy`); CI must never be older than that, or builds fail with
-`go.mod requires go >= X` once a toolchain pins `GOTOOLCHAIN=local`. Keep this line and
-the `go-version` values in `.github/workflows/tests.yaml` in sync.
+CI uses Go 1.26. The `servers/caddy` module requires Go 1.26.
+The CI Go version must be equal to or later than the Go version in each module.
+Keep this version and the `go-version` values in `.github/workflows/tests.yaml` in sync.
 
 ```bash
 # Guard: no generated artifacts may be tracked

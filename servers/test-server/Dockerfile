@@ -1,4 +1,5 @@
-FROM golang:1.23-alpine AS build
+FROM golang:1.26-alpine AS build
+ENV GOTOOLCHAIN=local
 COPY . /tmp/example-server
 WORKDIR /tmp/example-server
 ENV CGO_ENABLED=0

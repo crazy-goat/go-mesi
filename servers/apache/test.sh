@@ -23,6 +23,13 @@ APACHE_PORT_8094=${APACHE_PORT_8094:-8094}
 APACHE_PORT_8095=${APACHE_PORT_8095:-8095}
 APACHE_PORT_8096=${APACHE_PORT_8096:-8096}
 APACHE_PORT_8097=${APACHE_PORT_8097:-8097}
+APACHE_PORT_8098=${APACHE_PORT_8098:-8098}
+APACHE_PORT_8099=${APACHE_PORT_8099:-8099}
+APACHE_PORT_8100=${APACHE_PORT_8100:-8100}
+APACHE_PORT_8101=${APACHE_PORT_8101:-8101}
+APACHE_PORT_8102=${APACHE_PORT_8102:-8102}
+APACHE_PORT_8103=${APACHE_PORT_8103:-8103}
+APACHE_PORT_8104=${APACHE_PORT_8104:-8104}
 
 docker compose up -d --wait
 
@@ -198,6 +205,50 @@ check_memcached_servers_config reject "quote in the second entry" "mc:11211 'oth
 check_memcached_servers_config reject "backslashed host" 'mc\:11211' "invalid character"
 check_memcached_servers_config accept "two unquoted entries" "mc:11211 other:11211"
 
+
+echo "=== Test 6f: MesiDebug Off — parser emits no DEBUG output (#173) ==="
+# 8099 sets an explicit Off; the default *:80 vhost is unset (also off).
+# The assertion is a before/after delta so it does not depend on this
+# test running before the On case (no line may be added by the request).
+DEBUG_OFF_BEFORE=$(docker compose exec -T apache sh -c 'grep -c "DEBUG include_" /var/log/apache2/error.log 2>/dev/null || true')
+DEBUG_OFF_BEFORE=${DEBUG_OFF_BEFORE:-0}
+DEBUG_OFF_RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8099"/debug-failed-include.html)
+DEBUG_OFF_AFTER=$(docker compose exec -T apache sh -c 'grep -c "DEBUG include_" /var/log/apache2/error.log 2>/dev/null || true')
+DEBUG_OFF_AFTER=${DEBUG_OFF_AFTER:-0}
+if echo "$DEBUG_OFF_RESPONSE" | grep -q "After failed debug include" \
+    && [ "$DEBUG_OFF_AFTER" -eq "$DEBUG_OFF_BEFORE" ]; then
+    echo "PASS: MesiDebug Off rendered the page and added no parser DEBUG lines"
+else
+    echo "FAIL: MesiDebug Off added parser DEBUG output (before: $DEBUG_OFF_BEFORE, after: $DEBUG_OFF_AFTER)"
+    echo "Response: $DEBUG_OFF_RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 6g: MesiDebug On — failed include details in error log (#173) ==="
+# 8098 sets MesiDebug On. The missing include must make the core log
+# include_failed plus the fetch URL/status to stderr, which Apache
+# captures in error.log. The unique 173 filename keeps the assertion
+# independent of other test traffic.
+DEBUG_ON_BEFORE=$(docker compose exec -T apache sh -c 'grep -c "DEBUG include_" /var/log/apache2/error.log 2>/dev/null || true')
+DEBUG_ON_BEFORE=${DEBUG_ON_BEFORE:-0}
+DEBUG_ON_RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8098"/debug-failed-include.html)
+DEBUG_ON_AFTER=$(docker compose exec -T apache sh -c 'grep -c "DEBUG include_" /var/log/apache2/error.log 2>/dev/null || true')
+DEBUG_ON_AFTER=${DEBUG_ON_AFTER:-0}
+DEBUG_LOG=$(docker compose exec -T apache sh -c 'cat /var/log/apache2/error.log 2>/dev/null' || true)
+if echo "$DEBUG_ON_RESPONSE" | grep -q "After failed debug include" \
+    && [ "$DEBUG_ON_AFTER" -gt "$DEBUG_ON_BEFORE" ] \
+    && echo "$DEBUG_LOG" | grep -q "DEBUG include_failed" \
+    && echo "$DEBUG_LOG" | grep -q "missing-debug-fragment-173.txt"; then
+    echo "PASS: MesiDebug On logged include_failed with the failing include URL"
+else
+    echo "FAIL: MesiDebug On did not produce the expected DEBUG diagnostics (before: $DEBUG_ON_BEFORE, after: $DEBUG_ON_AFTER)"
+    echo "Response: $DEBUG_ON_RESPONSE"
+    echo "Matching log lines:"
+    echo "$DEBUG_LOG" | grep "missing-debug-fragment-173.txt" || true
+    docker compose down
+    exit 1
+fi
 
 echo "=== Test 7: Large response (multi-brigade) - direct ==="
 RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/large.html)
@@ -1054,6 +1105,228 @@ else
     exit 1
 fi
 
+echo "=== Test 50: MesiParseOnHeader absent — HTML without Edge-control still parsed (#172) ==="
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/backend/parse-on-header/plain)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: absent directive keeps the always-parse behaviour"
+else
+    echo "FAIL: absent MesiParseOnHeader did not parse an unsignalled page"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 51: MesiParseOnHeader Off — HTML without Edge-control still parsed (#172) ==="
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8101"/backend/parse-on-header/plain)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: explicit Off keeps the always-parse behaviour"
+else
+    echo "FAIL: MesiParseOnHeader Off did not parse an unsignalled page"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 52: MesiParseOnHeader On + Edge-control — HTML parsed (#172) ==="
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8100"/backend/parse-on-header/esi)
+if echo "$RESPONSE" | grep -q "included content from backend"; then
+    echo "PASS: signalled page processed with MesiParseOnHeader On"
+else
+    echo "FAIL: signalled page was not processed with MesiParseOnHeader On"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 53: MesiParseOnHeader On without Edge-control — byte-identical passthrough (#172) ==="
+curl -s -D /tmp/mesi-poh-headers.txt \
+    http://localhost:"$APACHE_PORT_8100"/backend/parse-on-header/plain \
+    -o /tmp/mesi-poh-body.html
+if cmp -s /tmp/mesi-poh-body.html "$SCRIPT_DIR/tests/parse-on-header.html" \
+    && grep -q '<esi:include src="http://backend:8000/include.txt" />' /tmp/mesi-poh-body.html \
+    && ! grep -q "included content from backend" /tmp/mesi-poh-body.html; then
+    echo "PASS: unsignalled page passed through byte for byte, include not fetched"
+else
+    echo "FAIL: unsignalled page was changed or its include was fetched"
+    diff -u "$SCRIPT_DIR/tests/parse-on-header.html" /tmp/mesi-poh-body.html || true
+    docker compose down
+    exit 1
+fi
+if grep -qi "Surrogate-Capability" /tmp/mesi-poh-headers.txt; then
+    echo "FAIL: unsignalled page still carries the ESI Surrogate-Capability header"
+    cat /tmp/mesi-poh-headers.txt
+    docker compose down
+    exit 1
+fi
+echo "PASS: unsignalled page has no ESI Surrogate-Capability header"
+rm -f /tmp/mesi-poh-body.html /tmp/mesi-poh-headers.txt
+
+echo "=== Test 54: MesiParseOnHeader On — non-HTML unaffected (#172) ==="
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8100"/noesi.txt)
+HEADERS=$(curl -sI http://localhost:"$APACHE_PORT_8100"/noesi.txt)
+if echo "$RESPONSE" | grep -q "esi:include" \
+    && ! echo "$RESPONSE" | grep -q "included content from backend" \
+    && echo "$HEADERS" | grep -q "Surrogate-Capability"; then
+    echo "PASS: non-HTML content bypasses the parse-on-header branch unchanged"
+else
+    echo "FAIL: non-HTML content changed under MesiParseOnHeader On"
+    echo "Response: $RESPONSE"
+    echo "Headers: $HEADERS"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 55: MesiParseOnHeader On — nested fragments follow the header (#172) ==="
+RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8100"/backend/parse-on-header/nested)
+INCLUDED_COUNT=$(echo "$RESPONSE" | grep -o "included content from backend" | wc -l | tr -d ' ')
+RAW_TAG_COUNT=$(echo "$RESPONSE" | grep -o '<esi:include src="http://backend:8000/include.txt" />' | wc -l | tr -d ' ')
+if [ "$INCLUDED_COUNT" -eq 1 ] && [ "$RAW_TAG_COUNT" -eq 1 ]; then
+    echo "PASS: signalling fragment parsed, non-signalling fragment left raw"
+else
+    echo "FAIL: nested fragments did not follow the header (expanded: $INCLUDED_COUNT, raw: $RAW_TAG_COUNT)"
+    echo "Response: $RESPONSE"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 56: MesiParseOnHeader On — unsignalled page is not buffered/limited (#172) ==="
+R=$(curl -s -w '\n%{http_code}' http://localhost:"$APACHE_PORT_8102"/backend/poh-nolen-html/plain/6000)
+if echo "$R" | grep -q "nolen-end-marker" \
+    && echo "$R" | grep -q '<esi:include' \
+    && ! echo "$R" | grep -q "included content from backend" \
+    && [ "$(echo "$R" | tail -n1)" = "200" ]; then
+    echo "PASS: unsignalled streamed page bypassed MesiMaxBodySize untouched"
+else
+    echo "FAIL: unsignalled streamed page was buffered/limited"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+CODE=$(curl -s -o /tmp/mesi-poh-oversize.html -w '%{http_code}' \
+    http://localhost:"$APACHE_PORT_8102"/backend/poh-nolen-html/esi/6000)
+if [ "$CODE" = "502" ] && ! grep -q "nolen-end-marker" /tmp/mesi-poh-oversize.html; then
+    echo "PASS: signalled page over MesiMaxBodySize answered 502"
+else
+    echo "FAIL: signalled oversize page expected 502 (got $CODE)"
+    head -c 500 /tmp/mesi-poh-oversize.html
+    rm -f /tmp/mesi-poh-oversize.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-poh-oversize.html
+
+echo "=== Test 57: MesiIncludeErrorMarker config parsing (#165) ==="
+# The directive is AP_INIT_RAW_ARGS and parses exactly one
+# ap_getword_conf() token. `""` is a real, explicitly configured empty
+# value that clears an inherited marker; a missing argument,
+# whitespace-only value, trailing tokens or a marker containing spaces
+# without quotes fail config load. -c applies the directive after the
+# main config, so mod_mesi is already loaded. Each reject case names its
+# expected message (grep -q "" would match any failure).
+check_include_error_marker_config() {
+    local expect="$1" label="$2" value="$3" msg="${4:-}" out
+    if out=$(docker compose exec -T apache sh -c '. /etc/apache2/envvars && exec apache2 -t -c "MesiIncludeErrorMarker $1"' sh "$value" 2>&1); then
+        if [ "$expect" = "reject" ]; then
+            echo "FAIL: MesiIncludeErrorMarker $label was accepted by apache2 -t"
+            echo "Output: $out"
+            docker compose down
+            exit 1
+        fi
+        echo "PASS: MesiIncludeErrorMarker $label accepted"
+    else
+        if [ "$expect" = "accept" ] || ! echo "$out" | grep -q "$msg"; then
+            echo "FAIL: MesiIncludeErrorMarker $label: unexpected apache2 -t result (expected $expect, message /$msg/)"
+            echo "Output: $out"
+            docker compose down
+            exit 1
+        fi
+        echo "PASS: MesiIncludeErrorMarker $label rejected at config load"
+    fi
+}
+check_include_error_marker_config accept "quoted marker with spaces" '"<!-- ESI include failed -->"'
+check_include_error_marker_config accept "unquoted single token" '<!--marker-->'
+check_include_error_marker_config accept "explicit empty" '""'
+check_include_error_marker_config accept "explicit empty (single quotes)" "''"
+check_include_error_marker_config reject "missing argument" '' "requires exactly one argument"
+check_include_error_marker_config reject "whitespace-only argument" '   ' "requires exactly one argument"
+check_include_error_marker_config reject "unquoted marker containing spaces" '<!-- ESI include failed -->' "takes exactly one argument"
+check_include_error_marker_config reject "trailing argument" '"<!-- ESI include failed -->" extra' "takes exactly one argument"
+check_include_error_marker_config reject "trailing empty argument" '"" ""' "takes exactly one argument"
+
+echo "=== Test 58: MesiIncludeErrorMarker renders on a failed include (#165) ==="
+# Vhost 8103 sets its own marker, distinct from the global one, so this
+# pins the override path (not an accidental inherit).
+R=$(curl -s http://localhost:"$APACHE_PORT_8103"/include-error-marker.html)
+if echo "$R" | grep -qF '<!-- vhost ESI include failed -->' \
+    && echo "$R" | grep -q "After include-error marker" \
+    && ! echo "$R" | grep -qF '<!-- ESI include failed -->' \
+    && ! echo "$R" | grep -q '<esi:include'; then
+    echo "PASS: failed include rendered the configured vhost marker"
+else
+    echo "FAIL: MesiIncludeErrorMarker did not render for a failed include"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 59: MesiIncludeErrorMarker explicit empty clears the inherited global marker (#165) ==="
+# The default *:80 vhost sets `MesiIncludeErrorMarker ""`: it inherits
+# the global marker and clears it, so a failed include keeps the
+# historical empty output. This is the functional pin for the explicit
+# empty form that TAKE1 used to reject at config load.
+R=$(curl -s http://localhost:"$HTTP_PORT"/include-error-marker.html)
+if ! echo "$R" | grep -qF '<!-- ESI include failed -->' \
+    && echo "$R" | grep -q "After include-error marker" \
+    && ! echo "$R" | grep -q '<esi:include'; then
+    echo "PASS: explicit empty cleared the inherited marker"
+else
+    echo "FAIL: explicit empty MesiIncludeErrorMarker did not stay silent"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 60: MesiIncludeErrorMarker unset vhost inherits the global marker (#165) ==="
+# Vhost 8104 sets no marker: the NULL merge keeps the global value, so
+# the same failed include renders it (unlike the overriding vhost 8103).
+R=$(curl -s http://localhost:"$APACHE_PORT_8104"/include-error-marker.html)
+if echo "$R" | grep -qF '<!-- ESI include failed -->' \
+    && echo "$R" | grep -q "After include-error marker" \
+    && ! echo "$R" | grep -q '<esi:include'; then
+    echo "PASS: unset vhost inherited the global marker"
+else
+    echo "FAIL: unset vhost did not inherit the global marker"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 61: onerror=continue takes priority over the marker (#165) ==="
+R=$(curl -s http://localhost:"$APACHE_PORT_8103"/include-error-onerror.html)
+if ! echo "$R" | grep -qF '<!-- vhost ESI include failed -->' \
+    && echo "$R" | grep -q "After onerror include" \
+    && ! echo "$R" | grep -q '<esi:include'; then
+    echo "PASS: onerror=continue suppressed the marker"
+else
+    echo "FAIL: marker rendered despite onerror=continue"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 62: fallback body takes priority over the marker (#165) ==="
+R=$(curl -s http://localhost:"$APACHE_PORT_8103"/fallback.html)
+if ! echo "$R" | grep -qF '<!-- vhost ESI include failed -->' \
+    && echo "$R" | grep -q "fallback content rendered" \
+    && echo "$R" | grep -q "After fallback" \
+    && ! echo "$R" | grep -q '<esi:include'; then
+    echo "PASS: fallback body suppressed the marker"
+else
+    echo "FAIL: marker rendered despite a fallback body"
+    echo "$R" | head -c 500
+    docker compose down
+    exit 1
+fi
 docker compose down
 
 echo ""
