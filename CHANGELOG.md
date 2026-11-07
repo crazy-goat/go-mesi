@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- PHP extension on macOS: `php -n -d extension=mesi.so` now loads `libgomesi.so` without `DYLD_LIBRARY_PATH`. Go's `-buildmode=c-shared` links with clang's `-dynamiclib` but passes no `-install_name`, so `libgomesi.so` carried a bare `libgomesi.so` install id. `php-ext/config.m4` does record an `LC_RPATH` for the `--with-gomesi` directory (`PHP_ADD_LIBRARY_WITH_PATH`), but dyld consults `LC_RPATH` only for dependencies written as `@rpath/...`, so the rpath was never used and the extension failed with `Library not loaded: libgomesi.so`. `libgomesi/Makefile` now adds `-extldflags '-Wl,-install_name,@rpath/libgomesi.so'` on macOS (`uname -s` = `Darwin`), so the existing rpath resolves; the C test binary gets `-Wl,-rpath,@loader_path`. Linux and every other platform keep the exact previous flags and output (verified byte-identical), and the extension's build path is unchanged. A new `scripts/check-darwin-rpath.sh` (run by `make check-darwin` or `make -C libgomesi check-darwin`) checks `otool -D` on the library and, when a consumer is passed, `otool -L` plus `LC_RPATH` on the extension; it prints `SKIP` on non-macOS hosts. `php-ext/README.md` documents the requirement and the `DYLD_LIBRARY_PATH` / `install_name_tool -id` fallback (#443)
+
 ## [0.12.0] - 2026-11-06
 
 ### Security
