@@ -55,16 +55,13 @@ func resolveBaseURL(listen, override string) (string, error) {
 	if err != nil || portNumber < 1 || portNumber > 65535 {
 		return "", fmt.Errorf("cannot derive include base URL from -listen %q: invalid port (pass -base-url)", listen)
 	}
-	switch {
-	case host == "":
+	if host == "" {
 		host = "127.0.0.1"
-	default:
-		if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
-			if ip.To4() != nil {
-				host = "127.0.0.1"
-			} else {
-				host = "::1"
-			}
+	} else if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		if ip.To4() != nil {
+			host = "127.0.0.1"
+		} else {
+			host = "::1"
 		}
 	}
 	return (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}).String(), nil
