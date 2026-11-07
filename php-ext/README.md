@@ -47,7 +47,6 @@ Build `libgomesi` with its Makefile (not a raw `go build`):
 
 ```
 make -C libgomesi build
-make -C libgomesi check-darwin
 ```
 
 The generic `sudo make install` step above is Linux-only: macOS has no
@@ -75,10 +74,25 @@ PHP Startup: Unable to load dynamic library '.../mesi.so':
   Library not loaded: libgomesi.so
 ```
 
-`make -C libgomesi check-darwin` verifies the install id (and, on the
-installed extension, the `@rpath` dependency + `LC_RPATH`) with `otool`; it
-prints `SKIP` on non-macOS hosts. After upgrading libgomesi, rebuild the
-extension so the linker records the new install id.
+After building the extension, verify the wiring from the repository root:
+
+```
+make check-darwin
+```
+
+That target checks libgomesi's install id and, when `php-ext/modules/mesi.so`
+exists, the extension's `@rpath` dependency and its `LC_RPATH`. The rpath must
+resolve to the directory that holds `libgomesi.so` (or be the `@loader_path`
+equivalent, as used by `libgomesi/test-libgomesi`); a consumer whose only
+rpath points elsewhere fails the check. The equivalent explicit invocation is:
+
+```
+scripts/check-darwin-rpath.sh libgomesi/libgomesi.so php-ext/modules/mesi.so
+```
+
+`make -C libgomesi check-darwin` checks the library only. All forms print
+`SKIP` on non-macOS hosts. After upgrading libgomesi, rebuild the extension so
+the linker records the new install id.
 
 Fallback for an older or externally supplied libgomesi: either point dyld at
 the directory manually, or rewrite the install id before rebuilding the
