@@ -4,7 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -16,8 +18,58 @@ import (
 	"github.com/crazy-goat/go-mesi/servers/roadrunner"
 )
 
+// resolveBaseURL returns the absolute URL that fixture pages use to include
+// fragments from this server. An explicit override wins; otherwise the URL is
+// derived from the listen address. A wildcard listen address (empty host,
+// 0.0.0.0 or ::) is not dialable, so it maps to the matching loopback address.
+func resolveBaseURL(listen, override string) (string, error) {
+	if override != "" {
+		u, err := url.Parse(override)
+		if err != nil {
+			return "", fmt.Errorf("invalid -base-url %q: %w", override, err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return "", fmt.Errorf("invalid -base-url %q: scheme must be http or https", override)
+		}
+		if u.Host == "" {
+			return "", fmt.Errorf("invalid -base-url %q: missing host", override)
+		}
+		if u.Path != "" && u.Path != "/" {
+			return "", fmt.Errorf("invalid -base-url %q: path must be empty", override)
+		}
+		if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+			return "", fmt.Errorf("invalid -base-url %q: query and fragment are not allowed", override)
+		}
+		u.Path = ""
+		return u.String(), nil
+	}
+
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "", fmt.Errorf("cannot derive include base URL from -listen %q: %w (pass -base-url)", listen, err)
+	}
+	if port == "" {
+		return "", fmt.Errorf("cannot derive include base URL from -listen %q: missing port (pass -base-url)", listen)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return "", fmt.Errorf("cannot derive include base URL from -listen %q: invalid port (pass -base-url)", listen)
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	} else if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		if ip.To4() != nil {
+			host = "127.0.0.1"
+		} else {
+			host = "::1"
+		}
+	}
+	return (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}).String(), nil
+}
+
 func main() {
 	listen := flag.String("listen", ":8080", "Listen address")
+	baseURLFlag := flag.String("base-url", "", "Absolute URL fixture includes use (default: derived from -listen)")
 	allowedHosts := flag.String("allowed-hosts", "", "Comma-separated allowed hosts for <esi:include> (empty/unset = all hosts allowed)")
 	blockPrivateIPs := flag.Bool("block-private-ips", true, "Block ESI includes to private/reserved IPs at dial time")
 	allowPrivateIPsForAllowedHosts := flag.Bool("allow-private-ips-for-allowed-hosts", false, "Bypass the dial-time private-IP block for hosts listed in -allowed-hosts")
@@ -30,6 +82,11 @@ func main() {
 	parseOnHeader := flag.Bool("parse-on-header", false, "Parse text/html only when the response carries Edge-control: dca=esi")
 	debug := flag.Bool("debug", false, "Enable ESI debug logging to stderr")
 	flag.Parse()
+
+	baseURL, err := resolveBaseURL(*listen, *baseURLFlag)
+	if err != nil {
+		log.Fatalf("Failed to resolve include base URL: %v", err)
+	}
 
 	config := roadrunner.CreateConfig()
 	if *allowedHosts != "" {
@@ -99,7 +156,7 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body>BYTES-PAGE<esi:include src="http://127.0.0.1:9090/bytes/` + strconv.Itoa(size) + `" /></body></html>`))
+		_, _ = fmt.Fprintf(w, `<html><body>BYTES-PAGE<esi:include src="%s/bytes/%d" /></body></html>`, baseURL, size)
 	})
 	// /hold and /track provide a deterministic peak-concurrency gauge for the
 	// RoadRunner functional suite, analogous to servers/test-server's tracker.
@@ -158,7 +215,7 @@ func main() {
 		var b strings.Builder
 		b.WriteString("<html><body>HOLD-PAGE")
 		for i := 0; i < n; i++ {
-			fmt.Fprintf(&b, `<esi:include src="http://127.0.0.1:9090/hold/%d/%d" />`, millis, i)
+			fmt.Fprintf(&b, `<esi:include src="%s/hold/%d/%d" />`, baseURL, millis, i)
 		}
 		b.WriteString("HOLD-PAGE-END</body></html>")
 		_, _ = w.Write([]byte(b.String()))
@@ -176,9 +233,9 @@ func main() {
 		var body strings.Builder
 		fmt.Fprintf(&body, "LEVEL-%d-START", level)
 		if level > 1 {
-			fmt.Fprintf(&body, `<esi:include src="http://127.0.0.1:9090/deep/%d" />`, level-1)
+			fmt.Fprintf(&body, `<esi:include src="%s/deep/%d" />`, baseURL, level-1)
 			for _, marker := range []string{"A", "B"} {
-				fmt.Fprintf(&body, `<esi:include src="http://127.0.0.1:9090/deep-marker/%d-%s" />`, level, marker)
+				fmt.Fprintf(&body, `<esi:include src="%s/deep-marker/%d-%s" />`, baseURL, level, marker)
 			}
 		}
 		fmt.Fprintf(&body, "LEVEL-%d-END", level)
@@ -190,7 +247,7 @@ func main() {
 	})
 	mux.HandleFunc("/deep-page", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/deep/4" />AFTER-DEEP</body></html>`))
+		_, _ = fmt.Fprintf(w, `<html><body><esi:include src="%s/deep/4" />AFTER-DEEP</body></html>`, baseURL)
 	})
 	mux.HandleFunc("/plain", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -212,18 +269,19 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body>PARSE-HEADER<esi:include src="http://127.0.0.1:9090/fragment" /></body></html>`))
+		_, _ = fmt.Fprintf(w, `<html><body>PARSE-HEADER<esi:include src="%s/fragment" /></body></html>`, baseURL)
 	})
 	// /fragment is the loopback include target; /allowed serves a page that
-	// includes it via an absolute URL on the same listener. The hostname is
-	// "127.0.0.1" so allowed_hosts functional cases need no DNS.
+	// includes it via an absolute URL on the same listener. The base URL is
+	// derived from -listen (see resolveBaseURL) so allowed_hosts functional
+	// cases need no DNS when it is a loopback address.
 	mux.HandleFunc("/fragment", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("FRAGMENT_OK"))
 	})
 	mux.HandleFunc("/allowed", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/fragment" /></body></html>`))
+		_, _ = fmt.Fprintf(w, `<html><body><esi:include src="%s/fragment" /></body></html>`, baseURL)
 	})
 	// /nested-depth is a two-level nested include page for the max_depth
 	// functional cases. Each level carries a per-level marker (same scheme
@@ -235,7 +293,8 @@ func main() {
 	// processed again as a fresh top-level response at full depth,
 	// defeating the caller's depth budget (nginx avoids the same trap by
 	// serving its .txt fixtures from the backend, outside the filter).
-	// The hostname is "127.0.0.1" so the cases need no DNS and run with
+	// The base URL is derived from -listen (see resolveBaseURL) so the cases
+	// need no DNS when it is a loopback address and run with
 	// -block-private-ips=false like the allowed_hosts cases; the core still
 	// recurses into plain-text fragments (ParseOnHeader is off).
 	mux.HandleFunc("/nested-depth/inner", func(w http.ResponseWriter, r *http.Request) {
@@ -244,11 +303,11 @@ func main() {
 	})
 	mux.HandleFunc("/nested-depth/outer", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write([]byte(`OUTER-DEPTH-BODY<esi:include src="http://127.0.0.1:9090/nested-depth/inner" />`))
+		_, _ = fmt.Fprintf(w, `OUTER-DEPTH-BODY<esi:include src="%s/nested-depth/inner" />`, baseURL)
 	})
 	mux.HandleFunc("/nested-depth", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/nested-depth/outer" /></body></html>`))
+		_, _ = fmt.Fprintf(w, `<html><body><esi:include src="%s/nested-depth/outer" /></body></html>`, baseURL)
 	})
 	mux.HandleFunc("/slow-fragment", func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(5 * time.Second)
@@ -257,7 +316,7 @@ func main() {
 	})
 	mux.HandleFunc("/timeout", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body><esi:include src="http://127.0.0.1:9090/slow-fragment" /></body></html>`))
+		_, _ = fmt.Fprintf(w, `<html><body><esi:include src="%s/slow-fragment" /></body></html>`, baseURL)
 	})
 	// /include-error fixtures exercise the include_error_marker contract: a
 	// plain failed include renders the marker, while onerror="continue" and a
@@ -268,15 +327,15 @@ func main() {
 	})
 	mux.HandleFunc("/include-error/failed", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body>FAILED-PAGE<esi:include src="http://127.0.0.1:9090/include-error/fragment" /></body></html>`))
+		_, _ = fmt.Fprintf(w, `<html><body>FAILED-PAGE<esi:include src="%s/include-error/fragment" /></body></html>`, baseURL)
 	})
 	mux.HandleFunc("/include-error/continue", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body>CONTINUE-PAGE<esi:include src="http://127.0.0.1:9090/include-error/fragment" onerror="continue" />AFTER-CONTINUE</body></html>`))
+		_, _ = fmt.Fprintf(w, `<html><body>CONTINUE-PAGE<esi:include src="%s/include-error/fragment" onerror="continue" />AFTER-CONTINUE</body></html>`, baseURL)
 	})
 	mux.HandleFunc("/include-error/fallback", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body>FALLBACK-PAGE<esi:include src="http://127.0.0.1:9090/include-error/fragment">FALLBACK-BODY</esi:include></body></html>`))
+		_, _ = fmt.Fprintf(w, `<html><body>FALLBACK-PAGE<esi:include src="%s/include-error/fragment">FALLBACK-BODY</esi:include></body></html>`, baseURL)
 	})
 
 	handler := plugin.Middleware(mux)
