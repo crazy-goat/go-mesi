@@ -342,7 +342,8 @@ MesiCacheTTL 60
   not). Every other HTML response is passed through byte for byte with
   its upstream headers: the check runs **before** body accumulation, so
   the page is not buffered, is not limited by `MesiMaxBodySize`, and the
-  module does not add its `Surrogate-Capability: ESI/1.0` header.
+  module does not add ESI response headers (the `Surrogate-Capability`
+  request header is still sent to the origin).
   Non-HTML responses are unaffected. The flag is also sent to libgomesi
   through `ParseJson` as the additive `{"parseOnHeader":true|false}`
   key, so a fetched HTML fragment is parsed only when its own response
@@ -456,9 +457,14 @@ MesiCacheTTL 60
   it: write the entries unquoted, separated by spaces. A quote is
   rejected at config load with a message saying so — before that,
   `'mc':11211` stored the host `'mc'`, which can never resolve, and
-  `"mc:11211"` failed with a misleading generic character error. At
-  most 64 entries per directive; calling
-  the directive multiple times appends. Configuring the backend
+  `"mc:11211"` failed with a misleading generic character error.
+  Entries are tokenized with Go's `strings.Fields` rule: the
+  full ASCII whitespace set (space, tab, CR, LF, VT, FF) and every
+  Unicode whitespace rune (e.g. U+00A0) separate entries, while invalid
+  UTF-8 is part of an entry and never a separator. DEL (`0x7f`) is
+  rejected like the other control characters, so a stray byte cannot
+  reach the rendered JSON config. At most 64 entries per directive;
+  calling the directive multiple times appends. Configuring the backend
   without this directive (or with an empty value) makes libgomesi
   reject the server list with `servers required` (a deterministic
   error rather than a silent `localhost:11211` fallback).
@@ -506,14 +512,45 @@ the Docker image.
 > code paths. See [#94](https://github.com/crazy-goat/go-mesi/issues/94)
 > for the full discussion.
 
+> **Integration-suite scope:** `servers/apache/Dockerfile` pins
+> `mpm_prefork` and `servers/apache/test.sh` runs only against that MPM.
+> Worker/Event are not exercised by CI today: a second image build would
+> double the suite's build time, and the concurrency behaviour needs a
+> dedicated stress run (see the closed [#94](https://github.com/crazy-goat/go-mesi/issues/94)).
+> The functional suite therefore pins the single-process guarantees and
+> does not claim Worker/Event coverage.
+
 ## How It Works
 
-1. Registers as output filter in Apache's filter chain.
+1. Inserts the response output filter from Apache's `insert_filter` hook,
+   after authentication and fixups. Auth-denied requests and
+   translate-phase redirects never reach the hook; HEAD, static non-HTML
+   responses and a status already known to be non-2xx/204/304 skip
+   insertion. Proxied/dynamic requests always get the filter because their
+   insert-time status and Content-Type may be guessed (for example
+   `mod_mime` derives `text/plain` from a proxied `/report.txt` URI even
+   when the origin serves `text/html`); the filter applies the final
+   status/Content-Type gate on the first brigade. Subrequests are skipped
+   so a page is processed once by its main request.
 2. Intercepts responses with `Content-Type: text/html`. With
    `MesiParseOnHeader On`, only a response whose `Edge-control` header
    carries `dca=esi` is intercepted; every other HTML response is passed
-   through before buffering starts (and without `Surrogate-Capability`).
-3. Adds `Surrogate-Capability: ESI/1.0` header.
+   through before buffering starts (without ESI processing, and without
+   ESI response headers). Bodiless responses (`HEAD`, `204`, `304`) and
+   responses with a `Content-Encoding` other than `identity` (for example
+   `gzip`) are always passed through untouched. `204`/`304` carry no body
+   to parse. Apache hands the handler body to output filters even for
+   `HEAD`, so parsing it would fetch includes that can never be sent; the
+   pass-through returns the upstream `Content-Length` (the unprocessed
+   source) instead of the ESI-expanded length a GET would report — the same
+   trade-off nginx makes. An encoded body is compressed and parsing it
+   would corrupt it.
+3. Advertises the module's ESI capability to the origin as the **request**
+   header `Surrogate-Capability: mesi="ESI/1.0"` (the Edge Architecture
+   Specification's device-token + quoted-capability form). An existing
+   capability set from the client is preserved and the module's set is
+   appended. The header is never added to the client response; the
+   response-side header is `Surrogate-Control`.
 4. Buffers response body until complete.
 5. Calls `InitCache(...)` from libgomesi once per worker process when
    `MesiCacheBackend memory` is configured (TTL/size from
@@ -532,3 +569,17 @@ the Docker image.
    extended entry point). Repeated `<esi:include>` URLs within TTL are
    served from the cache.
 7. Returns processed HTML to client.
+
+The filter is inserted from `insert_filter`, not from `post_read_request`,
+so requests that never reach a handler (authentication/authorization
+denials, translate-phase redirects) never get it, and subrequests keep the
+pre-#97 behaviour (no filter; a page is processed once by its main
+request). The final gate runs on the response: redirects (3xx), errors
+(4xx/5xx), `204 No Content`, `304 Not Modified` and HEAD are passed
+through untouched, including an `ErrorDocument` body that happens to
+contain `<esi:include>` tags. Proxied and dynamic responses get the filter
+even when the insert-time Content-Type looks non-HTML, because that value
+can be guessed from the proxy filename (`proxy:http://host/report.txt` is
+`text/plain` before the origin answers) and the final Content-Type/status
+are only known once the handler has fetched the origin response. Static
+non-HTML responses are still skipped at insert time.
