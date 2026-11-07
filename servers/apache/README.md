@@ -457,9 +457,14 @@ MesiCacheTTL 60
   it: write the entries unquoted, separated by spaces. A quote is
   rejected at config load with a message saying so — before that,
   `'mc':11211` stored the host `'mc'`, which can never resolve, and
-  `"mc:11211"` failed with a misleading generic character error. At
-  most 64 entries per directive; calling
-  the directive multiple times appends. Configuring the backend
+  `"mc:11211"` failed with a misleading generic character error.
+  Entries are tokenized with Go's `strings.Fields` rule: the
+  full ASCII whitespace set (space, tab, CR, LF, VT, FF) and every
+  Unicode whitespace rune (e.g. U+00A0) separate entries, while invalid
+  UTF-8 is part of an entry and never a separator. DEL (`0x7f`) is
+  rejected like the other control characters, so a stray byte cannot
+  reach the rendered JSON config. At most 64 entries per directive;
+  calling the directive multiple times appends. Configuring the backend
   without this directive (or with an empty value) makes libgomesi
   reject the server list with `servers required` (a deterministic
   error rather than a silent `localhost:11211` fallback).
@@ -496,6 +501,14 @@ docker compose up --build
 > code paths. See [#94](https://github.com/crazy-goat/go-mesi/issues/94)
 > for the full discussion.
 
+> **Integration-suite scope:** `servers/apache/Dockerfile` pins
+> `mpm_prefork` and `servers/apache/test.sh` runs only against that MPM.
+> Worker/Event are not exercised by CI today: a second image build would
+> double the suite's build time, and the concurrency behaviour needs a
+> dedicated stress run (see the closed [#94](https://github.com/crazy-goat/go-mesi/issues/94)).
+> The functional suite therefore pins the single-process guarantees and
+> does not claim Worker/Event coverage.
+
 ## How It Works
 
 1. Inserts the response output filter from Apache's `insert_filter` hook,
@@ -512,7 +525,15 @@ docker compose up --build
    `MesiParseOnHeader On`, only a response whose `Edge-control` header
    carries `dca=esi` is intercepted; every other HTML response is passed
    through before buffering starts (without ESI processing, and without
-   ESI response headers).
+   ESI response headers). Bodiless responses (`HEAD`, `204`, `304`) and
+   responses with a `Content-Encoding` other than `identity` (for example
+   `gzip`) are always passed through untouched. `204`/`304` carry no body
+   to parse. Apache hands the handler body to output filters even for
+   `HEAD`, so parsing it would fetch includes that can never be sent; the
+   pass-through returns the upstream `Content-Length` (the unprocessed
+   source) instead of the ESI-expanded length a GET would report — the same
+   trade-off nginx makes. An encoded body is compressed and parsing it
+   would corrupt it.
 3. Advertises the module's ESI capability to the origin as the **request**
    header `Surrogate-Capability: mesi="ESI/1.0"` (the Edge Architecture
    Specification's device-token + quoted-capability form). An existing

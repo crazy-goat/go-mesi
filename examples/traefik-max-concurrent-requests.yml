@@ -37,11 +37,10 @@
 #     decimals (1.5), non-integers ("abc") and oversized digit
 #     strings fail the config decode into the typed int field first.
 #     0 IS accepted and means "unlimited".
-#   - Known core limitation (#453): NESTED includes (a fetched
-#     fragment containing further includes) replace the inherited
-#     semaphore with a fresh one, so the effective cap can reach
-#     cap x nesting depth per page render. Flat pages are capped
-#     exactly; #453 is tracked separately and is not fixed here.
+#   - Nested includes (a fetched fragment containing further
+#     includes) share the page render's admission semaphore, so
+#     the effective cap stays the configured value across nesting
+#     levels (#453), not cap x depth.
 #
 # Usage:
 #   Include this in your Traefik dynamic configuration (esi-configuration.yml)

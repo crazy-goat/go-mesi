@@ -223,6 +223,27 @@ check_memcached_servers_config reject "quote in the second entry" "mc:11211 'oth
 # passes its own pattern explicitly.
 check_memcached_servers_config reject "backslashed host" 'mc\:11211' "invalid character"
 check_memcached_servers_config accept "two unquoted entries" "mc:11211 other:11211"
+# #559: tokenize exactly like libgomesi's strings.Fields. Every Unicode
+# whitespace rune separates entries (it must not be stored inside one),
+# invalid UTF-8 is never whitespace, and DEL (0x7f) is rejected per entry.
+NBSP=$(printf '\xc2\xa0')
+IDEOGRAPHIC_SPACE=$(printf '\xe3\x80\x80')
+DEL_CHAR=$(printf '\x7f')
+INVALID_UTF8=$(printf '\xc2')
+check_memcached_servers_config accept "NBSP-separated entries" \
+    "mc:11211${NBSP}other:11211"
+check_memcached_servers_config reject "NBSP inside an entry" \
+    "mc${NBSP}:11211" "host:port"
+check_memcached_servers_config accept "multiple Unicode whitespace separators" \
+    "mc:11211${NBSP}${IDEOGRAPHIC_SPACE}other:11211"
+check_memcached_servers_config reject "DEL inside an entry" \
+    "mc${DEL_CHAR}:11211" "invalid character"
+check_memcached_servers_config reject "invalid UTF-8 is not a separator" \
+    "mc:11211 ${INVALID_UTF8} other:11211" "host:port"
+check_memcached_servers_config accept "tab separated entries" \
+    "$(printf 'mc:11211\tother:11211')"
+check_memcached_servers_config accept "IPv6 and hostname entries" \
+    "[::1]:11211 mc:11211"
 
 
 echo "=== Test 6f: MesiDebug Off — parser emits no DEBUG output (#173) ==="
@@ -1424,13 +1445,157 @@ else
     exit 1
 fi
 
+# --- HTTP method / status / encoding cases (#98) ---
+
+echo "=== Test 63: HEAD request returns headers and no body (#98) ==="
+# Apache hands the handler body to output filters even for HEAD, so the
+# old code expanded includes and returned the ESI-expanded GET length
+# (206). The pass-through must instead report the raw source length (238).
+# Asserting that Content-Length is what distinguishes the two paths
+# independently of logs and the libgomesi cache: a warm cache could expand
+# the page without a new backend GET. curl -I writes the header block as
+# the "body", so read the raw socket instead: send HEAD with
+# Connection: close and split the response at the header terminator to
+# count actual body bytes.
+# shellcheck disable=SC2016 # $1 is expanded by the inner bash, not this shell
+if ! timeout 10 bash -c 'exec 3<>/dev/tcp/127.0.0.1/"$1"; printf "HEAD /head-request.html HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; cat <&3' _ "$HTTP_PORT" > /tmp/mesi-head-raw.txt; then
+    echo "FAIL: could not send raw HEAD request"
+    docker compose down
+    exit 1
+fi
+HEAD_STATUS=$(head -n1 /tmp/mesi-head-raw.txt | awk '{print $2}')
+HEAD_CT=$(grep -i '^Content-Type:' /tmp/mesi-head-raw.txt | tr -d '\r' || true)
+HEAD_BODY_SIZE=$(awk '{sub(/\r$/,"")} seen {print} !seen && $0=="" {seen=1}' /tmp/mesi-head-raw.txt | wc -c | tr -d ' ')
+HEAD_CL=$(grep -i '^Content-Length:' /tmp/mesi-head-raw.txt | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
+HEAD_SOURCE_SIZE=$(wc -c < "$SCRIPT_DIR/tests/head-request.html" | tr -d ' ')
+HEAD_FETCHES=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /head-fragment.txt" || true)
+if [ "$HEAD_STATUS" = "200" ] \
+    && [ "$HEAD_BODY_SIZE" -eq 0 ] \
+    && echo "$HEAD_CT" | grep -qi "text/html" \
+    && [ "$HEAD_CL" = "$HEAD_SOURCE_SIZE" ] \
+    && [ "$HEAD_FETCHES" -eq 0 ]; then
+    echo "PASS: HEAD returned 200 with empty body, text/html, raw Content-Length $HEAD_CL, and fetched no include"
+else
+    echo "FAIL: HEAD handling wrong (status $HEAD_STATUS, body $HEAD_BODY_SIZE bytes, Content-Length ${HEAD_CL:-missing}/$HEAD_SOURCE_SIZE, fragment fetches $HEAD_FETCHES)"
+    cat /tmp/mesi-head-raw.txt
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-head-raw.txt
+
+echo "=== Test 64: 304 conditional GET short-circuits without a body (#98) ==="
+# Ask Apache for the static ETag, then send it back. A 304 has no body
+# and must not run ESI processing (or crash the filter).
+ETAG=$(curl -sI http://localhost:"$HTTP_PORT"/index.html \
+    | grep -i '^ETag:' | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
+if [ -z "$ETAG" ]; then
+    echo "FAIL: /index.html did not return an ETag, cannot test 304"
+    docker compose down
+    exit 1
+fi
+: > /tmp/mesi-304-body.txt
+COND_STATUS=$(curl -s -D /tmp/mesi-304-headers.txt -o /tmp/mesi-304-body.txt \
+    -w '%{http_code}' -H "If-None-Match: $ETAG" http://localhost:"$HTTP_PORT"/index.html)
+COND_BODY_SIZE=$(wc -c < /tmp/mesi-304-body.txt | tr -d ' ')
+if [ "$COND_STATUS" = "304" ] && [ "$COND_BODY_SIZE" -eq 0 ]; then
+    echo "PASS: conditional GET returned 304 with an empty body"
+else
+    echo "FAIL: conditional GET returned $COND_STATUS with $COND_BODY_SIZE body bytes (expected 304, 0)"
+    cat /tmp/mesi-304-headers.txt
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-304-headers.txt /tmp/mesi-304-body.txt
+
+echo "=== Test 65: gzip Content-Encoding passes through untouched (#98) ==="
+# The backend serves the gzip-esi.html fixture gzip-compressed with
+# Content-Encoding: gzip. Parsing those bytes as HTML would corrupt them,
+# so the filter must skip the response. curl --compressed fails on an
+# invalid gzip stream, and cmp proves the decompressed body is byte
+# identical to the fixture (include tag still raw).
+GZIP_STATUS=$(curl -s --compressed -D /tmp/mesi-gzip-headers.txt \
+    -o /tmp/mesi-gzip-body.html -w '%{http_code}' \
+    http://localhost:"$HTTP_PORT"/backend/gzip-esi)
+if [ "$GZIP_STATUS" = "200" ] \
+    && grep -qi '^Content-Encoding: gzip' /tmp/mesi-gzip-headers.txt \
+    && cmp -s /tmp/mesi-gzip-body.html "$SCRIPT_DIR/tests/gzip-esi.html" \
+    && grep -q '<esi:include src="http://backend:8000/include.txt" />' /tmp/mesi-gzip-body.html; then
+    echo "PASS: gzip body decompressed byte for byte, ESI tag left raw"
+else
+    echo "FAIL: gzip response was modified or corrupted (status $GZIP_STATUS)"
+    cat /tmp/mesi-gzip-headers.txt
+    diff -u "$SCRIPT_DIR/tests/gzip-esi.html" /tmp/mesi-gzip-body.html || true
+    rm -f /tmp/mesi-gzip-headers.txt /tmp/mesi-gzip-body.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-gzip-headers.txt /tmp/mesi-gzip-body.html
+
+echo "=== Test 66: control — the same fixture without Content-Encoding is processed (#98) ==="
+# Proves the endpoint and fixture are valid: only the encoding makes
+# Test 65 a pass-through.
+PLAIN_RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/backend/plain-esi)
+if echo "$PLAIN_RESPONSE" | grep -q "included content from backend" \
+    && echo "$PLAIN_RESPONSE" | grep -q "After gzip include" \
+    && ! echo "$PLAIN_RESPONSE" | grep -q '<esi:include'; then
+    echo "PASS: uncompressed control page was processed"
+else
+    echo "FAIL: uncompressed control page was not processed"
+    echo "$PLAIN_RESPONSE" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 67: chunked streaming backend is fully processed (#98) ==="
+# /chunked/ proxies to the HTTP/1.1 backend instance on 8001, which sends
+# an explicit Transfer-Encoding: chunked body: include tag, 20000 padding
+# bytes in 500-byte chunks, then an end marker. The filter must expand
+# the include, deliver all padding and keep the marker — no truncation
+# across the streamed brigades.
+CHUNK_STATUS=$(curl -s --max-time 30 -o /tmp/mesi-chunked.html \
+    -w '%{http_code}' http://localhost:"$HTTP_PORT"/chunked/chunked-html/20000)
+CHUNK_PADDING=$(tr -cd 'y' < /tmp/mesi-chunked.html | wc -c | tr -d ' ')
+if [ "$CHUNK_STATUS" = "200" ] \
+    && [ "$CHUNK_PADDING" -eq 20000 ] \
+    && grep -q "included content from backend" /tmp/mesi-chunked.html \
+    && grep -q "chunked-end-marker" /tmp/mesi-chunked.html \
+    && ! grep -q '<esi:include' /tmp/mesi-chunked.html; then
+    echo "PASS: chunked body fully delivered ($CHUNK_PADDING padding bytes), include expanded, end marker present"
+else
+    echo "FAIL: chunked body truncated or not processed (status $CHUNK_STATUS, padding $CHUNK_PADDING/20000)"
+    head -c 500 /tmp/mesi-chunked.html
+    rm -f /tmp/mesi-chunked.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-chunked.html
+
+echo "=== Test 68: empty HTML body returns 200 with no body (#98) ==="
+: > /tmp/mesi-empty-body.html
+EMPTY_STATUS=$(curl -s -D /tmp/mesi-empty-headers.txt -o /tmp/mesi-empty-body.html \
+    -w '%{http_code}' http://localhost:"$HTTP_PORT"/empty.html)
+EMPTY_BODY_SIZE=$(wc -c < /tmp/mesi-empty-body.html | tr -d ' ')
+EMPTY_CT=$(grep -i '^Content-Type:' /tmp/mesi-empty-headers.txt | tr -d '\r' || true)
+if [ "$EMPTY_STATUS" = "200" ] \
+    && [ "$EMPTY_BODY_SIZE" -eq 0 ] \
+    && echo "$EMPTY_CT" | grep -qi "text/html"; then
+    echo "PASS: empty body returned 200, text/html, 0 bytes"
+else
+    echo "FAIL: empty body handling wrong (status $EMPTY_STATUS, $EMPTY_BODY_SIZE bytes)"
+    cat /tmp/mesi-empty-headers.txt
+    rm -f /tmp/mesi-empty-headers.txt /tmp/mesi-empty-body.html
+    docker compose down
+    exit 1
+fi
+rm -f /tmp/mesi-empty-headers.txt /tmp/mesi-empty-body.html
+
 # --- Response filter lifecycle (#97) ---
 # The filter is inserted from ap_hook_insert_filter (after auth, before the
 # content handler) and applies its final status/Content-Type gate on the
 # first brigade. These cases pin the gates that the old per-request
 # post_read_request registration could not express.
 
-echo "=== Test 63: Surrogate-Capability appends to an existing request header (#97) ==="
+echo "=== Test 69: Surrogate-Capability appends to an existing request header (#97) ==="
 SC=$(curl -s -H 'Surrogate-Capability: upstream="Surrogate/1.0"' \
     http://localhost:"$HTTP_PORT"/backend/echo-header/Surrogate-Capability)
 if [ "$SC" = 'upstream="Surrogate/1.0", mesi="ESI/1.0"' ]; then
@@ -1441,7 +1606,7 @@ else
     exit 1
 fi
 
-echo "=== Test 64: 403 ErrorDocument is not ESI-processed (#97) ==="
+echo "=== Test 70: 403 ErrorDocument is not ESI-processed (#97) ==="
 R=$(curl -s -w '\n%{http_code}' http://localhost:"$HTTP_PORT"/denied.html)
 STATUS=$(echo "$R" | tail -n1)
 BODY=$(echo "$R" | sed '$d')
@@ -1457,7 +1622,7 @@ else
     exit 1
 fi
 
-echo "=== Test 65: proxied 404 response is not ESI-processed (#97) ==="
+echo "=== Test 71: proxied 404 response is not ESI-processed (#97) ==="
 R=$(curl -s -w '\n%{http_code}' http://localhost:"$HTTP_PORT"/backend/esi-status/404)
 STATUS=$(echo "$R" | tail -n1)
 BODY=$(echo "$R" | sed '$d')
@@ -1472,7 +1637,7 @@ else
     exit 1
 fi
 
-echo "=== Test 66: proxied 302 redirect is not ESI-processed (#97) ==="
+echo "=== Test 72: proxied 302 redirect is not ESI-processed (#97) ==="
 R=$(curl -s -w '\n%{http_code}' http://localhost:"$HTTP_PORT"/backend/esi-status/302)
 STATUS=$(echo "$R" | tail -n1)
 BODY=$(echo "$R" | sed '$d')
@@ -1487,7 +1652,7 @@ else
     exit 1
 fi
 
-echo "=== Test 67: proxied 304 is passed through without ESI processing (#97) ==="
+echo "=== Test 73: proxied 304 is passed through without ESI processing (#97) ==="
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
     http://localhost:"$HTTP_PORT"/backend/esi-status/304)
 if [ "$STATUS" = "304" ]; then
@@ -1498,7 +1663,7 @@ else
     exit 1
 fi
 
-echo "=== Test 68: HEAD request has no body and no response capability header (#97) ==="
+echo "=== Test 74: HEAD request has no body and no response capability header (#97) ==="
 HEADERS=$(curl -sI http://localhost:"$HTTP_PORT"/index.html)
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' -I http://localhost:"$HTTP_PORT"/index.html)
 if [ "$STATUS" = "200" ] \
@@ -1511,7 +1676,7 @@ else
     exit 1
 fi
 
-echo "=== Test 69: proxied non-HTML body is not ESI-processed (#97) ==="
+echo "=== Test 75: proxied non-HTML body is not ESI-processed (#97) ==="
 RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/backend/noesi.txt)
 if echo "$RESPONSE" | grep -q '<esi:include' \
     && ! echo "$RESPONSE" | grep -q 'included content from backend'; then
@@ -1523,7 +1688,7 @@ else
     exit 1
 fi
 
-echo "=== Test 70: proxied HTML on an extensionless path is processed (#97) ==="
+echo "=== Test 76: proxied HTML on an extensionless path is processed (#97) ==="
 RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/backend/parse-on-header/plain)
 if echo "$RESPONSE" | grep -q 'included content from backend'; then
     echo "PASS: proxied HTML processed after the response headers arrived"
@@ -1534,7 +1699,7 @@ else
     exit 1
 fi
 
-echo "=== Test 71: proxied .txt URI served as text/html is processed (#97) ==="
+echo "=== Test 77: proxied .txt URI served as text/html is processed (#97) ==="
 # mod_mime may guess text/plain from the proxy filename at insert time, so
 # the insert-time type must not be trusted for a proxied request.
 RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/backend/probe.txt)
