@@ -79,6 +79,8 @@ servers/apache/.libs/
 servers/apache/*.la
 servers/apache/*.lo
 servers/apache/*.slo
+servers/apache/test_directives
+servers/apache/test_pure
 servers/apache/tests/test.txt
 
 # Worktree scratch files (see docs/workflow.md)
