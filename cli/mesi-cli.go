@@ -133,7 +133,8 @@ func validateMaxResponseSize(v int64) error {
 // libgomesi/internal and cannot be imported from the separate cli module,
 // so the bound is mirrored here (the same keep-in-sync pattern as
 // maxMaxResponseSize and Apache's MESI_MAX_MAX_CONCURRENT_REQUESTS).
-// Neither the core nor Caddy caps the value; 999999999 is derived from
+// The core does not cap the value, but Caddy validates the same bound at
+// Caddyfile parse and Provision (#452); 999999999 is derived from
 // the transport — the field crosses to the Apache module as a C `int`
 // (32-bit on every platform Apache 2.4 supports) parsed by the shared
 // strict parse_nonneg_int, which guards at 9 digits. The semaphore is a

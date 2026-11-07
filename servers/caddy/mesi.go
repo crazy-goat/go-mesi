@@ -103,7 +103,9 @@ type MesiMiddleware struct {
 
 	// MaxConcurrentRequests limits the number of concurrent HTTP requests
 	// made during ESI processing. When set, a semaphore limits parallelism.
-	// 0 = unlimited (backward compatible).
+	// 0 = unlimited (backward compatible). Valid range is
+	// [0, maxMaxConcurrentRequests] (999999999); values outside it are
+	// rejected at Caddyfile parse and JSON provision.
 	MaxConcurrentRequests int `json:"max_concurrent_requests,omitempty"`
 
 	// Timeout is the maximum time allowed for ESI processing, including
@@ -183,6 +185,25 @@ func validateMaxResponseSize(v int64) error {
 	return nil
 }
 
+// maxMaxConcurrentRequests mirrors libgomesi's
+// config.MaxMaxConcurrentRequests (libgomesi/internal/config/max_concurrent_requests.go).
+// The constant lives in a separate module and cannot be imported here, so the
+// value is kept in sync locally, like the other platform mirrors
+// (Apache MESI_MAX_MAX_CONCURRENT_REQUESTS, php-ext, CLI maxMaxConcurrentRequests).
+const maxMaxConcurrentRequests = 999999999
+
+// validateMaxConcurrentRequests rejects values outside
+// [0, maxMaxConcurrentRequests]. 0 is the documented "unlimited" value.
+// Negatives must not reach the core, where they would be warned about and
+// silently normalized to unlimited (#329); values above the cap diverge from
+// every other platform.
+func validateMaxConcurrentRequests(v int) error {
+	if v < 0 || v > maxMaxConcurrentRequests {
+		return fmt.Errorf("max_concurrent_requests must be in [0, %d] (0 = unlimited), got %d", maxMaxConcurrentRequests, v)
+	}
+	return nil
+}
+
 // Provision implements caddy.Provisioner. Called once at config load.
 func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
 	m.logger = ctx.Logger()
@@ -206,6 +227,10 @@ func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
 		if err := validateMaxResponseSize(*m.MaxResponseSize); err != nil {
 			return err
 		}
+	}
+
+	if err := validateMaxConcurrentRequests(m.MaxConcurrentRequests); err != nil {
+		return err
 	}
 
 	blockPrivateIPs := true
@@ -459,11 +484,14 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				var err error
-				m.MaxConcurrentRequests, err = strconv.Atoi(d.Val())
+				v, err := strconv.Atoi(d.Val())
 				if err != nil {
 					return d.Errf("invalid max_concurrent_requests %q: %v", d.Val(), err)
 				}
+				if err := validateMaxConcurrentRequests(v); err != nil {
+					return d.Errf("invalid max_concurrent_requests %q: %v", d.Val(), err)
+				}
+				m.MaxConcurrentRequests = v
 			case "max_workers":
 				if !d.NextArg() {
 					return d.ArgErr()

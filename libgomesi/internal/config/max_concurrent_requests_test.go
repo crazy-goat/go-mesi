@@ -10,8 +10,9 @@ func TestMaxMaxConcurrentRequestsConstant(t *testing.T) {
 	// The cap mirrors Apache's MESI_MAX_MAX_CONCURRENT_REQUESTS
 	// (servers/apache/mod_mesi.c): the 9-digit guard of the shared
 	// strict parse_nonneg_int helper, i.e. the largest value that fits
-	// both the C `int` field and the helper without a wrap. Neither
-	// core nor Caddy defines a maximum — pin the exact value so a
+	// both the C `int` field and the helper without a wrap. The core
+	// does not define a maximum, but Caddy validates the same bound
+	// (#452) — pin the exact value so a
 	// change is deliberate and stays in sync with the Apache-side
 	// #define and the README/CHANGELOG docs.
 	if MaxMaxConcurrentRequests != 999999999 {

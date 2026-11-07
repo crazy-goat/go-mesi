@@ -2420,6 +2420,112 @@ func TestUnmarshalCaddyfileMaxConcurrentRequestsNoArg(t *testing.T) {
 	}
 }
 
+// TestUnmarshalCaddyfileMaxConcurrentRequestsValidBounds accepts the
+// documented [0, maxMaxConcurrentRequests] range. 0 is unlimited; the cap is
+// accepted; typical values are accepted.
+func TestUnmarshalCaddyfileMaxConcurrentRequestsValidBounds(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{name: "0 (unlimited)", value: "0", want: 0},
+		{name: "typical", value: "10", want: 10},
+		{name: "cap", value: fmt.Sprintf("%d", maxMaxConcurrentRequests), want: maxMaxConcurrentRequests},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf("mesi {\n\t\tmax_concurrent_requests %s\n\t}", tc.value)
+			d := caddyfile.NewTestDispenser(input)
+			m := &MesiMiddleware{}
+			if err := m.UnmarshalCaddyfile(d); err != nil {
+				t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+			}
+			if m.MaxConcurrentRequests != tc.want {
+				t.Errorf("expected MaxConcurrentRequests=%d, got %d", tc.want, m.MaxConcurrentRequests)
+			}
+		})
+	}
+}
+
+// TestUnmarshalCaddyfileMaxConcurrentRequestsOutOfRange verifies that
+// max_concurrent_requests rejects negatives (the core would warn and
+// normalize them to unlimited) and values above the cross-platform cap.
+func TestUnmarshalCaddyfileMaxConcurrentRequestsOutOfRange(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{name: "negative", value: "-1"},
+		{name: "large negative", value: "-1000000"},
+		{name: "cap+1", value: fmt.Sprintf("%d", maxMaxConcurrentRequests+1)},
+		{name: "non-integer", value: "1.5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf("mesi {\n\t\tmax_concurrent_requests %s\n\t}", tc.value)
+			d := caddyfile.NewTestDispenser(input)
+			m := &MesiMiddleware{}
+			err := m.UnmarshalCaddyfile(d)
+			if err == nil {
+				t.Fatal("UnmarshalCaddyfile should return error for out-of-range max_concurrent_requests")
+			}
+			if !strings.Contains(err.Error(), "invalid max_concurrent_requests") {
+				t.Errorf("expected 'invalid max_concurrent_requests' error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestProvisionMaxConcurrentRequestsValidBounds accepts the documented range
+// via the JSON/Provision path (Caddyfile is not involved).
+func TestProvisionMaxConcurrentRequestsValidBounds(t *testing.T) {
+	cases := []struct {
+		name  string
+		value int
+	}{
+		{name: "0 (unlimited)", value: 0},
+		{name: "typical", value: 10},
+		{name: "cap", value: maxMaxConcurrentRequests},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &MesiMiddleware{MaxConcurrentRequests: tc.value}
+			if err := m.Provision(caddy.Context{}); err != nil {
+				t.Fatalf("Provision() returned error: %v", err)
+			}
+			if m.MaxConcurrentRequests != tc.value {
+				t.Errorf("expected MaxConcurrentRequests=%d after Provision, got %d", tc.value, m.MaxConcurrentRequests)
+			}
+		})
+	}
+}
+
+// TestProvisionMaxConcurrentRequestsInvalid rejects negatives and values
+// above the cap at JSON provision (the path that bypasses UnmarshalCaddyfile).
+func TestProvisionMaxConcurrentRequestsInvalid(t *testing.T) {
+	cases := []struct {
+		name  string
+		value int
+	}{
+		{name: "negative", value: -1},
+		{name: "large negative", value: -1000000},
+		{name: "cap+1", value: maxMaxConcurrentRequests + 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &MesiMiddleware{MaxConcurrentRequests: tc.value}
+			err := m.Provision(caddy.Context{})
+			if err == nil {
+				t.Fatal("Provision() should return error for out-of-range max_concurrent_requests")
+			}
+			if !strings.Contains(err.Error(), "max_concurrent_requests") {
+				t.Errorf("expected max_concurrent_requests in error, got: %v", err)
+			}
+		})
+	}
+}
+
 // TestMaxConcurrentRequestsProvision verifies that Provision works with
 // MaxConcurrentRequests set.
 func TestMaxConcurrentRequestsProvision(t *testing.T) {
