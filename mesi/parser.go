@@ -53,6 +53,28 @@ func Parse(input string, maxDepth int, defaultUrl string) string {
 	return MESIParse(input, config)
 }
 
+// normalizeMaxWorkers applies the documented MaxWorkers contract before the
+// worker pool is built:
+//
+//   - zero means the library default runtime.NumCPU()*4 and is silent;
+//   - a negative value is invalid and is normalized to the same library
+//     default after a max_workers_invalid warning (mirroring the
+//     max_concurrent_requests_invalid warn+normalize from #329);
+//   - positive values are returned untouched.
+//
+// After normalization MaxWorkers is always positive, so nested parses inherit
+// an effective value and never warn a second time.
+func (c EsiParserConfig) normalizeMaxWorkers() EsiParserConfig {
+	if c.MaxWorkers < 0 {
+		c.warn("max_workers_invalid", "value", c.MaxWorkers, "using", runtime.NumCPU()*4)
+		c.MaxWorkers = runtime.NumCPU() * 4
+	} else if c.MaxWorkers == 0 {
+		c.MaxWorkers = runtime.NumCPU() * 4
+	}
+
+	return c
+}
+
 func MESIParse(input string, config EsiParserConfig) string {
 	if config.Context == nil {
 		config.Context = context.Background()
@@ -79,6 +101,8 @@ func MESIParse(input string, config EsiParserConfig) string {
 		semaphore = make(chan struct{}, config.MaxConcurrentRequests)
 		config = config.setSemaphore(semaphore)
 	}
+
+	config = config.normalizeMaxWorkers()
 
 	type esiJob struct {
 		id    int
@@ -116,10 +140,10 @@ func MESIParse(input string, config EsiParserConfig) string {
 	}
 
 	if len(esiJobs) > 0 {
+		// normalizeMaxWorkers guarantees a positive value: negatives were
+		// warned about and replaced, and zero already means the library
+		// default.
 		maxWorkers := config.MaxWorkers
-		if maxWorkers <= 0 {
-			maxWorkers = runtime.NumCPU() * 4
-		}
 
 		ch := make(chan Response, len(esiJobs))
 

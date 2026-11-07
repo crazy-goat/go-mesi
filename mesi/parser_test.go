@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1865,6 +1866,85 @@ func TestMESIParseNegativeMaxConcurrentRequestsProducesWarning(t *testing.T) {
 	}
 	if !log.containsMsg("max_concurrent_requests_invalid") {
 		t.Errorf("expected logger to receive max_concurrent_requests_invalid for negative MaxConcurrentRequests=-5")
+	}
+}
+
+func TestNormalizeMaxWorkers(t *testing.T) {
+	defaultWorkers := runtime.NumCPU() * 4
+	cases := []struct {
+		name     string
+		workers  int
+		want     int
+		wantWarn bool
+	}{
+		{"negative -1 warns and normalizes to library default", -1, defaultWorkers, true},
+		{"large negative warns and normalizes to library default", -100, defaultWorkers, true},
+		{"zero stays silent and uses library default", 0, defaultWorkers, false},
+		{"positive 1 is untouched", 1, 1, false},
+		{"positive 8 is untouched", 8, 8, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var log recordingLogger
+			config := CreateDefaultConfig()
+			config.MaxWorkers = tc.workers
+			config.Logger = &log
+
+			got := config.normalizeMaxWorkers()
+
+			if got.MaxWorkers != tc.want {
+				t.Fatalf("normalizeMaxWorkers(MaxWorkers=%d).MaxWorkers = %d, want %d",
+					tc.workers, got.MaxWorkers, tc.want)
+			}
+			if warned := log.containsMsg("max_workers_invalid"); warned != tc.wantWarn {
+				t.Fatalf("max_workers_invalid warning for MaxWorkers=%d = %v, want %v (entries: %+v)",
+					tc.workers, warned, tc.wantWarn, log.entries)
+			}
+			if tc.wantWarn {
+				entry := log.entries[len(log.entries)-1]
+				if len(entry.keyvals) != 4 {
+					t.Fatalf("max_workers_invalid keyvals = %v, want value/using pairs", entry.keyvals)
+				}
+				if entry.keyvals[0] != "value" || entry.keyvals[1] != tc.workers {
+					t.Errorf("max_workers_invalid value keyval = %v, want [\"value\" %d]",
+						entry.keyvals[:2], tc.workers)
+				}
+				if entry.keyvals[2] != "using" || entry.keyvals[3] != defaultWorkers {
+					t.Errorf("max_workers_invalid using keyval = %v, want [\"using\" %d]",
+						entry.keyvals[2:], defaultWorkers)
+				}
+			}
+		})
+	}
+}
+
+func TestMESIParseMaxWorkersWarningOnlyForNegative(t *testing.T) {
+	cases := []struct {
+		name     string
+		workers  int
+		wantWarn bool
+	}{
+		{"negative warns", -1, true},
+		{"zero is silent", 0, false},
+		{"positive is silent", 2, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var log recordingLogger
+			config := CreateDefaultConfig()
+			config.MaxWorkers = tc.workers
+			config.Logger = &log
+
+			if got := MESIParse("plain", config); got != "plain" {
+				t.Fatalf("MESIParse returned %q, want %q", got, "plain")
+			}
+			if warned := log.containsMsg("max_workers_invalid"); warned != tc.wantWarn {
+				t.Fatalf("max_workers_invalid warning for MaxWorkers=%d = %v, want %v (entries: %+v)",
+					tc.workers, warned, tc.wantWarn, log.entries)
+			}
+		})
 	}
 }
 
