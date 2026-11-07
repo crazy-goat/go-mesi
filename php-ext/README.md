@@ -41,6 +41,71 @@ sudo make install
 ```
 This will compile, test, and install the PHP extension, making it ready for use in your environment.
 
+## macOS
+
+Build `libgomesi` with its Makefile (not a raw `go build`):
+
+```
+make -C libgomesi build
+```
+
+The generic `sudo make install` step above is Linux-only: macOS has no
+`ldconfig` and `/usr/lib` is on the read-only system volume. Point
+`--with-gomesi` at the build directory instead:
+
+```
+cd php-ext
+phpize
+./configure --with-gomesi=../libgomesi
+make
+```
+
+On macOS the Makefile links the c-shared library with
+`-Wl,-install_name,@rpath/libgomesi.so`, so `libgomesi.so` carries the install
+id `@rpath/libgomesi.so` (`otool -D libgomesi/libgomesi.so`). This matters
+because `configure` records an `LC_RPATH` for the `--with-gomesi` directory,
+but dyld only consults `LC_RPATH` for dependencies written as `@rpath/...`.
+A library built with a bare `libgomesi.so` install id (the Go
+`-buildmode=c-shared` default, and every build from before #443) therefore
+ignores the rpath and the extension fails to load with:
+
+```
+PHP Startup: Unable to load dynamic library '.../mesi.so':
+  Library not loaded: libgomesi.so
+```
+
+After building the extension, verify the wiring from the repository root:
+
+```
+make check-darwin
+```
+
+That target checks libgomesi's install id and, when `php-ext/modules/mesi.so`
+exists, the extension's `@rpath` dependency and its `LC_RPATH`. The rpath must
+resolve to the directory that holds `libgomesi.so` (or be the `@loader_path`
+equivalent, as used by `libgomesi/test-libgomesi`); a consumer whose only
+rpath points elsewhere fails the check. The equivalent explicit invocation is:
+
+```
+scripts/check-darwin-rpath.sh libgomesi/libgomesi.so php-ext/modules/mesi.so
+```
+
+`make -C libgomesi check-darwin` checks the library only. All forms print
+`SKIP` on non-macOS hosts. After upgrading libgomesi, rebuild the extension so
+the linker records the new install id.
+
+Fallback for an older or externally supplied libgomesi: either point dyld at
+the directory manually, or rewrite the install id before rebuilding the
+extension:
+
+```
+DYLD_LIBRARY_PATH="$PWD/libgomesi" php -n -d extension="$PWD/php-ext/modules/mesi.so" -r '...'
+
+# or rewrite the id first, then rebuild the extension (modifying a signed
+# arm64 binary invalidates its signature; add `codesign --force --sign -` if needed):
+install_name_tool -id @rpath/libgomesi.so libgomesi/libgomesi.so
+```
+
 # Enabling extension
 
 To enable the **mESI PHP extension** on **Debian** or **Ubuntu**, follow these steps:
