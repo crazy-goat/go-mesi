@@ -170,8 +170,9 @@ http:
 
 `max_concurrent_requests` limits concurrent `<esi:include>` HTTP fetches in one
 page render (one `MESIParse` call); it is not a RoadRunner-global limit and does
-not change the `MaxWorkers` token-processing pool. Each nested parse has its own
-fetch-admission cap, so nested pages can collectively exceed this value. Fetches
+not change the `MaxWorkers` token-processing pool. A nested parse inherits the
+page render's fetch-admission semaphore, so the cap applies across nesting
+levels and not only to flat pages. Fetches
 that reach the cap wait for a slot; they are not dropped, and this wait is part
 of the configured per-include `timeout` budget.
 

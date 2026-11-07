@@ -2050,6 +2050,23 @@ static int is_html_content(const char *ct) {
     return delim == '\0' || delim == ';' || delim == ' ' || delim == '\t' || delim == '\r' || delim == '\n';
 }
 
+// A response body with a Content-Encoding other than "identity" is
+// compressed or otherwise transformed. Parsing those bytes as HTML would
+// corrupt the body (a gzip stream is not NUL-terminated text), so the
+// filter must pass the response through untouched. nginx has the
+// equivalent check in its head filter (ngx_test_content_compression).
+static int is_encoded_response(request_rec *r) {
+    const char *ce = apr_table_get(r->headers_out, "Content-Encoding");
+    if (!ce) return 0;
+    while (*ce == ' ' || *ce == '\t') ce++;
+    if (strncasecmp(ce, "identity", sizeof("identity") - 1) != 0) return 1;
+    ce += sizeof("identity") - 1;
+    while (*ce == ' ' || *ce == '\t') ce++;
+    // "identity" alone means no transformation; anything else ("identity,
+    // gzip", a parameter, ...) means the body may be encoded.
+    return *ce != '\0';
+}
+
 // Flatten brigade into a single NUL-terminated string.
 // Returns 1 on success, 0 on failure.
 // On failure, *html is set to NULL (no dangling pointer to uninitialized memory)
@@ -2088,7 +2105,14 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         return ap_pass_brigade(f->next, bb);
     }
 
-    if (!is_html_content(f->r->content_type) || f->r->status >= 400) {
+    // 204/304 cannot carry a body. Apache hands the handler body to
+    // output filters even for HEAD, so parsing it would fetch includes
+    // that are never sent. An encoded body cannot be parsed as HTML.
+    // All of these pass through untouched.
+    int bodiless = f->r->header_only || f->r->status == HTTP_NO_CONTENT ||
+                   f->r->status == HTTP_NOT_MODIFIED;
+    if (!is_html_content(f->r->content_type) || f->r->status >= 400 ||
+        bodiless || is_encoded_response(f->r)) {
         ap_remove_output_filter(f);
         return ap_pass_brigade(f->next, bb);
     }
@@ -2121,9 +2145,9 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     apr_off_t limit = (conf->max_body_size > 0) ? conf->max_body_size : 0;
     int oversize = 0;
     // Declared Content-Length over the limit: decide before buffering.
-    // Bodiless responses (HEAD, 204, 304) are never limited.
-    int bodiless = f->r->header_only || f->r->status == HTTP_NO_CONTENT || f->r->status == HTTP_NOT_MODIFIED;
-    if (limit > 0 && !bodiless) {
+    // Bodiless responses (HEAD, 204, 304) were passed through above and
+    // never reach this point.
+    if (limit > 0) {
         apr_off_t declared = f->r->clength;
         const char *cl = apr_table_get(f->r->headers_out, "Content-Length");
         apr_off_t hdr = 0;
@@ -2145,7 +2169,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
             apr_bucket_delete(b);
             continue;
         }
-        if (limit > 0 && !bodiless && !APR_BUCKET_IS_METADATA(b)) {
+        if (limit > 0 && !APR_BUCKET_IS_METADATA(b)) {
             apr_size_t blen = b->length;
             if (b->length == (apr_size_t)-1) {
                 // Unknown length (pipe, socket): reading splits the bucket

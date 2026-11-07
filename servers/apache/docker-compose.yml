@@ -67,3 +67,5 @@ services:
     command: python /data/server.py
     expose:
       - "8000"
+      # HTTP/1.1 instance for the chunked-streaming test (#98).
+      - "8001"
