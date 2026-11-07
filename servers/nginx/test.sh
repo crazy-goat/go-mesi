@@ -5,6 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$SCRIPT_DIR"
 
+# Static regression guard for #429: ngx_str_to_cstr() results are checked
+# before use. Runs before Docker so it is also usable in a plain checkout.
+echo "=== Test 0: ngx_str_to_cstr() NULL checks (#429) ==="
+bash check-cstr-guards.sh
+
 HTTP_PORT=${NGINX_HTTP_PORT:-18080}
 
 docker compose up -d --wait
@@ -2802,6 +2807,131 @@ else
     echo "empty response: $MERGE_EMPTY_RESPONSE"
     exit 1
 fi
+
+echo "=== Test 101: cache directive config validation — mesi_cache_size / mesi_cache_ttl / mesi_cache_redis_db (#430) ==="
+nginx_cache_conf_check() {
+    # $1 = directive lines; prints nginx -t output
+    printf '%b\n' \
+        'load_module /usr/lib/nginx/modules/ngx_http_mesi_module.so;' \
+        'error_log stderr warn;' \
+        'events {}' \
+        'http {' \
+        '  server {' \
+        '    listen 18083;' \
+        '    location / {' \
+        '      enable_mesi on;' \
+        "      $1" \
+        '    }' \
+        '  }' \
+        '}' > /tmp/nginx-mesi-cache.conf
+    docker compose exec -T nginx sh -c 'cat > /tmp/nginx-mesi-cache.conf' < /tmp/nginx-mesi-cache.conf
+    docker compose exec -T nginx /usr/local/nginx/sbin/nginx -t -c /tmp/nginx-mesi-cache.conf 2>&1 || true
+}
+
+# (a) Boundary classes ACCEPTED: Apache's exact edges (mod_mesi.c:
+#     MesiCacheSize [1, 1000000], MesiCacheTTL [0, 86400],
+#     MesiCacheRedisDB [0, 15]) plus the typical values. Explicit
+#     cache_ttl 0 = no expiry and redis_db 0 = the default database.
+for GOOD in \
+    'mesi_cache_size 1;' \
+    'mesi_cache_size 10000;' \
+    'mesi_cache_size 1000000;' \
+    'mesi_cache_ttl 0;' \
+    'mesi_cache_ttl 30;' \
+    'mesi_cache_ttl 86400;' \
+    'mesi_cache_redis_db 0;' \
+    'mesi_cache_redis_db 15;'; do
+    NGINX_T_OUT=$(nginx_cache_conf_check "$GOOD")
+    if echo "$NGINX_T_OUT" | grep -q 'syntax is ok'; then
+        echo "PASS: valid '$GOOD' accepted by nginx -t"
+    else
+        echo "FAIL: nginx rejected valid '$GOOD'"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (b) Format classes REJECTED for every directive: negative, explicit
+#     plus sign, decimal, non-integer and trailing garbage — the stock
+#     ngx_atoi would silently coerce all of them.
+for DIR in mesi_cache_size mesi_cache_ttl mesi_cache_redis_db; do
+    for BAD in '-1' '+1' '1.5' 'abc' '3foo' '2foo'; do
+        NGINX_T_OUT=$(nginx_cache_conf_check "${DIR} ${BAD};")
+        if ! echo "$NGINX_T_OUT" | grep -q 'syntax is ok' \
+            && echo "$NGINX_T_OUT" | grep -q 'must be a .*integer'; then
+            echo "PASS: invalid ${DIR} ${BAD} rejected by nginx -t"
+        else
+            echo "FAIL: nginx did not reject invalid ${DIR} ${BAD} with the expected error"
+            echo "nginx -t output: $NGINX_T_OUT"
+            exit 1
+        fi
+    done
+done
+
+# (c) Empty value REJECTED: "" must not silently become 0 (no expiry /
+#     default DB) or be defaulted.
+for DIR in mesi_cache_size mesi_cache_ttl mesi_cache_redis_db; do
+    NGINX_T_OUT=$(nginx_cache_conf_check "${DIR} \"\";")
+    if ! echo "$NGINX_T_OUT" | grep -q 'syntax is ok' \
+        && echo "$NGINX_T_OUT" | grep -q 'requires an argument'; then
+        echo "PASS: empty ${DIR} rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject an empty ${DIR}"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (d) Range classes REJECTED: the exact Apache edges plus a value in
+#     (2^31, MaxInt64] that ngx_atoi accepts but the C int ABI would
+#     narrow/wrap, and a 20-digit overflow input (the setter's early
+#     exit bounds its own accumulator, so it can never overflow
+#     ngx_int_t regardless of argument length).
+for CASE in \
+    'mesi_cache_size 0' \
+    'mesi_cache_size 1000001' \
+    'mesi_cache_size 4294967301' \
+    'mesi_cache_size 99999999999999999999' \
+    'mesi_cache_ttl 86401' \
+    'mesi_cache_ttl 4294967301' \
+    'mesi_cache_ttl 99999999999999999999' \
+    'mesi_cache_redis_db 16' \
+    'mesi_cache_redis_db 4294967301' \
+    'mesi_cache_redis_db 99999999999999999999'; do
+    NGINX_T_OUT=$(nginx_cache_conf_check "${CASE};")
+    if ! echo "$NGINX_T_OUT" | grep -q 'syntax is ok' \
+        && echo "$NGINX_T_OUT" | grep -q 'out of range'; then
+        echo "PASS: out-of-range '${CASE}' rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject out-of-range '${CASE}' with the expected error"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+
+# (e) Missing argument REJECTED by NGX_CONF_TAKE1 before the setter runs,
+#     and a repeated directive rejected by the setter's duplicate guard.
+for DIR in mesi_cache_size mesi_cache_ttl mesi_cache_redis_db; do
+    NGINX_T_OUT=$(nginx_cache_conf_check "${DIR};")
+    if ! echo "$NGINX_T_OUT" | grep -q 'syntax is ok' \
+        && echo "$NGINX_T_OUT" | grep -q "invalid number of arguments in \"${DIR}\""; then
+        echo "PASS: argument-less ${DIR} rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject ${DIR} without an argument"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+    NGINX_T_OUT=$(nginx_cache_conf_check "${DIR} 1; ${DIR} 2;")
+    if ! echo "$NGINX_T_OUT" | grep -q 'syntax is ok' \
+        && echo "$NGINX_T_OUT" | grep -q 'is duplicate'; then
+        echo "PASS: duplicate ${DIR} rejected by nginx -t"
+    else
+        echo "FAIL: nginx did not reject a duplicate ${DIR}"
+        echo "nginx -t output: $NGINX_T_OUT"
+        exit 1
+    fi
+done
+rm -f /tmp/nginx-mesi-cache.conf
 
 docker compose down
 
