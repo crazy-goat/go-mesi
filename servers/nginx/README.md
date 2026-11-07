@@ -303,7 +303,7 @@ Validation is strict and happens at config load (`nginx -t` fails — no silent 
 
 When the directive is set, the whole parse is routed through libgomesi's **`ParseJson`** entry point as `{"maxConcurrentRequests":N}`; the blob also carries the other resolved settings (`maxDepth`, `defaultUrl`, `allowedHosts`, SSRF flags, optional `timeoutSeconds`, `maxResponseSize`, `cacheKeyTemplate` + `requestCtx`), so behaviour matches the positional path exactly except for the cap. With an older `libgomesi.so` that lacks the `ParseJson` symbol, the directive is ignored with a per-request warning (`mesi: mesi_max_concurrent_requests is set but libgomesi lacks ParseJson — mesi_max_concurrent_requests ignored (unlimited concurrent requests apply, the pre-#214 behaviour)`) and unlimited applies — never a crash, never a silently wrong cap. A `ParseJson` NULL fails the request closed. Nested `location` blocks inherit the directive from their enclosing location: the unset sentinel survives `ngx_conf_merge_value` — deliberately **not** a merged `0` — so an unset child takes the parent's value and a child that sets the directive (including explicit `0`) overrides the parent.
 
-> **Known core limitation (#453):** nested `MESIParse` calls (a fetched fragment containing further includes) replace the inherited semaphore with a fresh one, so with NESTED includes the effective cap can reach cap × nesting depth for one page render. Flat pages (the common case) are capped exactly; #453 is tracked separately and is not fixed by this directive.
+Nested `MESIParse` calls made for fetched fragments inherit the same admission semaphore, so the cap holds across nesting levels too, not only for flat pages (#453).
 
 ### Example
 
