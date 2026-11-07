@@ -37,7 +37,7 @@ func resolveBaseURL(listen, override string) (string, error) {
 		if u.Path != "" && u.Path != "/" {
 			return "", fmt.Errorf("invalid -base-url %q: path must be empty", override)
 		}
-		if u.RawQuery != "" || u.Fragment != "" {
+		if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 			return "", fmt.Errorf("invalid -base-url %q: query and fragment are not allowed", override)
 		}
 		u.Path = ""
@@ -50,6 +50,10 @@ func resolveBaseURL(listen, override string) (string, error) {
 	}
 	if port == "" {
 		return "", fmt.Errorf("cannot derive include base URL from -listen %q: missing port (pass -base-url)", listen)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return "", fmt.Errorf("cannot derive include base URL from -listen %q: invalid port (pass -base-url)", listen)
 	}
 	switch {
 	case host == "":

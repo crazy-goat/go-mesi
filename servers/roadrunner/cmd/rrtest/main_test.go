@@ -28,6 +28,11 @@ func TestResolveBaseURL(t *testing.T) {
 			want:   "http://localhost:3000",
 		},
 		{
+			name:   "maximum port is accepted",
+			listen: ":65535",
+			want:   "http://127.0.0.1:65535",
+		},
+		{
 			name:   "unspecified IPv4 listen maps to loopback",
 			listen: "0.0.0.0:8080",
 			want:   "http://127.0.0.1:8080",
@@ -47,6 +52,12 @@ func TestResolveBaseURL(t *testing.T) {
 			listen:   ":8080",
 			override: "https://esi.example.test:8443",
 			want:     "https://esi.example.test:8443",
+		},
+		{
+			name:     "override wins over an invalid listen port",
+			listen:   ":0",
+			override: "http://127.0.0.1:9090",
+			want:     "http://127.0.0.1:9090",
 		},
 		{
 			name:     "override trailing slash is dropped",
@@ -91,6 +102,26 @@ func TestResolveBaseURLErrors(t *testing.T) {
 			wantErr: "missing port",
 		},
 		{
+			name:    "listen with zero port",
+			listen:  ":0",
+			wantErr: "invalid port",
+		},
+		{
+			name:    "listen with non-numeric port",
+			listen:  ":abc",
+			wantErr: "invalid port",
+		},
+		{
+			name:    "listen with port above the valid range",
+			listen:  ":99999",
+			wantErr: "invalid port",
+		},
+		{
+			name:    "listen with port 65536",
+			listen:  ":65536",
+			wantErr: "invalid port",
+		},
+		{
 			name:     "override without scheme",
 			override: "127.0.0.1:9090",
 			wantErr:  "invalid -base-url",
@@ -113,6 +144,11 @@ func TestResolveBaseURLErrors(t *testing.T) {
 		{
 			name:     "override with query",
 			override: "http://127.0.0.1:9090/?q=1",
+			wantErr:  "query and fragment are not allowed",
+		},
+		{
+			name:     "override with bare question mark",
+			override: "http://127.0.0.1:9090?",
 			wantErr:  "query and fragment are not allowed",
 		},
 		{
