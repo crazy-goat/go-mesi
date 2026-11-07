@@ -26,32 +26,15 @@
 #include <apr_pools.h>
 #include <apr_strings.h>
 
+/* The content-type matcher lives in mesi_pure.h so the module, test_pure.c
+ * and test_directives.c share one implementation. */
+#include "mesi_pure.h"
+
 /* The capability set this module appends to the request header. The Edge
  * Architecture Specification (W3C NOTE 2001-08-04, section 2.1) defines the
  * value as `device-token "=" <"> capability <">`, for example
  * `abc="ESI/1.0"`, not as a bare capability token. */
 #define MESI_SURROGATE_CAPABILITY "mesi=\"ESI/1.0\""
-
-/* mesi_is_html_content reports whether ct is text/html, ignoring case and
- * leading optional whitespace. A parameter ("; charset=...") is allowed;
- * another media type that merely starts with "text/html" is not. */
-static int mesi_is_html_content(const char *ct) {
-    if (!ct) {
-        return 0;
-    }
-    /* Skip leading whitespace (OWS per RFC 7230 section 3.2.6). */
-    while (*ct == ' ' || *ct == '\t') {
-        ct++;
-    }
-    /* Case-insensitive media-type comparison (RFC 9110 section 8.3.1). */
-    if (strncasecmp(ct, "text/html", 9) != 0) {
-        return 0;
-    }
-    char delim = ct[9];
-    /* Must be followed by a delimiter, parameter separator, or end. */
-    return delim == '\0' || delim == ';' || delim == ' ' || delim == '\t' ||
-           delim == '\r' || delim == '\n';
-}
 
 /* mesi_status_allows_esi: only a successful response with a body can be an
  * ESI document. Redirects (3xx), errors (4xx/5xx) and 204 No Content are
@@ -63,8 +46,7 @@ static int mesi_status_allows_esi(int status) {
 /* mesi_response_is_eligible is the final response-filter gate: the body is
  * an HTML 2xx document with content to process. */
 static int mesi_response_is_eligible(const char *content_type, int status) {
-    return mesi_status_allows_esi(status) &&
-           mesi_is_html_content(content_type);
+    return mesi_status_allows_esi(status) && is_html_content(content_type);
 }
 
 /* mesi_insert_filter_wanted decides whether to attach the output filter at
@@ -90,7 +72,7 @@ static int mesi_insert_filter_wanted(int enable_mesi, int status,
     if (dynamic_handler) {
         return 1;
     }
-    return content_type == NULL || mesi_is_html_content(content_type);
+    return content_type == NULL || is_html_content(content_type);
 }
 
 /* mesi_surrogate_capability returns the request header value this module

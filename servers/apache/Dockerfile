@@ -42,6 +42,7 @@ RUN cd libgomesi && \
     cp libgomesi.h /usr/include/
 
 COPY servers/apache/mod_mesi.c /build/mod_mesi.c
+COPY servers/apache/mesi_config.h /build/mesi_config.h
 COPY servers/apache/filter_lifecycle.h /build/filter_lifecycle.h
 COPY servers/apache/cache_config.h /build/cache_config.h
 COPY servers/apache/parse_json_config.h /build/parse_json_config.h

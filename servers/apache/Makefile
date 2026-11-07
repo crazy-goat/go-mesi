@@ -8,7 +8,7 @@ APR_INCLUDEDIR ?= $(firstword $(foreach d,$(APR_CANDIDATES),$(if $(wildcard $(d)
 
 all: mod_mesi.so
 
-mod_mesi.so: mod_mesi.c filter_lifecycle.h cache_config.h parse_json_config.h mesi_pure.h
+mod_mesi.so: mod_mesi.c mesi_config.h filter_lifecycle.h cache_config.h parse_json_config.h mesi_pure.h
 	$(APXS) -c -I../../libgomesi mod_mesi.c
 
 install: mod_mesi.so
@@ -19,11 +19,17 @@ clean:
 
 test: test-unit test-integration test-build-sh test-apr-includes
 
-test-unit: test_directives.c test_pure.c filter_lifecycle.h cache_config.h mesi_pure.h parse_json_config.h
+test-unit: test-no-mirrors test_directives.c test_pure.c mesi_config.h filter_lifecycle.h cache_config.h mesi_pure.h parse_json_config.h
 	$(CC) -o test_directives test_directives.c -I$(APR_INCLUDEDIR) -lapr-1 -laprutil-1
 	./test_directives
 	$(CC) -o test_pure test_pure.c -I$(APR_INCLUDEDIR) -lapr-1 -laprutil-1
 	./test_pure
+
+# Guard: the directive validators/setters/merge and lifecycle helpers live in
+# shared headers and are used by mod_mesi.c and the unit tests (#558). Fail if
+# a copy is reintroduced in a test, which would let the two drift apart again.
+test-no-mirrors:
+	./check_no_mirrors.sh
 
 test-integration:
 	./test.sh
@@ -37,4 +43,4 @@ test-build-sh:
 test-apr-includes:
 	./test_makefile.sh
 
-.PHONY: all install clean test test-unit test-integration test-build-sh test-apr-includes
+.PHONY: all install clean test test-unit test-no-mirrors test-integration test-build-sh test-apr-includes
