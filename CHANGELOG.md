@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- RoadRunner test helper (`servers/roadrunner/cmd/rrtest`): fixture `<esi:include>` URLs are derived from `-listen` instead of hardcoding `http://127.0.0.1:9090`, so the helper works with its default `-listen :8080` and with any other listen address. The new `-base-url` flag overrides the derived URL; a wildcard listen address (`:8080`, `0.0.0.0:8080`, `[::]:8080`) maps to the matching loopback address, while `127.0.0.1:9090` and `localhost:PORT` are used as given. This covers every fixture (`/allowed`, `/nested-depth/*`, `/include-error/*`, `/parse-header/*`, `/bytespage/*`, `/holdpage/*`, `/deep-page`, `/timeout`). `servers/roadrunner/test.sh` still launches with `-listen :9090` and needs no change. Unit tests cover the derivation and the override validation (#435)
+
 ## [0.12.0] - 2026-11-06
 
 ### Security
