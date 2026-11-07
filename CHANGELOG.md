@@ -4,6 +4,8 @@
 
 ### Changed
 - CLI: renamed the `-allowPrivateIPsForAllowedHosts` flag to `-allow-private-ips-for-allowed-hosts`, matching the kebab-case convention of every other CLI flag (`-allow-private-ips`, `-allowed-hosts`, `-cache-key-template`, …). Unlike the issue's premise, the camelCase spelling had already shipped in v0.11.0 and v0.12.0, so it remains accepted as a **hidden deprecated alias**: passing it still works and prints `Warning: -allowPrivateIPsForAllowedHosts is deprecated; use -allow-private-ips-for-allowed-hosts instead` on stderr, while `-h` lists only the new name. The alias is implemented by rewriting `os.Args` before `flag.Parse` (the standard flag package has no hidden flags), so the old spelling does not appear in help output. Documented in `cli/README.md` and `docs/features.md` (#425)
+### Fixed
+- `servers/test-server/Dockerfile` no longer uses `COPY --chmod=755`, which requires BuildKit and made the image — and the php-ext, Caddy, FrankenPHP and Traefik local suites that build it — fail on contributors without the buildx component (`the --chmod option requires BuildKit`). `go build` already emits an executable, so a plain `COPY` preserves the mode; the final image and the `/usr/bin/test-server` entrypoint are unchanged. `make -C servers/test-server check`, run by `bin/lint.sh`, fails if `--chmod` returns to the Dockerfile (#442)
 
 ## [0.12.0] - 2026-11-06
 
