@@ -74,6 +74,22 @@
 #define MESI_ON_OVERSIZE_PASS 0  // send the body unchanged, log a warning
 #define MESI_ON_OVERSIZE_ERROR 1 // log an error and fail the response
 
+// Cache directive ranges (#430). Mirrors Apache's MesiCacheSize /
+// MesiCacheTTL / MesiCacheRedisDB validation (mod_mesi.c: cache_size
+// [1, 1000000], cache_ttl [0, 86400], redis_db [0, 15]) and the PHP
+// extension's `cache_size` / `cache_ttl` / `cache_redis_db` contract.
+// The stock ngx_conf_set_num_slot only runs ngx_atoi: it accepts any
+// value in [0, MaxInt64], so a typo like `mesi_cache_size 2000000000`
+// would pass `nginx -t` and only misbehave at runtime (the memory
+// cache would evict only when the LRU reaches that size), and the
+// subsequent narrowing to the C `int` ABI could even wrap a value in
+// (2^31, MaxInt64] into a negative — which libgomesi then silently
+// maps back to its 10000-entry default. The custom setters below keep
+// every out-of-range value at config load, where the operator sees it.
+#define MESI_MAX_CACHE_SIZE 1000000
+#define MESI_MAX_CACHE_TTL_SECONDS 86400
+#define MESI_MAX_CACHE_REDIS_DB 15
+
 // Per-parse cap on concurrent <esi:include> HTTP fetches (#214). Matches
 // libgomesi's config.MaxMaxConcurrentRequests / Apache
 // MESI_MAX_MAX_CONCURRENT_REQUESTS / php-ext `max_concurrent_requests`
@@ -244,6 +260,12 @@ static char *ngx_http_mesi_set_max_concurrent_requests(ngx_conf_t *cf,
                                                        void *conf);
 static char *ngx_http_mesi_set_max_workers(ngx_conf_t *cf, ngx_command_t *cmd,
                                            void *conf);
+static char *ngx_http_mesi_set_cache_size(ngx_conf_t *cf, ngx_command_t *cmd,
+                                          void *conf);
+static char *ngx_http_mesi_set_cache_ttl(ngx_conf_t *cf, ngx_command_t *cmd,
+                                         void *conf);
+static char *ngx_http_mesi_set_cache_redis_db(ngx_conf_t *cf,
+                                              ngx_command_t *cmd, void *conf);
 
 typedef char *(*ParseFunc)(char *, int, char *);
 typedef char *(*ParseWithConfigFunc)(char *, int, char *, char *, int);
@@ -368,12 +390,24 @@ static ngx_command_t ngx_http_mesi_commands[] = {
      ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, cache_backend), NULL},
 
+    // Cache entry cap (#430). Custom setter instead of
+    // ngx_conf_set_num_slot: the stock setter only runs ngx_atoi, which
+    // has no upper bound — `mesi_cache_size 2000000000` would pass
+    // `nginx -t` and produce an effectively unbounded cache, and a value
+    // in (2^31, MaxInt64] would narrow to a negative `int` at the
+    // libgomesi call site and silently become the 10000-entry default.
+    // See ngx_http_mesi_set_cache_size below.
     {ngx_string("mesi_cache_size"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
-     ngx_conf_set_num_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     ngx_http_mesi_set_cache_size, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, cache_size), NULL},
 
+    // Cache entry TTL in seconds (#430). Custom setter for the same
+    // reason: ngx_atoi has no lower or upper bound, so negatives would
+    // silently mean "no expiry" in the memory cache and values beyond
+    // 24h are a unit-confusion misconfiguration. See
+    // ngx_http_mesi_set_cache_ttl below.
     {ngx_string("mesi_cache_ttl"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
-     ngx_conf_set_num_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     ngx_http_mesi_set_cache_ttl, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, cache_ttl), NULL},
 
     {ngx_string("mesi_cache_memcached_servers"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
@@ -388,8 +422,15 @@ static ngx_command_t ngx_http_mesi_commands[] = {
      ngx_conf_set_str_slot, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, cache_redis_password), NULL},
 
+    // Redis database number (#430). Custom setter instead of
+    // ngx_conf_set_num_slot: ngx_atoi has no upper bound, so
+    // `mesi_cache_redis_db 99` passed `nginx -t` although the
+    // documented range is [0, 15]; a value in (2^31, MaxInt64] then
+    // narrowed to a wrapped `int` at the Redis config call site and
+    // selected an unrelated database. See
+    // ngx_http_mesi_set_cache_redis_db below.
     {ngx_string("mesi_cache_redis_db"), NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
-     ngx_conf_set_num_slot, NGX_HTTP_LOC_CONF_OFFSET,
+     ngx_http_mesi_set_cache_redis_db, NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_mesi_loc_conf_t, cache_redis_db), NULL},
 
     {ngx_string("mesi_block_private_ips"), NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
@@ -873,9 +914,10 @@ static char *build_redis_config_json(ngx_http_mesi_loc_conf_t *lcf, ngx_pool_t *
     *w++ = *r;
   }
 
-  // Append redisDB
+  // Append redisDB. The directive setter validates [0, 15] at config
+  // load and the merge supplies 0 when unset, so the stored value is
+  // already in range — the old `db < 0 → 0` clamp is dead (#430).
   ngx_int_t db = lcf->cache_redis_db;
-  if (db < 0) db = 0;
   int len = snprintf(w, total - (size_t)(w - buf), "\",\"redisDB\":%d}", (int)db);
   if (len < 0) return NULL;
   w += len;
@@ -2647,6 +2689,245 @@ static char *ngx_http_mesi_set_max_body_size(ngx_conf_t *cf,
   }
 
   lcf->max_body_size = val;
+  return NGX_CONF_OK;
+}
+
+// ngx_http_mesi_set_cache_size parses the `mesi_cache_size` directive
+// argument (#430). Deliberately NOT ngx_conf_set_num_slot: the stock
+// slot setter only runs ngx_atoi, which has no upper bound, so a typo
+// like `mesi_cache_size 2000000000` would pass `nginx -t` and produce
+// an effectively unbounded cache (the memory cache only evicts once its
+// LRU reaches that size), and a value in (2^31, MaxInt64] would narrow
+// to a negative `int` at the libgomesi call site, which the Go side
+// silently maps back to its 10000-entry default. This setter mirrors
+// Apache's set_cache_size / parse_nonneg_int (mod_mesi.c) and the PHP
+// extension's `cache_size`: non-empty, digits only (rejects "-1", "+1",
+// "1.5", "abc", "3foo"), and the accumulated value must stay within
+// [1, MESI_MAX_CACHE_SIZE] (early exit bounds the accumulator, so it can
+// never overflow ngx_int_t). Explicit 0 is rejected too: it is not a
+// meaningful cache capacity, and libgomesi treats size <= 0 as "use the
+// 10000 default" — accepting it would reintroduce the silent default
+// this validation removes. Every rejection fails config load with an
+// ERR-level (EMERG) log that names the directive and the offending
+// value — never a silent default.
+static char *ngx_http_mesi_set_cache_size(ngx_conf_t *cf, ngx_command_t *cmd,
+                                          void *conf) {
+  ngx_http_mesi_loc_conf_t *lcf = conf;
+  ngx_str_t *value = cf->args->elts; // value[0] = directive name (TAKE1)
+  ngx_int_t val = 0;
+  size_t i;
+
+  (void)cmd; // offset is informational; the setter writes lcf directly.
+
+  // Reject a repeated directive in the same scope, matching the
+  // "is duplicate" behaviour of the ngx_conf_set_*_slot setters used
+  // by every other directive in this module — a silent last-wins would
+  // substitute the operator's intent without a word.
+  if (lcf->cache_size != NGX_CONF_UNSET) {
+    return "is duplicate";
+  }
+
+  // NGX_CONF_TAKE1 guarantees one argument, but an empty quoted string
+  // ("") is still a zero-length token — reject it instead of letting
+  // the loop below parse "" as a silent 0.
+  if (value[1].len == 0) {
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "\"mesi_cache_size\" directive requires an argument "
+                       "(an integer in [1, %d])",
+                       MESI_MAX_CACHE_SIZE);
+    return NGX_CONF_ERROR;
+  }
+
+  for (i = 0; i < value[1].len; i++) {
+    u_char c = value[1].data[i];
+    ngx_int_t d;
+    if (c < '0' || c > '9') {
+      // atoi would silently coerce "-1" (no expiry / default),
+      // "1.5" (truncate) and "abc" (→ 0 = library default). Fail fast.
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "invalid value \"%V\" in \"mesi_cache_size\" "
+                         "directive: must be a positive integer "
+                         "(digits only) in [1, %d]",
+                         &value[1], MESI_MAX_CACHE_SIZE);
+      return NGX_CONF_ERROR;
+    }
+    d = (ngx_int_t)(c - '0');
+    if (val > (MESI_MAX_CACHE_SIZE - d) / 10) {
+      // Early exit: the accumulator can never grow past
+      // MESI_MAX_CACHE_SIZE * 10 + 9, so this cannot overflow ngx_int_t
+      // regardless of argument length.
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "value \"%V\" out of range in \"mesi_cache_size\" "
+                         "directive: must be in [1, %d]",
+                         &value[1], MESI_MAX_CACHE_SIZE);
+      return NGX_CONF_ERROR;
+    }
+    val = val * 10 + d;
+  }
+
+  // Explicit 0 ("0", "00", …): digits-only passed, but 0 is not a
+  // valid capacity (see the setter comment above).
+  if (val < 1) {
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "value \"%V\" out of range in \"mesi_cache_size\" "
+                       "directive: must be in [1, %d]",
+                       &value[1], MESI_MAX_CACHE_SIZE);
+    return NGX_CONF_ERROR;
+  }
+
+  lcf->cache_size = val;
+  return NGX_CONF_OK;
+}
+
+// ngx_http_mesi_set_cache_ttl parses the `mesi_cache_ttl` directive
+// argument (#430). Deliberately NOT ngx_conf_set_num_slot: ngx_atoi has
+// no lower or upper bound, so a negative TTL would pass `nginx -t` and
+// silently mean "no expiry" in the memory cache (cache_memory.Set
+// treats any duration <= 0 like 0), and a value beyond 24h is a
+// unit-confusion misconfiguration. This setter mirrors Apache's
+// set_cache_ttl / parse_nonneg_int (mod_mesi.c) and the PHP extension's
+// `cache_ttl`: non-empty, digits only (rejects "-1", "+1", "1.5",
+// "abc", "3foo"), and the accumulated value must stay within
+// [0, MESI_MAX_CACHE_TTL_SECONDS] (early exit bounds the accumulator, so
+// it can never overflow ngx_int_t). Explicit 0 IS accepted — it is the
+// documented "no expiry" value, unlike a negative TTL that would land
+// there silently. Every rejection fails config load with an ERR-level
+// (EMERG) log that names the directive and the offending value — never
+// a silent default.
+static char *ngx_http_mesi_set_cache_ttl(ngx_conf_t *cf, ngx_command_t *cmd,
+                                         void *conf) {
+  ngx_http_mesi_loc_conf_t *lcf = conf;
+  ngx_str_t *value = cf->args->elts; // value[0] = directive name (TAKE1)
+  ngx_int_t val = 0;
+  size_t i;
+
+  (void)cmd; // offset is informational; the setter writes lcf directly.
+
+  // Reject a repeated directive in the same scope, matching the
+  // "is duplicate" behaviour of the ngx_conf_set_*_slot setters used
+  // by every other directive in this module — a silent last-wins would
+  // substitute the operator's intent without a word.
+  if (lcf->cache_ttl != NGX_CONF_UNSET) {
+    return "is duplicate";
+  }
+
+  // NGX_CONF_TAKE1 guarantees one argument, but an empty quoted string
+  // ("") is still a zero-length token — reject it instead of letting
+  // the loop below parse "" as a silent 0 (= no expiry).
+  if (value[1].len == 0) {
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "\"mesi_cache_ttl\" directive requires an argument "
+                       "(a non-negative integer in [0, %d])",
+                       MESI_MAX_CACHE_TTL_SECONDS);
+    return NGX_CONF_ERROR;
+  }
+
+  for (i = 0; i < value[1].len; i++) {
+    u_char c = value[1].data[i];
+    ngx_int_t d;
+    if (c < '0' || c > '9') {
+      // atoi would silently coerce "-1" (no expiry), "2.5" (truncate)
+      // and "abc" (→ 0 = no expiry). Fail fast.
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "invalid value \"%V\" in \"mesi_cache_ttl\" "
+                         "directive: must be a non-negative integer "
+                         "(digits only) in [0, %d]",
+                         &value[1], MESI_MAX_CACHE_TTL_SECONDS);
+      return NGX_CONF_ERROR;
+    }
+    d = (ngx_int_t)(c - '0');
+    if (val > (MESI_MAX_CACHE_TTL_SECONDS - d) / 10) {
+      // Early exit: the accumulator can never grow past
+      // MESI_MAX_CACHE_TTL_SECONDS * 10 + 9, so this cannot overflow
+      // ngx_int_t regardless of argument length.
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "value \"%V\" out of range in \"mesi_cache_ttl\" "
+                         "directive: must be in [0, %d]",
+                         &value[1], MESI_MAX_CACHE_TTL_SECONDS);
+      return NGX_CONF_ERROR;
+    }
+    val = val * 10 + d;
+  }
+
+  // Explicit 0 ("0", "00", …): digits-only passed and 0 is the
+  // documented "no expiry" value — deliberately ACCEPTED.
+  lcf->cache_ttl = val;
+  return NGX_CONF_OK;
+}
+
+// ngx_http_mesi_set_cache_redis_db parses the `mesi_cache_redis_db`
+// directive argument (#430). Deliberately NOT ngx_conf_set_num_slot:
+// ngx_atoi has no upper bound, so `mesi_cache_redis_db 99` passed
+// `nginx -t` although the documented range is [0, 15] (Redis ships 16
+// logical databases by default), and a value in (2^31, MaxInt64] would
+// narrow to a wrapped `int` at the Redis config call site, silently
+// selecting an unrelated database. This setter mirrors Apache's
+// set_cache_redis_db / parse_nonneg_int (mod_mesi.c) and the PHP
+// extension's `cache_redis_db`: non-empty, digits only (rejects "-1",
+// "+1", "1.5", "abc", "3foo"), and the accumulated value must stay
+// within [0, MESI_MAX_CACHE_REDIS_DB] (early exit bounds the
+// accumulator, so it can never overflow ngx_int_t). Explicit 0 IS
+// accepted (the default database). Every rejection fails config load
+// with an ERR-level (EMERG) log that names the directive and the
+// offending value — never a silent default.
+static char *ngx_http_mesi_set_cache_redis_db(ngx_conf_t *cf,
+                                              ngx_command_t *cmd, void *conf) {
+  ngx_http_mesi_loc_conf_t *lcf = conf;
+  ngx_str_t *value = cf->args->elts; // value[0] = directive name (TAKE1)
+  ngx_int_t val = 0;
+  size_t i;
+
+  (void)cmd; // offset is informational; the setter writes lcf directly.
+
+  // Reject a repeated directive in the same scope, matching the
+  // "is duplicate" behaviour of the ngx_conf_set_*_slot setters used
+  // by every other directive in this module — a silent last-wins would
+  // substitute the operator's intent without a word.
+  if (lcf->cache_redis_db != NGX_CONF_UNSET) {
+    return "is duplicate";
+  }
+
+  // NGX_CONF_TAKE1 guarantees one argument, but an empty quoted string
+  // ("") is still a zero-length token — reject it instead of letting
+  // the loop below parse "" as a silent 0.
+  if (value[1].len == 0) {
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "\"mesi_cache_redis_db\" directive requires an "
+                       "argument (an integer in [0, %d])",
+                       MESI_MAX_CACHE_REDIS_DB);
+    return NGX_CONF_ERROR;
+  }
+
+  for (i = 0; i < value[1].len; i++) {
+    u_char c = value[1].data[i];
+    ngx_int_t d;
+    if (c < '0' || c > '9') {
+      // atoi would silently coerce "-1" (then clamp to 0), "1.5"
+      // (truncate) and "abc" (→ 0). Fail fast.
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "invalid value \"%V\" in \"mesi_cache_redis_db\" "
+                         "directive: must be a non-negative integer "
+                         "(digits only) in [0, %d]",
+                         &value[1], MESI_MAX_CACHE_REDIS_DB);
+      return NGX_CONF_ERROR;
+    }
+    d = (ngx_int_t)(c - '0');
+    if (val > (MESI_MAX_CACHE_REDIS_DB - d) / 10) {
+      // Early exit: the accumulator can never grow past
+      // MESI_MAX_CACHE_REDIS_DB * 10 + 9, so this cannot overflow
+      // ngx_int_t regardless of argument length.
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                         "value \"%V\" out of range in "
+                         "\"mesi_cache_redis_db\" directive: must be in "
+                         "[0, %d]",
+                         &value[1], MESI_MAX_CACHE_REDIS_DB);
+      return NGX_CONF_ERROR;
+    }
+    val = val * 10 + d;
+  }
+
+  // Explicit 0 ("0", "00", …) is the default database — accepted.
+  lcf->cache_redis_db = val;
   return NGX_CONF_OK;
 }
 

@@ -650,16 +650,22 @@ Enables the LRU cache. Use `memory` for an in-process in-memory cache (per-worke
 - **Syntax:** `mesi_cache_size <number>`
 - **Default:** `10000`
 - **Context:** `location`
+- **Range:** `[1, 1000000]` entries (the same bound as Apache `MesiCacheSize` and the PHP extension's `cache_size`)
 
 Maximum number of cache entries. When the cache is full, the least-recently-used entry is evicted. Only applies to the `memory` backend, Redis and Memcached backends ignore this setting.
+
+Validation is strict and happens at config load (`nginx -t` fails — no silent default): the argument must be a non-empty, digits-only integer within `[1, 1000000]`. Negatives (`-1`), signs (`+1`), decimals (`1.5`), non-integers (`abc`, `3foo`), trailing garbage (`100abc`), empty values (`""`), explicit `0`, anything above the cap (`1000001`), values in `(2^31, MaxInt64]` and oversized digit strings are all rejected with an error naming the directive and the offending value. Explicit `0` is rejected rather than treated as "use the default": libgomesi maps `size <= 0` back to its 10000-entry default silently, so accepting it would reintroduce the silent default this validation removes. The check is done by a custom setter rather than `ngx_conf_set_num_slot`, whose `ngx_atoi`-based parse has no upper bound (`mesi_cache_size 2000000000` would otherwise load fine and produce an effectively unbounded cache, while a value in `(2^31, MaxInt64]` narrows to a negative C `int` at the libgomesi call site).
 
 #### `mesi_cache_ttl`
 
 - **Syntax:** `mesi_cache_ttl <seconds>`
 - **Default:** `30`
 - **Context:** `location`
+- **Range:** `[0, 86400]` seconds (`24h`, the same bound as Apache `MesiCacheTTL` and the PHP extension's `cache_ttl`)
 
-Time-to-live in seconds for cached entries. After TTL expiry, the next request hits the origin and refreshes the cache.
+Time-to-live in seconds for cached entries. After TTL expiry, the next request hits the origin and refreshes the cache. `0` means "no expiry", matching the core's memory cache (`cache_memory.Set` treats `<= 0` as no expiry).
+
+Validation is strict and happens at config load (`nginx -t` fails — no silent default): the argument must be a non-empty, digits-only integer within `[0, 86400]`. Negatives (`-1`), signs (`+1`), decimals (`1.5`), non-integers (`abc`, `3foo`), trailing garbage (`30abc`), empty values (`""`), anything above the cap (`86401`), values in `(2^31, MaxInt64]` and oversized digit strings are all rejected with an error naming the directive and the offending value. A negative TTL would otherwise silently mean "no expiry" (indistinguishable from the documented `0`); the custom setter keeps the failure at `nginx -t` instead of the stock slot setter's unbounded `ngx_atoi` parse.
 
 #### `mesi_cache_memcached_servers`
 
@@ -692,8 +698,11 @@ Redis server password. If unset, no password is sent.
 - **Syntax:** `mesi_cache_redis_db <number>`
 - **Default:** `0`
 - **Context:** `location`
+- **Range:** `[0, 15]` — Redis ships 16 logical databases by default (`databases 16` in `redis.conf`), the same bound as Apache `MesiCacheRedisDB` and the PHP extension's `cache_redis_db`
 
-Redis database number (0–15). Defaults to 0 if not set.
+Redis database number. Defaults to 0 if not set.
+
+Validation is strict and happens at config load (`nginx -t` fails — no silent default): the argument must be a non-empty, digits-only integer within `[0, 15]`. Negatives (`-1`), signs (`+1`), decimals (`1.5`), non-integers (`abc`, `3foo`), trailing garbage (`2db`), empty values (`""`), anything above the cap (`16`), values in `(2^31, MaxInt64]` and oversized digit strings are all rejected with an error naming the directive and the offending value. The custom setter replaces `ngx_conf_set_num_slot`, whose unbounded `ngx_atoi` parse accepted `mesi_cache_redis_db 99`; a value in `(2^31, MaxInt64]` used to narrow to a wrapped C `int` and silently select an unrelated database. Because config load now guarantees `[0, 15]`, the old runtime `db < 0 → 0` clamp in the Redis JSON builder is gone.
 
 ### Example
 
