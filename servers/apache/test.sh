@@ -53,6 +53,14 @@ if echo "$HEADERS" | grep -qi "Surrogate-Capability"; then
     echo "Headers: $HEADERS"
     exit 1
 fi
+# The old leak was on a normal processed-HTML GET, so pin that as well.
+GET_HEADERS=$(curl -s -D - -o /dev/null http://localhost:"$HTTP_PORT"/index.html)
+if echo "$GET_HEADERS" | grep -qi "Surrogate-Capability"; then
+    echo "FAIL: processed-HTML GET response carries Surrogate-Capability"
+    echo "Headers: $GET_HEADERS"
+    docker compose down
+    exit 1
+fi
 # The backend echoes the request header it received, proving the module sent
 # it to the origin in the spec's device-token="capability" form.
 SC=$(curl -s http://localhost:"$HTTP_PORT"/backend/echo-header/Surrogate-Capability)
@@ -1438,12 +1446,25 @@ else
     exit 1
 fi
 
-echo "=== Test 70: proxied HTML is still processed (content type unknown at insert time) (#97) ==="
+echo "=== Test 70: proxied HTML on an extensionless path is processed (#97) ==="
 RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/backend/parse-on-header/plain)
 if echo "$RESPONSE" | grep -q 'included content from backend'; then
     echo "PASS: proxied HTML processed after the response headers arrived"
 else
     echo "FAIL: proxied HTML was not processed"
+    echo "$RESPONSE" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 71: proxied .txt URI served as text/html is processed (#97) ==="
+# mod_mime may guess text/plain from the proxy filename at insert time, so
+# the insert-time type must not be trusted for a proxied request.
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/backend/probe.txt)
+if echo "$RESPONSE" | grep -q 'included content from backend'; then
+    echo "PASS: proxied .txt URI served as text/html was processed"
+else
+    echo "FAIL: proxied .txt URI served as text/html was not processed"
     echo "$RESPONSE" | head -c 500
     docker compose down
     exit 1

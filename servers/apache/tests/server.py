@@ -239,6 +239,21 @@ class Handler(SimpleHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
+        if len(parts) == 2 and parts[1] == 'probe.txt':
+            # /probe.txt (#97): a text/html response at a .txt URI. mod_mime
+            # may guess text/plain from the proxy filename at insert_filter
+            # time, so the filter must still be attached and the response
+            # gate must judge the origin's real Content-Type.
+            body = b'<esi:include src="http://backend:8000/include.txt" />\n'
+            try:
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         if len(parts) == 3 and parts[1] == 'echo-header':
             # /echo-header/<name> (#97): a text/plain body containing the
             # request header Apache forwarded to the origin. This proves

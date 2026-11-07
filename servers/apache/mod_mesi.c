@@ -1877,21 +1877,37 @@ static int mesi_fixups(request_rec *r) {
     return DECLINED;
 }
 
+// mesi_is_dynamic_request reports whether the final Content-Type is decided
+// by a handler rather than by the static-file type map. mod_proxy is the
+// important case: mod_mime may have guessed a type from the proxy filename
+// ("proxy:http://host/path.txt") before insert_filter runs, and the origin
+// can still return text/html. An explicitly configured (non-default) handler
+// is treated the same way: its output type is not known yet either.
+static int mesi_is_dynamic_request(request_rec *r) {
+    if (r->proxyreq != PROXYREQ_NONE) {
+        return 1;
+    }
+    return r->handler != NULL && r->handler[0] != '\0' &&
+           strcmp(r->handler, "default-handler") != 0;
+}
+
 // mesi_insert_filter runs from ap_invoke_handler, after the request passed
 // authentication, type_checker and fixups, but before the content handler.
 // It replaces the old post_read_request registration (#97): requests that
 // are never handled (auth-denied, translate-phase redirects) no longer get
-// the filter, and static non-HTML responses skip it entirely.
+// the filter, and static non-HTML responses skip it entirely. Subrequests
+// keep the pre-#97 behaviour (no filter).
 //
-// The Content-Type is intentionally NOT required here: for a proxied or
-// dynamic response it is only known inside the handler (mod_proxy copies
-// the origin headers after this hook has run). Those responses get the
-// filter and mesi_response_filter applies the final content-type/status
-// gate on the first brigade, together with 3xx/4xx/5xx/204/304 handling.
+// The Content-Type is not trusted here for a proxy or dynamic request: it
+// may be only an extension-derived guess. Those responses get the filter
+// and mesi_response_filter applies the final content-type/status gate on the
+// first brigade, together with 3xx/4xx/5xx/204/304 handling.
 static void mesi_insert_filter(request_rec *r) {
     mesi_config *conf = (mesi_config *)ap_get_module_config(r->server->module_config, &mesi_module);
     if (!mesi_insert_filter_wanted(conf->enable_mesi, r->status,
-                                   r->content_type, r->header_only)) {
+                                   r->content_type, r->header_only,
+                                   r->main != NULL,
+                                   mesi_is_dynamic_request(r))) {
         return;
     }
     ap_add_output_filter("MESI_RESPONSE", NULL, r, r->connection);

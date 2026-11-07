@@ -69,17 +69,26 @@ static int mesi_response_is_eligible(const char *content_type, int status) {
 
 /* mesi_insert_filter_wanted decides whether to attach the output filter at
  * ap_hook_insert_filter time. A NULL content_type means the handler has not
- * produced it yet (mod_proxy, CGI, ...); insert the filter and let the
- * response filter apply the final gate. A known non-HTML static response is
- * skipped entirely. HEAD has no body to process. */
+ * produced it yet (mod_proxy, CGI, ...). More importantly, even a non-NULL
+ * content_type can be only an extension-derived guess: mod_mime sets it from
+ * r->filename before the handler runs, and for mod_proxy that filename is
+ * "proxy:<origin-url>" (so /backend/report.txt is guessed text/plain even
+ * when the origin serves text/html). A proxy or another non-default handler
+ * therefore always gets the filter and the response filter applies the final
+ * gate; only a known non-HTML static response is skipped. Subrequests keep
+ * the pre-#97 behaviour (no filter) and HEAD has no body to process. */
 static int mesi_insert_filter_wanted(int enable_mesi, int status,
                                      const char *content_type,
-                                     int header_only) {
-    if (!enable_mesi || header_only) {
+                                     int header_only, int is_subrequest,
+                                     int dynamic_handler) {
+    if (!enable_mesi || header_only || is_subrequest) {
         return 0;
     }
     if (!mesi_status_allows_esi(status)) {
         return 0;
+    }
+    if (dynamic_handler) {
+        return 1;
     }
     return content_type == NULL || mesi_is_html_content(content_type);
 }
@@ -87,8 +96,11 @@ static int mesi_insert_filter_wanted(int enable_mesi, int status,
 /* mesi_surrogate_capability returns the request header value this module
  * sends to the origin. Existing capability sets are preserved and ours is
  * appended (the spec requires surrogates to append, not replace); a set for
- * the "mesi" device token is never duplicated. Leading/trailing whitespace
- * and trailing commas in the existing value are not repeated. */
+ * the "mesi" device token is never duplicated. Elements are split on commas
+ * outside quoted strings (with backslash escapes), so a quoted comma in
+ * another token - for example other="a,mesi=x" - is not mistaken for our
+ * capability set. Leading/trailing whitespace and trailing commas in the
+ * existing value are not repeated. */
 static const char *mesi_surrogate_capability(apr_pool_t *pool,
                                              const char *existing) {
     if (existing == NULL) {
@@ -105,22 +117,47 @@ static const char *mesi_surrogate_capability(apr_pool_t *pool,
     }
 
     const char *end = existing + len;
-    for (const char *p = existing; p < end;) {
-        while (p < end && (*p == ' ' || *p == '\t' || *p == ',')) {
+    const char *p = existing;
+    while (p < end) {
+        while (p < end && (*p == ' ' || *p == '\t')) {
             p++;
         }
-        if ((size_t)(end - p) >= sizeof("mesi") - 1 &&
-            strncmp(p, "mesi", sizeof("mesi") - 1) == 0) {
-            const char *q = p + sizeof("mesi") - 1;
-            while (q < end && (*q == ' ' || *q == '\t')) {
+        const char *elem = p;
+        int quoted = 0;
+        int escaped = 0;
+        while (p < end) {
+            if (escaped) {
+                escaped = 0;
+            } else if (quoted) {
+                if (*p == '\\') {
+                    escaped = 1;
+                } else if (*p == '"') {
+                    quoted = 0;
+                }
+            } else if (*p == '"') {
+                quoted = 1;
+            } else if (*p == ',') {
+                break;
+            }
+            p++;
+        }
+        const char *elem_end = p;
+        while (elem_end > elem &&
+               (elem_end[-1] == ' ' || elem_end[-1] == '\t')) {
+            elem_end--;
+        }
+        if ((size_t)(elem_end - elem) >= sizeof("mesi") - 1 &&
+            strncmp(elem, "mesi", sizeof("mesi") - 1) == 0) {
+            const char *q = elem + sizeof("mesi") - 1;
+            while (q < elem_end && (*q == ' ' || *q == '\t')) {
                 q++;
             }
-            if (q < end && *q == '=') {
+            if (q < elem_end && *q == '=') {
                 return existing;
             }
         }
-        while (p < end && *p != ',') {
-            p++;
+        if (p < end) {
+            p++; /* Skip the separating comma. */
         }
     }
 

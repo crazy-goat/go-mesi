@@ -3776,20 +3776,29 @@ TEST(filter_response_eligibility) {
 
 TEST(filter_insert_wanted) {
     /* Static HTML: the content type is known before the handler runs. */
-    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/html", 0), 1);
-    /* Proxied/dynamic response: Content-Type is unknown until the handler
-     * runs, so insert the filter and let it apply the final gate. */
-    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, NULL, 0), 1);
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/html", 0, 0, 0), 1);
     /* Static non-HTML skips the filter allocation entirely. */
-    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/plain", 0), 0);
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/plain", 0, 0, 0), 0);
+    /* Proxied request: an extension-derived type is only a guess. */
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/plain", 0, 0, 1), 1);
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/html", 0, 0, 1), 1);
+    /* Dynamic handler: same reasoning. */
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/plain", 0, 0, 1), 1);
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, NULL, 0, 0, 1), 1);
+    /* Unknown type from an ordinary request also defers to the response. */
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, NULL, 0, 0, 0), 1);
     /* Errors, redirects and bodiless responses never get the filter. */
-    ASSERT_EQ(mesi_insert_filter_wanted(1, 302, "text/html", 0), 0);
-    ASSERT_EQ(mesi_insert_filter_wanted(1, 304, "text/html", 0), 0);
-    ASSERT_EQ(mesi_insert_filter_wanted(1, 404, "text/html", 0), 0);
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 302, "text/html", 0, 0, 0), 0);
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 304, "text/html", 0, 0, 0), 0);
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 404, "text/html", 0, 0, 0), 0);
     /* HEAD has no body to process. */
-    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/html", 1), 0);
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/html", 1, 0, 0), 0);
+    /* Subrequests keep the pre-#97 behaviour (post_read_request did not run
+     * for them); a page is only processed once, by its main request. */
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/html", 0, 1, 0), 0);
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/html", 0, 1, 1), 0);
     /* EnableMesi Off. */
-    ASSERT_EQ(mesi_insert_filter_wanted(0, 200, "text/html", 0), 0);
+    ASSERT_EQ(mesi_insert_filter_wanted(0, 200, "text/html", 0, 0, 0), 0);
 }
 
 TEST(filter_surrogate_capability_absent) {
@@ -3818,6 +3827,22 @@ TEST(filter_surrogate_capability_no_duplicate) {
     /* A different device token that starts with "mesi" is not ours. */
     ASSERT_STR_EQ(mesi_surrogate_capability(pool, "mesi2=\"X/1.0\""),
                   "mesi2=\"X/1.0\", mesi=\"ESI/1.0\"");
+}
+
+TEST(filter_surrogate_capability_quoted_comma) {
+    /* A comma inside another token's quoted capability value must not split
+     * the element, so this is not mistaken for our "mesi" set. */
+    ASSERT_STR_EQ(mesi_surrogate_capability(pool, "other=\"a,mesi=x\""),
+                  "other=\"a,mesi=x\", mesi=\"ESI/1.0\"");
+    ASSERT_STR_EQ(mesi_surrogate_capability(pool, "other=\"a,b\""),
+                  "other=\"a,b\", mesi=\"ESI/1.0\"");
+    /* A real "mesi" set after a quoted comma is still detected. */
+    ASSERT_STR_EQ(
+        mesi_surrogate_capability(pool, "other=\"a,b\", mesi=\"ESI/1.0\""),
+        "other=\"a,b\", mesi=\"ESI/1.0\"");
+    /* Backslash-escaped quotes inside a quoted value are handled. */
+    ASSERT_STR_EQ(mesi_surrogate_capability(pool, "other=\"a\\\",b\""),
+                  "other=\"a\\\",b\", mesi=\"ESI/1.0\"");
 }
 
 int main(int argc, char *argv[]) {
@@ -4155,6 +4180,7 @@ int main(int argc, char *argv[]) {
     RUN_TEST(filter_surrogate_capability_absent);
     RUN_TEST(filter_surrogate_capability_append);
     RUN_TEST(filter_surrogate_capability_no_duplicate);
+    RUN_TEST(filter_surrogate_capability_quoted_comma);
 
     apr_pool_destroy(pool);
 

@@ -477,10 +477,15 @@ docker compose up --build
 ## How It Works
 
 1. Inserts the response output filter from Apache's `insert_filter` hook,
-   after authentication and fixups: only 2xx responses get it, static
-   non-HTML responses skip it, and the filter applies the final
-   status/Content-Type gate once the (possibly proxied) response headers
-   are known.
+   after authentication and fixups. Auth-denied requests and
+   translate-phase redirects never reach the hook; HEAD, static non-HTML
+   responses and a status already known to be non-2xx/204/304 skip
+   insertion. Proxied/dynamic requests always get the filter because their
+   insert-time status and Content-Type may be guessed (for example
+   `mod_mime` derives `text/plain` from a proxied `/report.txt` URI even
+   when the origin serves `text/html`); the filter applies the final
+   status/Content-Type gate on the first brigade. Subrequests are skipped
+   so a page is processed once by its main request.
 2. Intercepts responses with `Content-Type: text/html`. With
    `MesiParseOnHeader On`, only a response whose `Edge-control` header
    carries `dca=esi` is intercepted; every other HTML response is passed
@@ -513,12 +518,14 @@ docker compose up --build
 
 The filter is inserted from `insert_filter`, not from `post_read_request`,
 so requests that never reach a handler (authentication/authorization
-denials, translate-phase redirects) never get it. The final gate runs on
-the response: redirects (3xx), errors (4xx/5xx), `204 No Content`, `304 Not
-Modified` and HEAD are passed through untouched, including an
-`ErrorDocument` body that happens to contain `<esi:include>` tags. The
-Content-Type gate cannot move fully into `insert_filter`: Apache calls
-`ap_run_insert_filter()` before `ap_run_handler()`, so a proxied or dynamic
-response's status and Content-Type are only known once the handler has
-fetched the origin response. Static non-HTML responses are still skipped at
-insert time.
+denials, translate-phase redirects) never get it, and subrequests keep the
+pre-#97 behaviour (no filter; a page is processed once by its main
+request). The final gate runs on the response: redirects (3xx), errors
+(4xx/5xx), `204 No Content`, `304 Not Modified` and HEAD are passed
+through untouched, including an `ErrorDocument` body that happens to
+contain `<esi:include>` tags. Proxied and dynamic responses get the filter
+even when the insert-time Content-Type looks non-HTML, because that value
+can be guessed from the proxy filename (`proxy:http://host/report.txt` is
+`text/plain` before the origin answers) and the final Content-Type/status
+are only known once the handler has fetched the origin response. Static
+non-HTML responses are still skipped at insert time.
