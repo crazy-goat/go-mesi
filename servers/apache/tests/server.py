@@ -239,6 +239,47 @@ class Handler(SimpleHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
+        if len(parts) == 3 and parts[1] == 'echo-header':
+            # /echo-header/<name> (#97): a text/plain body containing the
+            # request header Apache forwarded to the origin. This proves
+            # Surrogate-Capability travels edge -> origin, not to the client.
+            value = self.headers.get(parts[2], '')
+            body = value.encode('latin-1', 'replace')
+            try:
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+        if len(parts) == 3 and parts[1] == 'esi-status':
+            # /esi-status/<code> (#97): an HTML body containing an
+            # <esi:include> tag returned with a non-2xx status. The Apache
+            # output filter is attached before a proxied status is known,
+            # so it must leave 3xx/4xx/5xx bodies completely raw.
+            try:
+                code = int(parts[2])
+            except ValueError:
+                code = -1
+            if code in (204, 301, 302, 303, 304, 307, 308,
+                        400, 401, 403, 404, 500, 502):
+                try:
+                    self.send_response(code)
+                    if code in (204, 304):
+                        self.end_headers()
+                        return
+                    if 300 <= code < 400:
+                        self.send_header('Location', '/index.html')
+                    body = b'<esi:include src="http://backend:8000/include.txt" />\n'
+                    self.send_header('Content-Type', 'text/html')
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
         super().do_GET()
 
 

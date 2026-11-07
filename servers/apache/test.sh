@@ -43,13 +43,24 @@ else
     exit 1
 fi
 
-echo "=== Test 2: Surrogate-Capability header ==="
+echo "=== Test 2: Surrogate-Capability direction, format and no response leak (#97) ==="
+# The Edge Architecture spec defines Surrogate-Capability as a request header
+# sent by the surrogate to the origin. The module must not add it to the
+# client response (the response-side header is Surrogate-Control).
 HEADERS=$(curl -sI http://localhost:"$HTTP_PORT"/index.html)
-if echo "$HEADERS" | grep -q "Surrogate-Capability"; then
-    echo "PASS: Surrogate-Capability header present"
-else
-    echo "FAIL: Surrogate-Capability header missing"
+if echo "$HEADERS" | grep -qi "Surrogate-Capability"; then
+    echo "FAIL: module leaked Surrogate-Capability into the client response"
     echo "Headers: $HEADERS"
+    exit 1
+fi
+# The backend echoes the request header it received, proving the module sent
+# it to the origin in the spec's device-token="capability" form.
+SC=$(curl -s http://localhost:"$HTTP_PORT"/backend/echo-header/Surrogate-Capability)
+if [ "$SC" = 'mesi="ESI/1.0"' ]; then
+    echo "PASS: Surrogate-Capability sent to the backend as mesi=\"ESI/1.0\", not to the client"
+else
+    echo "FAIL: unexpected Surrogate-Capability sent to the backend: '$SC'"
+    docker compose down
     exit 1
 fi
 
@@ -476,15 +487,15 @@ else
     exit 1
 fi
 
-echo "=== Test 23: Surrogate-Capability header on non-HTML content ==="
+echo "=== Test 23: No Surrogate-Capability response header on non-HTML content (#97) ==="
 HEADERS=$(curl -sI http://localhost:"$HTTP_PORT"/noesi.txt)
-if echo "$HEADERS" | grep -q "Surrogate-Capability"; then
-    echo "PASS: Surrogate-Capability header present on non-HTML content"
-else
-    echo "FAIL: Surrogate-Capability header missing on non-HTML content"
+if echo "$HEADERS" | grep -qi "Surrogate-Capability"; then
+    echo "FAIL: non-HTML response carries Surrogate-Capability"
     echo "Headers: $HEADERS"
     docker compose down
     exit 1
+else
+    echo "PASS: non-HTML response has no Surrogate-Capability header"
 fi
 
 # --- Cache backend tests (#174) ---
@@ -1166,7 +1177,7 @@ RESPONSE=$(curl -s http://localhost:"$APACHE_PORT_8100"/noesi.txt)
 HEADERS=$(curl -sI http://localhost:"$APACHE_PORT_8100"/noesi.txt)
 if echo "$RESPONSE" | grep -q "esi:include" \
     && ! echo "$RESPONSE" | grep -q "included content from backend" \
-    && echo "$HEADERS" | grep -q "Surrogate-Capability"; then
+    && ! echo "$HEADERS" | grep -qi "Surrogate-Capability"; then
     echo "PASS: non-HTML content bypasses the parse-on-header branch unchanged"
 else
     echo "FAIL: non-HTML content changed under MesiParseOnHeader On"
@@ -1327,6 +1338,117 @@ else
     docker compose down
     exit 1
 fi
+
+# --- Response filter lifecycle (#97) ---
+# The filter is inserted from ap_hook_insert_filter (after auth, before the
+# content handler) and applies its final status/Content-Type gate on the
+# first brigade. These cases pin the gates that the old per-request
+# post_read_request registration could not express.
+
+echo "=== Test 63: Surrogate-Capability appends to an existing request header (#97) ==="
+SC=$(curl -s -H 'Surrogate-Capability: upstream="Surrogate/1.0"' \
+    http://localhost:"$HTTP_PORT"/backend/echo-header/Surrogate-Capability)
+if [ "$SC" = 'upstream="Surrogate/1.0", mesi="ESI/1.0"' ]; then
+    echo "PASS: existing capability set preserved and extended"
+else
+    echo "FAIL: unexpected Surrogate-Capability value: '$SC'"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 64: 403 ErrorDocument is not ESI-processed (#97) ==="
+R=$(curl -s -w '\n%{http_code}' http://localhost:"$HTTP_PORT"/denied.html)
+STATUS=$(echo "$R" | tail -n1)
+BODY=$(echo "$R" | sed '$d')
+if [ "$STATUS" = "403" ] \
+    && echo "$BODY" | grep -q '<esi:include' \
+    && echo "$BODY" | grep -q 'error-document-end' \
+    && ! echo "$BODY" | grep -q 'included content from backend'; then
+    echo "PASS: denied request served its ErrorDocument body raw"
+else
+    echo "FAIL: 403 ErrorDocument was changed (status=$STATUS)"
+    echo "$BODY" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 65: proxied 404 response is not ESI-processed (#97) ==="
+R=$(curl -s -w '\n%{http_code}' http://localhost:"$HTTP_PORT"/backend/esi-status/404)
+STATUS=$(echo "$R" | tail -n1)
+BODY=$(echo "$R" | sed '$d')
+if [ "$STATUS" = "404" ] \
+    && echo "$BODY" | grep -q '<esi:include' \
+    && ! echo "$BODY" | grep -q 'included content from backend'; then
+    echo "PASS: proxied 404 body kept its raw include tag"
+else
+    echo "FAIL: proxied 404 was processed (status=$STATUS)"
+    echo "$BODY" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 66: proxied 302 redirect is not ESI-processed (#97) ==="
+R=$(curl -s -w '\n%{http_code}' http://localhost:"$HTTP_PORT"/backend/esi-status/302)
+STATUS=$(echo "$R" | tail -n1)
+BODY=$(echo "$R" | sed '$d')
+if [ "$STATUS" = "302" ] \
+    && echo "$BODY" | grep -q '<esi:include' \
+    && ! echo "$BODY" | grep -q 'included content from backend'; then
+    echo "PASS: proxied 302 body kept its raw include tag"
+else
+    echo "FAIL: proxied 302 was processed (status=$STATUS)"
+    echo "$BODY" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 67: proxied 304 is passed through without ESI processing (#97) ==="
+STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+    http://localhost:"$HTTP_PORT"/backend/esi-status/304)
+if [ "$STATUS" = "304" ]; then
+    echo "PASS: proxied 304 passed through unchanged"
+else
+    echo "FAIL: proxied 304 became $STATUS"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 68: HEAD request has no body and no response capability header (#97) ==="
+HEADERS=$(curl -sI http://localhost:"$HTTP_PORT"/index.html)
+STATUS=$(curl -s -o /dev/null -w '%{http_code}' -I http://localhost:"$HTTP_PORT"/index.html)
+if [ "$STATUS" = "200" ] \
+    && ! echo "$HEADERS" | grep -qi "Surrogate-Capability"; then
+    echo "PASS: HEAD response is bodiless and does not carry Surrogate-Capability"
+else
+    echo "FAIL: HEAD response status=$STATUS or leaked Surrogate-Capability"
+    echo "Headers: $HEADERS"
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 69: proxied non-HTML body is not ESI-processed (#97) ==="
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/backend/noesi.txt)
+if echo "$RESPONSE" | grep -q '<esi:include' \
+    && ! echo "$RESPONSE" | grep -q 'included content from backend'; then
+    echo "PASS: proxied text/plain body kept its raw include tag"
+else
+    echo "FAIL: proxied non-HTML body was processed"
+    echo "$RESPONSE" | head -c 500
+    docker compose down
+    exit 1
+fi
+
+echo "=== Test 70: proxied HTML is still processed (content type unknown at insert time) (#97) ==="
+RESPONSE=$(curl -s http://localhost:"$HTTP_PORT"/backend/parse-on-header/plain)
+if echo "$RESPONSE" | grep -q 'included content from backend'; then
+    echo "PASS: proxied HTML processed after the response headers arrived"
+else
+    echo "FAIL: proxied HTML was not processed"
+    echo "$RESPONSE" | head -c 500
+    docker compose down
+    exit 1
+fi
+
 docker compose down
 
 echo ""

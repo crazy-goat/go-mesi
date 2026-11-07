@@ -7,6 +7,7 @@
 #include "util_filter.h"
 #include "apr_strings.h"
 
+#include "filter_lifecycle.h"
 #include "parse_json_config.h"
 
 #include <dlfcn.h>
@@ -185,7 +186,8 @@ typedef struct {
     // (case-insensitive, comma-separated list — the core's
     // mesi.IsEsiResponse contract) is buffered and parsed; every other
     // HTML response is streamed through untouched, without buffering and
-    // without the module's Surrogate-Capability header. The flag is also
+    // without ESI processing (the module's Surrogate-Capability request
+    // header is still advertised to the origin). The flag is also
     // sent to libgomesi through ParseJson so fetched fragments follow the
     // same rule.
     int parse_on_header; // -1=unset, 0=off, 1=on
@@ -1856,13 +1858,43 @@ static const char *build_parse_json_config(mesi_config *conf,
     return mesi_build_parse_json_config(pool, &cfg);
 }
 
-static int mesi_request_handler(request_rec *r) {
+// mesi_fixups advertises this surrogate's ESI capability to the origin as a
+// request header. It runs after authentication and authorization (a denied
+// request never advertises anything) and before the content handler (so
+// mod_proxy, CGI and friends forward it). The Edge Architecture
+// Specification defines Surrogate-Capability as a request header and the
+// response-side header is Surrogate-Control, so this deliberately does not
+// touch headers_out: the module never adds the header to the client
+// response. Existing client capability sets are preserved (#97).
+static int mesi_fixups(request_rec *r) {
     mesi_config *conf = (mesi_config *)ap_get_module_config(r->server->module_config, &mesi_module);
-    if (conf->enable_mesi) {
-        apr_table_set(r->headers_out, "Surrogate-Capability", "ESI/1.0");
-        ap_add_output_filter("MESI_RESPONSE", NULL, r, r->connection);
+    if (conf->enable_mesi && r->headers_in) {
+        apr_table_set(r->headers_in, "Surrogate-Capability",
+                      mesi_surrogate_capability(
+                          r->pool,
+                          apr_table_get(r->headers_in, "Surrogate-Capability")));
     }
     return DECLINED;
+}
+
+// mesi_insert_filter runs from ap_invoke_handler, after the request passed
+// authentication, type_checker and fixups, but before the content handler.
+// It replaces the old post_read_request registration (#97): requests that
+// are never handled (auth-denied, translate-phase redirects) no longer get
+// the filter, and static non-HTML responses skip it entirely.
+//
+// The Content-Type is intentionally NOT required here: for a proxied or
+// dynamic response it is only known inside the handler (mod_proxy copies
+// the origin headers after this hook has run). Those responses get the
+// filter and mesi_response_filter applies the final content-type/status
+// gate on the first brigade, together with 3xx/4xx/5xx/204/304 handling.
+static void mesi_insert_filter(request_rec *r) {
+    mesi_config *conf = (mesi_config *)ap_get_module_config(r->server->module_config, &mesi_module);
+    if (!mesi_insert_filter_wanted(conf->enable_mesi, r->status,
+                                   r->content_type, r->header_only)) {
+        return;
+    }
+    ap_add_output_filter("MESI_RESPONSE", NULL, r, r->connection);
 }
 
 static char *build_base_url(request_rec *r, apr_pool_t *pool) {
@@ -1920,17 +1952,6 @@ static int mesi_header_signals_esi(const char *value) {
     }
 }
 
-static int is_html_content(const char *ct) {
-    if (!ct) return 0;
-    // Skip leading whitespace (OWS per RFC 7230 §3.2.6)
-    while (*ct == ' ' || *ct == '\t') ct++;
-    // Case-insensitive media-type comparison (RFC 9110 §8.3.1)
-    if (strncasecmp(ct, "text/html", 9) != 0) return 0;
-    char delim = ct[9];
-    // Must be followed by delimiter, parameter separator, or end-of-string
-    return delim == '\0' || delim == ';' || delim == ' ' || delim == '\t' || delim == '\r' || delim == '\n';
-}
-
 // Flatten brigade into a single NUL-terminated string.
 // Returns 1 on success, 0 on failure.
 // On failure, *html is set to NULL (no dangling pointer to uninitialized memory)
@@ -1969,7 +1990,7 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
         return ap_pass_brigade(f->next, bb);
     }
 
-    if (!is_html_content(f->r->content_type) || f->r->status >= 400) {
+    if (!mesi_response_is_eligible(f->r->content_type, f->r->status)) {
         ap_remove_output_filter(f);
         return ap_pass_brigade(f->next, bb);
     }
@@ -1983,7 +2004,6 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
     int parse_on_header = (conf->parse_on_header != -1) ? conf->parse_on_header : 0;
     if (parse_on_header &&
         !mesi_header_signals_esi(apr_table_get(f->r->headers_out, "Edge-control"))) {
-        apr_table_unset(f->r->headers_out, "Surrogate-Capability");
         ap_remove_output_filter(f);
         return ap_pass_brigade(f->next, bb);
     }
@@ -2294,7 +2314,8 @@ static int mesi_response_filter(ap_filter_t *f, apr_bucket_brigade *bb) {
 
 static void register_hooks(apr_pool_t *p) {
     ap_hook_child_init(mesi_child_init, NULL, NULL, APR_HOOK_MIDDLE);
-    ap_hook_post_read_request(mesi_request_handler, NULL, NULL, APR_HOOK_MIDDLE);
+    ap_hook_fixups(mesi_fixups, NULL, NULL, APR_HOOK_MIDDLE);
+    ap_hook_insert_filter(mesi_insert_filter, NULL, NULL, APR_HOOK_MIDDLE);
     ap_register_output_filter("MESI_RESPONSE", mesi_response_filter, NULL, AP_FTYPE_CONTENT_SET);
 }
 

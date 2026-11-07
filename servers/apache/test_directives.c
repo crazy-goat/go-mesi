@@ -18,6 +18,10 @@
  * exercise the real rendering code (#165). */
 #include "parse_json_config.h"
 
+/* The response filter lifecycle predicates are shared with mod_mesi.c so
+ * these tests exercise the real insert/eligibility and header logic (#97). */
+#include "filter_lifecycle.h"
+
 static apr_pool_t *pool;
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -3738,6 +3742,84 @@ TEST(merge_mw_both_unset) {
     ASSERT_EQ(merged.max_workers, -1);
 }
 
+TEST(filter_html_content_type) {
+    ASSERT_EQ(mesi_is_html_content("text/html"), 1);
+    ASSERT_EQ(mesi_is_html_content("text/html; charset=utf-8"), 1);
+    ASSERT_EQ(mesi_is_html_content("TEXT/HTML"), 1);
+    ASSERT_EQ(mesi_is_html_content("  text/html"), 1);
+    ASSERT_EQ(mesi_is_html_content("text/plain"), 0);
+    ASSERT_EQ(mesi_is_html_content("text/htmlx"), 0);
+    ASSERT_EQ(mesi_is_html_content("application/xhtml+xml"), 0);
+    ASSERT_EQ(mesi_is_html_content(NULL), 0);
+}
+
+TEST(filter_status_eligibility) {
+    ASSERT_EQ(mesi_status_allows_esi(200), 1);
+    ASSERT_EQ(mesi_status_allows_esi(206), 1);
+    ASSERT_EQ(mesi_status_allows_esi(204), 0);
+    ASSERT_EQ(mesi_status_allows_esi(301), 0);
+    ASSERT_EQ(mesi_status_allows_esi(304), 0);
+    ASSERT_EQ(mesi_status_allows_esi(400), 0);
+    ASSERT_EQ(mesi_status_allows_esi(401), 0);
+    ASSERT_EQ(mesi_status_allows_esi(500), 0);
+}
+
+TEST(filter_response_eligibility) {
+    ASSERT_EQ(mesi_response_is_eligible("text/html", 200), 1);
+    ASSERT_EQ(mesi_response_is_eligible("text/html; charset=utf-8", 200), 1);
+    ASSERT_EQ(mesi_response_is_eligible("text/plain", 200), 0);
+    ASSERT_EQ(mesi_response_is_eligible(NULL, 200), 0);
+    ASSERT_EQ(mesi_response_is_eligible("text/html", 302), 0);
+    ASSERT_EQ(mesi_response_is_eligible("text/html", 304), 0);
+    ASSERT_EQ(mesi_response_is_eligible("text/html", 404), 0);
+}
+
+TEST(filter_insert_wanted) {
+    /* Static HTML: the content type is known before the handler runs. */
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/html", 0), 1);
+    /* Proxied/dynamic response: Content-Type is unknown until the handler
+     * runs, so insert the filter and let it apply the final gate. */
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, NULL, 0), 1);
+    /* Static non-HTML skips the filter allocation entirely. */
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/plain", 0), 0);
+    /* Errors, redirects and bodiless responses never get the filter. */
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 302, "text/html", 0), 0);
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 304, "text/html", 0), 0);
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 404, "text/html", 0), 0);
+    /* HEAD has no body to process. */
+    ASSERT_EQ(mesi_insert_filter_wanted(1, 200, "text/html", 1), 0);
+    /* EnableMesi Off. */
+    ASSERT_EQ(mesi_insert_filter_wanted(0, 200, "text/html", 0), 0);
+}
+
+TEST(filter_surrogate_capability_absent) {
+    ASSERT_STR_EQ(mesi_surrogate_capability(pool, NULL), "mesi=\"ESI/1.0\"");
+    ASSERT_STR_EQ(mesi_surrogate_capability(pool, ""), "mesi=\"ESI/1.0\"");
+    ASSERT_STR_EQ(mesi_surrogate_capability(pool, "   "), "mesi=\"ESI/1.0\"");
+}
+
+TEST(filter_surrogate_capability_append) {
+    ASSERT_STR_EQ(mesi_surrogate_capability(pool, "upstream=\"Surrogate/1.0\""),
+                  "upstream=\"Surrogate/1.0\", mesi=\"ESI/1.0\"");
+    /* A trailing comma must not produce an empty capability set. */
+    ASSERT_STR_EQ(mesi_surrogate_capability(pool, "upstream=\"Surrogate/1.0\","),
+                  "upstream=\"Surrogate/1.0\", mesi=\"ESI/1.0\"");
+    /* Other devices' capability sets are preserved verbatim. */
+    ASSERT_STR_EQ(mesi_surrogate_capability(pool, "a=\"X/1.0\", b=\"Y/1.0\""),
+                  "a=\"X/1.0\", b=\"Y/1.0\", mesi=\"ESI/1.0\"");
+}
+
+TEST(filter_surrogate_capability_no_duplicate) {
+    ASSERT_STR_EQ(mesi_surrogate_capability(pool, "mesi=\"ESI/1.0\""),
+                  "mesi=\"ESI/1.0\"");
+    ASSERT_STR_EQ(
+        mesi_surrogate_capability(pool, "a=\"X/1.0\", mesi=\"ESI/1.0\""),
+        "a=\"X/1.0\", mesi=\"ESI/1.0\"");
+    /* A different device token that starts with "mesi" is not ours. */
+    ASSERT_STR_EQ(mesi_surrogate_capability(pool, "mesi2=\"X/1.0\""),
+                  "mesi2=\"X/1.0\", mesi=\"ESI/1.0\"");
+}
+
 int main(int argc, char *argv[]) {
     printf("=== Apache Module Directive Unit Tests ===\n\n");
 
@@ -4064,6 +4146,15 @@ int main(int argc, char *argv[]) {
     RUN_TEST(mbs_invalid_rejected);
     RUN_TEST(oversize_modes);
     RUN_TEST(merge_mbs_child_zero_overrides);
+
+    printf("\nTesting response filter lifecycle (#97):\n");
+    RUN_TEST(filter_html_content_type);
+    RUN_TEST(filter_status_eligibility);
+    RUN_TEST(filter_response_eligibility);
+    RUN_TEST(filter_insert_wanted);
+    RUN_TEST(filter_surrogate_capability_absent);
+    RUN_TEST(filter_surrogate_capability_append);
+    RUN_TEST(filter_surrogate_capability_no_duplicate);
 
     apr_pool_destroy(pool);
 
