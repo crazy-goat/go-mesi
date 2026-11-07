@@ -62,6 +62,26 @@ type EsiParserConfig struct {
 	RequestQuery map[string]string
 }
 
+// withClonedVariables returns the receiver with an independent copy of its
+// Variables map (nil stays nil). MESIParse merges <esi:vars> definitions into
+// the map; keeping those merges on a per-render copy means a render neither
+// mutates a caller-supplied map nor writes through the map that nested parses
+// inherited with the copied EsiParserConfig — sibling fragments would
+// otherwise race on it (#645).
+func (c EsiParserConfig) withClonedVariables() EsiParserConfig {
+	if c.Variables == nil {
+		return c
+	}
+
+	variables := make(map[string]string, len(c.Variables))
+	for name, value := range c.Variables {
+		variables[name] = value
+	}
+	c.Variables = variables
+
+	return c
+}
+
 func (c EsiParserConfig) getSemaphore() chan struct{} {
 	return c.requestSemaphore
 }
