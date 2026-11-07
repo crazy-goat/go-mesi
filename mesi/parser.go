@@ -57,10 +57,24 @@ func MESIParse(input string, config EsiParserConfig) string {
 	if config.Context == nil {
 		config.Context = context.Background()
 	}
+
+	// A response-size cap the fetch path cannot enforce fails every include of
+	// this render, so the diagnostic belongs to the render and is emitted once
+	// for it — the convention #329 established for a rejected configuration
+	// value such as max_concurrent_requests. The check tests the caller's
+	// context because MESIParse re-enters itself for every include body,
+	// which would otherwise repeat the warning once per include on the page
+	// (#448).
+	if _, inRender := config.Context.Value(parseScopeKey{}).(bool); !inRender {
+		warnInvalidMaxResponseSize(config)
+	}
+
 	ctx, cancel := context.WithCancel(config.Context)
 	defer cancel()
 
-	config.Context = ctx
+	// Mark the render so the nested MESIParse calls made for include bodies do
+	// not repeat the warning above.
+	config.Context = context.WithValue(ctx, parseScopeKey{}, true)
 
 	logger := config.getLogger()
 	start := time.Now()
