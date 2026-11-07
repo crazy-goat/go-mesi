@@ -2,6 +2,7 @@ package caddy
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -2971,40 +2972,119 @@ func TestUnmarshalCaddyfileMaxResponseSizeZero(t *testing.T) {
 	}
 }
 
-// TestUnmarshalCaddyfileMaxResponseSizeNegative verifies that max_response_size
-// with a negative value is parsed (validation happens at the library level).
-func TestUnmarshalCaddyfileMaxResponseSizeNegative(t *testing.T) {
-	input := `mesi {
-		max_response_size -1
-	}`
-	d := caddyfile.NewTestDispenser(input)
-	m := &MesiMiddleware{}
-	err := m.UnmarshalCaddyfile(d)
-	if err != nil {
-		t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+// TestUnmarshalCaddyfileMaxResponseSizeValidBounds accepts the documented
+// [0, mesi.MaxMaxResponseSize] range. 0 means unlimited; the cap is the
+// largest value whose core-side MaxResponseSize+1 read bound stays positive.
+func TestUnmarshalCaddyfileMaxResponseSizeValidBounds(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  int64
+	}{
+		{name: "0", value: "0", want: 0},
+		{name: "typical", value: "1048576", want: 1048576},
+		{name: "cap", value: fmt.Sprintf("%d", mesi.MaxMaxResponseSize), want: mesi.MaxMaxResponseSize},
 	}
-	if m.MaxResponseSize == nil {
-		t.Fatal("MaxResponseSize should be non-nil after parsing max_response_size -1")
-	}
-	if *m.MaxResponseSize != -1 {
-		t.Errorf("expected MaxResponseSize=-1, got %d", *m.MaxResponseSize)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf("mesi {\n\t\tmax_response_size %s\n\t}", tc.value)
+			d := caddyfile.NewTestDispenser(input)
+			m := &MesiMiddleware{}
+			if err := m.UnmarshalCaddyfile(d); err != nil {
+				t.Fatalf("UnmarshalCaddyfile returned error: %v", err)
+			}
+			if m.MaxResponseSize == nil {
+				t.Fatal("MaxResponseSize should be non-nil after parsing a valid max_response_size")
+			}
+			if *m.MaxResponseSize != tc.want {
+				t.Errorf("expected MaxResponseSize=%d, got %d", tc.want, *m.MaxResponseSize)
+			}
+		})
 	}
 }
 
-// TestUnmarshalCaddyfileMaxResponseSizeInvalid verifies that max_response_size
-// with a non-numeric value returns an error.
+// TestUnmarshalCaddyfileMaxResponseSizeInvalid rejects values outside the
+// documented range at Caddyfile parse. A negative would silently mean unlimited
+// in the core (which only limits when MaxResponseSize > 0), and a value above
+// the cap would make every include fail (#448), so neither may pass as a
+// valid configuration.
 func TestUnmarshalCaddyfileMaxResponseSizeInvalid(t *testing.T) {
-	input := `mesi {
-		max_response_size not-a-number
-	}`
-	d := caddyfile.NewTestDispenser(input)
-	m := &MesiMiddleware{}
-	err := m.UnmarshalCaddyfile(d)
-	if err == nil {
-		t.Fatal("UnmarshalCaddyfile should return error for invalid max_response_size")
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{name: "negative", value: "-1"},
+		{name: "cap+1", value: fmt.Sprintf("%d", mesi.MaxMaxResponseSize+1)},
+		{name: "MaxInt64", value: fmt.Sprintf("%d", int64(math.MaxInt64))},
+		{name: "non-integer", value: "not-a-number"},
+		{name: "decimal", value: "1.5"},
 	}
-	if !strings.Contains(err.Error(), "invalid max_response_size") {
-		t.Errorf("expected 'invalid max_response_size' error, got: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf("mesi {\n\t\tmax_response_size %s\n\t}", tc.value)
+			d := caddyfile.NewTestDispenser(input)
+			m := &MesiMiddleware{}
+			err := m.UnmarshalCaddyfile(d)
+			if err == nil {
+				t.Fatal("UnmarshalCaddyfile should return error for invalid max_response_size")
+			}
+			if !strings.Contains(err.Error(), "invalid max_response_size") {
+				t.Errorf("expected 'invalid max_response_size' error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestProvisionMaxResponseSizeValidBounds accepts explicit 0 (unlimited), a
+// typical cap and the cap via the JSON/Provision path (Caddyfile is not
+// involved).
+func TestProvisionMaxResponseSizeValidBounds(t *testing.T) {
+	cases := []struct {
+		name  string
+		value int64
+	}{
+		{name: "0", value: 0},
+		{name: "typical", value: 1048576},
+		{name: "cap", value: mesi.MaxMaxResponseSize},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := tc.value
+			m := &MesiMiddleware{MaxResponseSize: &v}
+			if err := m.Provision(caddy.Context{}); err != nil {
+				t.Fatalf("Provision() returned error: %v", err)
+			}
+			if m.MaxResponseSize == nil || *m.MaxResponseSize != tc.value {
+				t.Errorf("expected MaxResponseSize=%d after Provision, got %v", tc.value, m.MaxResponseSize)
+			}
+		})
+	}
+}
+
+// TestProvisionMaxResponseSizeInvalid rejects negatives and values above
+// mesi.MaxMaxResponseSize at JSON provision, the path that bypasses
+// UnmarshalCaddyfile.
+func TestProvisionMaxResponseSizeInvalid(t *testing.T) {
+	cases := []struct {
+		name  string
+		value int64
+	}{
+		{name: "negative", value: -1},
+		{name: "cap+1", value: mesi.MaxMaxResponseSize + 1},
+		{name: "MaxInt64", value: math.MaxInt64},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := tc.value
+			m := &MesiMiddleware{MaxResponseSize: &v}
+			err := m.Provision(caddy.Context{})
+			if err == nil {
+				t.Fatal("Provision() should return error for out-of-range max_response_size")
+			}
+			if !strings.Contains(err.Error(), "max_response_size") {
+				t.Errorf("expected max_response_size in error, got: %v", err)
+			}
+		})
 	}
 }
 

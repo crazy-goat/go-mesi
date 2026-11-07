@@ -120,6 +120,9 @@ type MesiMiddleware struct {
 	// response. Responses exceeding this limit are treated as errors and replaced
 	// with IncludeErrorMarker (or silently dropped). Pointer distinguishes "unset"
 	// from "explicitly set to 0"; both leave the core value at 0 (unlimited).
+	// Valid range is [0, mesi.MaxMaxResponseSize]; negatives (which the core
+	// would silently treat as unlimited) and larger values are rejected at
+	// Caddyfile parse and JSON provision.
 	MaxResponseSize *int64 `json:"max_response_size,omitempty"`
 
 	// MaxWorkers limits the number of goroutines used to process ESI tokens
@@ -166,6 +169,20 @@ func validateMaxDepth(v int) error {
 	return nil
 }
 
+// validateMaxResponseSize rejects values outside [0, mesi.MaxMaxResponseSize].
+// 0 is the documented "unlimited" value. Negatives are rejected instead of
+// silently behaving like 0: the core only limits when MaxResponseSize > 0, so
+// a malformed explicit value would otherwise pass as the documented one. The
+// upper bound is the largest value whose core-side MaxResponseSize+1 read bound
+// stays positive (mesi/fetch.go, #448); above it the core rejects the value and
+// every include fails.
+func validateMaxResponseSize(v int64) error {
+	if v < 0 || v > mesi.MaxMaxResponseSize {
+		return fmt.Errorf("max_response_size must be in [0, %d], got %d", mesi.MaxMaxResponseSize, v)
+	}
+	return nil
+}
+
 // Provision implements caddy.Provisioner. Called once at config load.
 func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
 	m.logger = ctx.Logger()
@@ -181,6 +198,12 @@ func (m *MesiMiddleware) Provision(ctx caddy.Context) error {
 
 	if m.MaxDepth != nil {
 		if err := validateMaxDepth(*m.MaxDepth); err != nil {
+			return err
+		}
+	}
+
+	if m.MaxResponseSize != nil {
+		if err := validateMaxResponseSize(*m.MaxResponseSize); err != nil {
 			return err
 		}
 	}
@@ -456,6 +479,9 @@ func (m *MesiMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 				v, err := strconv.ParseInt(d.Val(), 10, 64)
 				if err != nil {
+					return d.Errf("invalid max_response_size %q: %v", d.Val(), err)
+				}
+				if err := validateMaxResponseSize(v); err != nil {
 					return d.Errf("invalid max_response_size %q: %v", d.Val(), err)
 				}
 				m.MaxResponseSize = &v
