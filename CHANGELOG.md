@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- CLI: renamed the `-allowPrivateIPsForAllowedHosts` flag to `-allow-private-ips-for-allowed-hosts`, matching the kebab-case convention of every other CLI flag (`-allow-private-ips`, `-allowed-hosts`, `-cache-key-template`, …). Unlike the issue's premise, the camelCase spelling had already shipped in v0.11.0 and v0.12.0, so it remains accepted as a **hidden deprecated alias**: passing it still works and prints `Warning: -allowPrivateIPsForAllowedHosts is deprecated; use -allow-private-ips-for-allowed-hosts instead` on stderr, while `-h` lists only the new name. The alias is implemented by rewriting `os.Args` before `flag.Parse` (the standard flag package has no hidden flags), so the old spelling does not appear in help output. Documented in `cli/README.md` and `docs/features.md` (#425)
+
 ## [0.12.0] - 2026-11-06
 
 ### Security
