@@ -44,6 +44,8 @@ type EsiParserConfig struct {
 	IncludeErrorMarker string
 	// MaxWorkers caps the number of goroutines used to process ESI tokens
 	// within a single MESIParse call. Zero means runtime.NumCPU()*4.
+	// Negative values are invalid: MESIParse emits a max_workers_invalid
+	// warning and normalizes them to that same library default.
 	// Static tokens do not count against this limit.
 	MaxWorkers       int
 	requestSemaphore chan struct{} // semaphore for limiting HTTP requests

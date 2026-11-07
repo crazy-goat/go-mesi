@@ -36,6 +36,74 @@ func allowedHostsFromFlag(value string) []string {
 	return strings.Split(value, ",")
 }
 
+const (
+	// allowPrivateIPsForAllowedHostsFlag is the kebab-case spelling
+	// (matching -allow-private-ips and -allowed-hosts).
+	allowPrivateIPsForAllowedHostsFlag = "allow-private-ips-for-allowed-hosts"
+	// legacyAllowPrivateIPsForAllowedHostsFlag is the camelCase spelling
+	// that shipped in v0.11.0 and v0.12.0. It stays accepted as a hidden,
+	// deprecated alias so existing scripts keep working, but it is not
+	// listed in -h (#425).
+	legacyAllowPrivateIPsForAllowedHostsFlag = "allowPrivateIPsForAllowedHosts"
+)
+
+// rewriteLegacyAllowPrivateIPsForAllowedHosts rewrites the deprecated
+// camelCase bool flag to its kebab-case replacement before flag.Parse.
+// Rewriting instead of registering a second flag keeps the old spelling
+// out of -h (the standard flag package has no hidden flags). Both
+// "-name" and "--name", with or without "=value", are accepted. The scan
+// follows flag.Parse's rules: it stops at the first positional argument
+// (after skipping the separate value of a registered non-bool flag) and
+// at "--".
+func rewriteLegacyAllowPrivateIPsForAllowedHosts(fs *flag.FlagSet, args []string) (rewritten []string, usedLegacy bool) {
+	rewritten = make([]string, len(args))
+	flagsEnded := false
+	expectValue := false
+	for i, arg := range args {
+		rewritten[i] = arg
+		if flagsEnded {
+			continue
+		}
+		if expectValue {
+			expectValue = false
+			continue
+		}
+		if arg == "--" {
+			flagsEnded = true
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			flagsEnded = true
+			continue
+		}
+		name := strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-")
+		flagName, _, hasValue := strings.Cut(name, "=")
+		if !hasValue && flagTakesValue(fs, flagName) {
+			expectValue = true
+		}
+		rest, ok := strings.CutPrefix(name, legacyAllowPrivateIPsForAllowedHostsFlag)
+		if !ok || (rest != "" && !strings.HasPrefix(rest, "=")) {
+			continue
+		}
+		rewritten[i] = "-" + allowPrivateIPsForAllowedHostsFlag + rest
+		usedLegacy = true
+	}
+	return rewritten, usedLegacy
+}
+
+// flagTakesValue reports whether fs registers name as a flag with a
+// separate value argument. Bool flags (flag.boolValue) do not take one.
+func flagTakesValue(fs *flag.FlagSet, name string) bool {
+	f := fs.Lookup(name)
+	if f == nil {
+		return false
+	}
+	if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+		return false
+	}
+	return true
+}
+
 // maxMaxResponseSize mirrors libgomesi's config.MaxMaxResponseSize
 // (libgomesi/internal/config/max_response_size.go, #169). That package
 // lives under libgomesi/internal and cannot be imported from the separate
@@ -146,7 +214,7 @@ func main() {
 	allowPrivateIPs := flag.Bool("allow-private-ips", false,
 		"Allow ESI includes to private/reserved IP ranges (for local testing)")
 	allowedHosts := flag.String("allowed-hosts", "", "Comma-separated list of allowed hosts for ESI includes")
-	allowPrivateIPsForAllowedHosts := flag.Bool("allowPrivateIPsForAllowedHosts", false,
+	allowPrivateIPsForAllowedHosts := flag.Bool(allowPrivateIPsForAllowedHostsFlag, false,
 		"Allow ESI includes to private/reserved IP ranges for hosts listed in -allowed-hosts (trusts DNS)")
 	// Default derived from CreateDefaultConfig() so that an absent flag is
 	// byte-identical to the pre-flag CLI behaviour: the CLI builds its
@@ -185,7 +253,13 @@ func main() {
 	includeErrorMarker := flag.String("include-error-marker", "",
 		"Marker string rendered for failed ESI includes (e.g. '<!-- esi error -->')")
 
+	rewrittenArgs, legacyUsed := rewriteLegacyAllowPrivateIPsForAllowedHosts(flag.CommandLine, os.Args[1:])
+	os.Args = append([]string{os.Args[0]}, rewrittenArgs...)
 	flag.Parse()
+	if legacyUsed {
+		fmt.Fprintf(os.Stderr, "Warning: -%s is deprecated; use -%s instead\n",
+			legacyAllowPrivateIPsForAllowedHostsFlag, allowPrivateIPsForAllowedHostsFlag)
+	}
 	if uint64(*maxDepth) > mesi.MaxMaxDepth {
 		fmt.Fprintf(os.Stderr, "Error: max-depth must be in [0, %d], got %d\n", mesi.MaxMaxDepth, *maxDepth)
 		os.Exit(1)
