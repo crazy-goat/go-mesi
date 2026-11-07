@@ -43,6 +43,7 @@ RUN cd libgomesi && \
 
 COPY servers/apache/mod_mesi.c /build/mod_mesi.c
 COPY servers/apache/parse_json_config.h /build/parse_json_config.h
+COPY servers/apache/mesi_pure.h /build/mesi_pure.h
 RUN apxs -c -i mod_mesi.c
 
 RUN a2dismod mpm_event && a2enmod mpm_prefork headers proxy proxy_http

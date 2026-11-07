@@ -8,6 +8,7 @@
 #include "apr_strings.h"
 
 #include "parse_json_config.h"
+#include "mesi_pure.h"
 
 #include <dlfcn.h>
 #include <stdlib.h>
@@ -1866,22 +1867,14 @@ static int mesi_request_handler(request_rec *r) {
 
 static char *build_base_url(request_rec *r, apr_pool_t *pool) {
     const char *scheme = ap_http_scheme(r);
-    const char *host = r->server->server_hostname
-                           ? r->server->server_hostname
-                           : ap_get_server_name(r);
+    // Prefer the configured canonical name over the client-supplied Host
+    // header; mesi_base_url_host also maps an empty result to "localhost".
+    const char *host =
+        mesi_base_url_host(r->server->server_hostname, ap_get_server_name(r));
     // Use canonical port from server config, not client-supplied
     apr_port_t port = r->server->port ? r->server->port : ap_get_server_port(r);
 
-    if (!host || !*host) {
-        host = "localhost";
-    }
-
-    int default_port = (strcmp(scheme, "https") == 0) ? 443 : 80;
-
-    if (port != default_port) {
-        return apr_psprintf(pool, "%s://%s:%d/", scheme, host, port);
-    }
-    return apr_psprintf(pool, "%s://%s/", scheme, host);
+    return mesi_build_base_url(scheme, host, port, pool);
 }
 
 // mesi_is_header_space reports whether c is an ASCII whitespace byte that
@@ -1917,17 +1910,6 @@ static int mesi_header_signals_esi(const char *value) {
         }
         p++; // Skip the comma and try the next element.
     }
-}
-
-static int is_html_content(const char *ct) {
-    if (!ct) return 0;
-    // Skip leading whitespace (OWS per RFC 7230 §3.2.6)
-    while (*ct == ' ' || *ct == '\t') ct++;
-    // Case-insensitive media-type comparison (RFC 9110 §8.3.1)
-    if (strncasecmp(ct, "text/html", 9) != 0) return 0;
-    char delim = ct[9];
-    // Must be followed by delimiter, parameter separator, or end-of-string
-    return delim == '\0' || delim == ';' || delim == ' ' || delim == '\t' || delim == '\r' || delim == '\n';
 }
 
 // Flatten brigade into a single NUL-terminated string.
