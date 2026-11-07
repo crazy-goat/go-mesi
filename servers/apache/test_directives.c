@@ -159,6 +159,16 @@ static apr_size_t mesi_unicode_space(const unsigned char *p, apr_size_t len) {
     return 0;
 }
 
+// mesi_ascii_space reports whether c is ASCII whitespace under Go's
+// strings.Fields tokenization: space, tab, CR, LF, VT and FF. Every
+// caller that tokenizes a directive value uses this helper (and
+// mesi_unicode_space) so no third whitespace table can drift from
+// libgomesi (#358, #559).
+static int mesi_ascii_space(unsigned char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n' ||
+           c == '\v' || c == '\f';
+}
+
 // mesi_has_hostname_token reports whether s contains at least one token
 // under Go's strings.Fields tokenization, which libgomesi applies to the
 // joined allowlist: ASCII whitespace (space, tab, CR, LF, VT, FF) and every
@@ -171,7 +181,7 @@ static int mesi_has_hostname_token(const char *s) {
     while (i < len) {
         unsigned char c = p[i];
         apr_size_t ws_width;
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f') {
+        if (mesi_ascii_space(c)) {
             i++;
             continue;
         }
@@ -182,6 +192,51 @@ static int mesi_has_hostname_token(const char *s) {
         i += ws_width;
     }
     return 0;
+}
+
+// mesi_next_field advances *pp past separators and returns the start of
+// the next token, storing its byte length in *tok_len (NULL at end of
+// input). Mirrors mesi_next_field in mod_mesi.c: the tokenization is
+// exactly mesi_has_hostname_token's, i.e. Go's strings.Fields (the rule
+// libgomesi applies to allowedHosts).
+static const char *mesi_next_field(const char **pp, apr_size_t *tok_len) {
+    const unsigned char *p = (const unsigned char *)*pp;
+    apr_size_t remaining = strlen(*pp);
+    const unsigned char *start;
+    while (remaining > 0) {
+        apr_size_t ws_width;
+        if (mesi_ascii_space(*p)) {
+            p++;
+            remaining--;
+            continue;
+        }
+        ws_width = mesi_unicode_space(p, remaining);
+        if (ws_width == 0) {
+            break;
+        }
+        p += ws_width;
+        remaining -= ws_width;
+    }
+    if (remaining == 0) {
+        *pp = (const char *)p;
+        return NULL;
+    }
+    start = p;
+    while (remaining > 0) {
+        apr_size_t ws_width;
+        if (mesi_ascii_space(*p)) {
+            break;
+        }
+        ws_width = mesi_unicode_space(p, remaining);
+        if (ws_width != 0) {
+            break;
+        }
+        p++;
+        remaining--;
+    }
+    *tok_len = (apr_size_t)(p - start);
+    *pp = (const char *)p;
+    return (const char *)start;
 }
 
 static const char *parse_allowed_hosts(mesi_config *conf, const char *arg) {
@@ -770,8 +825,10 @@ static const char *set_cache_key_template(mesi_config *conf, const char *arg) {
 /* MesiCacheMemcachedServers — space-separated "host:port" entries
  * (#176). Mirrors set_cache_memcached_servers in mod_mesi.c.
  * Each entry must contain a ':'+port_in_[1,65535]. Tokens with
- * embedded control chars, quote chars or JSON-meta characters
- * are rejected.
+ * embedded control chars (including DEL), quote chars or JSON-meta
+ * characters are rejected. Tokenization matches strings.Fields:
+ * every Unicode whitespace rune separates entries and invalid UTF-8
+ * is part of a token (#559).
  */
 static const char *set_cache_memcached_servers(mesi_config *conf, const char *arg) {
     if (!arg) {
@@ -779,22 +836,18 @@ static const char *set_cache_memcached_servers(mesi_config *conf, const char *ar
     }
     int count = 0;
     const char *tok;
-    while (*arg) {
-        while (*arg && (*arg == ' ' || *arg == '\t')) arg++;
-        tok = arg;
-        while (*arg && *arg != ' ' && *arg != '\t') arg++;
-        if (tok == arg) {
-            continue;
-        }
+    apr_size_t tok_len;
+    while ((tok = mesi_next_field(&arg, &tok_len)) != NULL) {
+        const char *end = tok + tok_len;
         int has_quote = 0;
         int has_invalid = 0;
-        for (const char *p = tok; p < arg; p++) {
+        for (const char *p = tok; p < end; p++) {
             unsigned char c = (unsigned char)*p;
             if (c == '"' || c == '\'') {
                 has_quote = 1;
                 break;
             }
-            if (c == '\\' || c < 0x20) {
+            if (c == '\\' || c < 0x20 || c == 0x7f) {
                 has_invalid = 1;
                 break;
             }
@@ -803,33 +856,33 @@ static const char *set_cache_memcached_servers(mesi_config *conf, const char *ar
             return apr_psprintf(pool,
                                 "MesiCacheMemcachedServers: quote characters are not allowed in entries; "
                                 "write the host:port entries unquoted, separated by spaces (got: %.*s)",
-                                (int)(arg - tok), tok);
+                                (int)tok_len, tok);
         }
         if (has_invalid) {
             return apr_psprintf(pool,
                                 "MesiCacheMemcachedServers: invalid character in entry %.*s",
-                                (int)(arg - tok), tok);
+                                (int)tok_len, tok);
         }
         const char *colon = NULL;
-        for (const char *p = arg - 1; p >= tok; p--) {
+        for (const char *p = end - 1; p >= tok; p--) {
             if (*p == ':') {
                 colon = p;
                 break;
             }
         }
-        if (!colon || colon == tok || colon + 1 == arg) {
+        if (!colon || colon == tok || colon + 1 == end) {
             return apr_psprintf(pool,
                                 "MesiCacheMemcachedServers: entry must be host:port (got: %.*s)",
-                                (int)(arg - tok), tok);
+                                (int)tok_len, tok);
         }
         int port = 0;
-        const char *err = parse_nonneg_int_bounded(pool, colon + 1, arg,
+        const char *err = parse_nonneg_int_bounded(pool, colon + 1, end,
                                                    "MesiCacheMemcachedServers",
                                                    1, 65535, &port);
         if (err) {
             return apr_psprintf(pool,
                                 "MesiCacheMemcachedServers: port invalid in %.*s",
-                                (int)(arg - tok), tok);
+                                (int)tok_len, tok);
         }
         if (count >= MESI_MAX_MEMCACHED_SERVERS) {
             return apr_psprintf(pool,
@@ -837,7 +890,7 @@ static const char *set_cache_memcached_servers(mesi_config *conf, const char *ar
                                 MESI_MAX_MEMCACHED_SERVERS);
         }
         const char **slot = apr_array_push(conf->cache_memcached_servers);
-        *slot = apr_pstrndup(pool, tok, arg - tok);
+        *slot = apr_pstrndup(pool, tok, tok_len);
         count++;
     }
     if (count == 0) {
@@ -2371,6 +2424,74 @@ TEST(memcached_servers_mixed_whitespace) {
     ASSERT_EQ(conf.cache_memcached_servers->nelts, 3);
 }
 
+TEST(memcached_servers_ascii_whitespace_set) {
+    /* The whole ASCII whitespace set (space, tab, CR, LF, VT, FF) is a
+     * separator, matching strings.Fields (#559). */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_cache_memcached_servers(&conf,
+                                            "\r\n\v\f\thost1:11211 host2:11211\r\n"));
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, 2);
+    ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[0],
+                  "host1:11211");
+    ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[1],
+                  "host2:11211");
+}
+
+TEST(memcached_servers_unicode_whitespace_separators) {
+    /* Every Unicode whitespace rune separates entries (#559), matching
+     * Go's strings.Fields rule: NBSP, ogham space mark, EM SPACE,
+     * LINE SEPARATOR and IDEOGRAPHIC SPACE. */
+    mesi_config conf;
+    init_config(&conf);
+    ASSERT_NULL(set_cache_memcached_servers(
+        &conf,
+        "host1:11211\xc2\xa0host2:11211\xe1\x9a\x80host3:11211\xe2\x80\x83"
+        "host4:11211\xe2\x80\xa8host5:11211\xe3\x80\x80"));
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, 5);
+    ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[0],
+                  "host1:11211");
+    ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[2],
+                  "host3:11211");
+    ASSERT_STR_EQ(((const char **)conf.cache_memcached_servers->elts)[4],
+                  "host5:11211");
+}
+
+TEST(memcached_servers_unicode_whitespace_only_rejected) {
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "\xc2\xa0\xe3\x80\x80");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "at least one");
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, 0);
+}
+
+TEST(memcached_servers_nbsp_inside_entry_rejected) {
+    /* NBSP inside an entry splits it under strings.Fields, so accepting
+     * "mc<NBSP>:11211" would silently give libgomesi two invalid
+     * servers. The module rejects the halves at config load instead
+     * (#559). */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "mc\xc2\xa0:11211");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiCacheMemcachedServers");
+    ASSERT_STR_CONTAINS(err, "host:port");
+}
+
+TEST(memcached_servers_invalid_utf8_is_not_a_separator) {
+    /* Invalid or truncated UTF-8 is part of a token, never whitespace
+     * (strings.Fields decodes it as U+FFFD), so the lone 0xc2 is a
+     * malformed entry instead of a separator between two valid ones. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf,
+                                                  "host-a:11211 \xc2 host-b:11211");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiCacheMemcachedServers");
+    ASSERT_STR_CONTAINS(err, "host:port");
+}
+
 TEST(memcached_servers_empty_list_rejected) {
     /* Boundary: an empty value list produces no entries — must be
      * rejected, never treated as a valid config. Operators who
@@ -2550,6 +2671,32 @@ TEST(memcached_servers_control_char_rejected) {
     const char *err = set_cache_memcached_servers(&conf, "10.0.0.1\x01:11211");
     ASSERT_NOT_NULL(err);
     ASSERT_STR_CONTAINS(err, "invalid character");
+}
+
+TEST(memcached_servers_del_rejected) {
+    /* DEL (0x7f) is not `< 0x20`, so it slipped through the scan before
+     * #559 and was stored inside the rendered JSON. Reject it, naming
+     * the directive and the offending entry like every sibling
+     * validator (set_cache_key_template, php-ext mesi_is_safe_string). */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf, "mc\x7f:11211");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "MesiCacheMemcachedServers");
+    ASSERT_STR_CONTAINS(err, "invalid character");
+    ASSERT_STR_CONTAINS(err, "mc\x7f:11211");
+    ASSERT_EQ(conf.cache_memcached_servers->nelts, 0);
+}
+
+TEST(memcached_servers_del_in_later_entry_rejected) {
+    /* The per-entry scan keeps the first valid entry but must reject
+     * the malformed later one instead of storing it. */
+    mesi_config conf;
+    init_config(&conf);
+    const char *err = set_cache_memcached_servers(&conf,
+                                                  "host-a:11211 host-b\x7f:11211");
+    ASSERT_NOT_NULL(err);
+    ASSERT_STR_CONTAINS(err, "host-b\x7f:11211");
 }
 
 TEST(memcached_servers_max_count_accepted) {
@@ -4139,6 +4286,9 @@ int main(int argc, char *argv[]) {
     RUN_TEST(memcached_servers_single);
     RUN_TEST(memcached_servers_multiple);
     RUN_TEST(memcached_servers_mixed_whitespace);
+    RUN_TEST(memcached_servers_ascii_whitespace_set);
+    RUN_TEST(memcached_servers_unicode_whitespace_separators);
+    RUN_TEST(memcached_servers_unicode_whitespace_only_rejected);
     RUN_TEST(memcached_servers_empty_list_rejected);
     RUN_TEST(memcached_servers_whitespace_only_rejected);
     RUN_TEST(memcached_servers_null_arg_rejected);
@@ -4158,6 +4308,10 @@ int main(int argc, char *argv[]) {
     RUN_TEST(memcached_servers_unquoted_still_accepted);
     RUN_TEST(memcached_servers_backslash_rejected);
     RUN_TEST(memcached_servers_control_char_rejected);
+    RUN_TEST(memcached_servers_nbsp_inside_entry_rejected);
+    RUN_TEST(memcached_servers_invalid_utf8_is_not_a_separator);
+    RUN_TEST(memcached_servers_del_rejected);
+    RUN_TEST(memcached_servers_del_in_later_entry_rejected);
     RUN_TEST(memcached_servers_max_count_accepted);
     RUN_TEST(memcached_servers_over_max_rejected);
     RUN_TEST(memcached_servers_ipv6_accepted);
