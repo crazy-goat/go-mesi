@@ -8,20 +8,22 @@ APR_INCLUDEDIR ?= $(firstword $(foreach d,$(APR_CANDIDATES),$(if $(wildcard $(d)
 
 all: mod_mesi.so
 
-mod_mesi.so: mod_mesi.c filter_lifecycle.h cache_config.h parse_json_config.h
+mod_mesi.so: mod_mesi.c filter_lifecycle.h cache_config.h parse_json_config.h mesi_pure.h
 	$(APXS) -c -I../../libgomesi mod_mesi.c
 
 install: mod_mesi.so
 	$(APXS) -i -n mesi mod_mesi.so
 
 clean:
-	rm -f mod_mesi.so mod_mesi.la *.lo *.slo test_directives
+	rm -f mod_mesi.so mod_mesi.la *.lo *.slo test_directives test_pure
 
 test: test-unit test-integration test-build-sh test-apr-includes
 
-test-unit: test_directives.c filter_lifecycle.h cache_config.h parse_json_config.h
+test-unit: test_directives.c test_pure.c filter_lifecycle.h cache_config.h mesi_pure.h parse_json_config.h
 	$(CC) -o test_directives test_directives.c -I$(APR_INCLUDEDIR) -lapr-1 -laprutil-1
 	./test_directives
+	$(CC) -o test_pure test_pure.c -I$(APR_INCLUDEDIR) -lapr-1 -laprutil-1
+	./test_pure
 
 test-integration:
 	./test.sh
