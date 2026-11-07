@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- nginx: guard every `ngx_str_to_cstr()` result against the NULL that `ngx_palloc` returns under pool memory pressure (#429). Previously such a failure dereferenced NULL in `strcmp(backend, …)` (`mesi_cache_backend`), passed NULL across the cgo ABI as the input body / base URL / `mesi_allowed_hosts`, and reached `ngx_strlen` with a NULL `addr`/`password` in `build_redis_config_json` — a worker crash. Each site now logs `NGX_LOG_ERR` naming the directive/path: parse-path copies return the established fail-closed empty terminal response, while the Redis config builder returns NULL exactly like `build_memcached_config_json` already did (the caller logs and skips `InitCacheWithConfig`). No default is substituted for a failed allocation. Regression coverage is a static guard (`servers/nginx/check-cstr-guards.sh`, run as Test 0 by `servers/nginx/test.sh`): there is no C unit harness for this module and forcing `ngx_palloc` to fail is not deterministic, so the source invariant is checked instead
+
 ## [0.12.0] - 2026-11-06
 
 ### Security

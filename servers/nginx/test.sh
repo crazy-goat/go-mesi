@@ -5,6 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$SCRIPT_DIR"
 
+# Static regression guard for #429: ngx_str_to_cstr() results are checked
+# before use. Runs before Docker so it is also usable in a plain checkout.
+echo "=== Test 0: ngx_str_to_cstr() NULL checks (#429) ==="
+bash check-cstr-guards.sh
+
 HTTP_PORT=${NGINX_HTTP_PORT:-18080}
 
 docker compose up -d --wait

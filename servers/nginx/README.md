@@ -834,3 +834,12 @@ location /pages/ {
     proxy_pass http://backend;
 }
 ```
+
+## Failure Handling
+
+Directive values are copied into the request pool before they reach libgomesi (`ngx_str_to_cstr`). If such a copy fails under pool memory pressure, the module never uses the NULL result:
+
+- the parse-path copies (`mesi_cache_backend`, the ESI response body, the request base URL and `mesi_allowed_hosts`) log an `ERR` naming the failing directive/path and return the module's fail-closed empty terminal response — the request is never rendered with a guessed or defaulted value;
+- a cache config blob that cannot be built (`mesi_cache_memcached_servers`, `mesi_cache_redis_addr`/`mesi_cache_redis_password`) logs an `ERR` naming the directive(s) and skips `InitCacheWithConfig` instead of dereferencing NULL — the same contract the Memcached builder already had.
+
+No default is substituted for a failed allocation (#429).
