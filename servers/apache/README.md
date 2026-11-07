@@ -434,9 +434,14 @@ MesiCacheTTL 60
   it: write the entries unquoted, separated by spaces. A quote is
   rejected at config load with a message saying so — before that,
   `'mc':11211` stored the host `'mc'`, which can never resolve, and
-  `"mc:11211"` failed with a misleading generic character error. At
-  most 64 entries per directive; calling
-  the directive multiple times appends. Configuring the backend
+  `"mc:11211"` failed with a misleading generic character error.
+  Entries are tokenized with Go's `strings.Fields` rule: the
+  full ASCII whitespace set (space, tab, CR, LF, VT, FF) and every
+  Unicode whitespace rune (e.g. U+00A0) separate entries, while invalid
+  UTF-8 is part of an entry and never a separator. DEL (`0x7f`) is
+  rejected like the other control characters, so a stray byte cannot
+  reach the rendered JSON config. At most 64 entries per directive;
+  calling the directive multiple times appends. Configuring the backend
   without this directive (or with an empty value) makes libgomesi
   reject the server list with `servers required` (a deterministic
   error rather than a silent `localhost:11211` fallback).

@@ -204,6 +204,27 @@ check_memcached_servers_config reject "quote in the second entry" "mc:11211 'oth
 # passes its own pattern explicitly.
 check_memcached_servers_config reject "backslashed host" 'mc\:11211' "invalid character"
 check_memcached_servers_config accept "two unquoted entries" "mc:11211 other:11211"
+# #559: tokenize exactly like libgomesi's strings.Fields. Every Unicode
+# whitespace rune separates entries (it must not be stored inside one),
+# invalid UTF-8 is never whitespace, and DEL (0x7f) is rejected per entry.
+NBSP=$(printf '\xc2\xa0')
+IDEOGRAPHIC_SPACE=$(printf '\xe3\x80\x80')
+DEL_CHAR=$(printf '\x7f')
+INVALID_UTF8=$(printf '\xc2')
+check_memcached_servers_config accept "NBSP-separated entries" \
+    "mc:11211${NBSP}other:11211"
+check_memcached_servers_config reject "NBSP inside an entry" \
+    "mc${NBSP}:11211" "host:port"
+check_memcached_servers_config accept "multiple Unicode whitespace separators" \
+    "mc:11211${NBSP}${IDEOGRAPHIC_SPACE}other:11211"
+check_memcached_servers_config reject "DEL inside an entry" \
+    "mc${DEL_CHAR}:11211" "invalid character"
+check_memcached_servers_config reject "invalid UTF-8 is not a separator" \
+    "mc:11211 ${INVALID_UTF8} other:11211" "host:port"
+check_memcached_servers_config accept "tab separated entries" \
+    "$(printf 'mc:11211\tother:11211')"
+check_memcached_servers_config accept "IPv6 and hostname entries" \
+    "[::1]:11211 mc:11211"
 
 
 echo "=== Test 6f: MesiDebug Off — parser emits no DEBUG output (#173) ==="
