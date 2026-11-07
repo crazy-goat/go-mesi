@@ -106,14 +106,20 @@ func MESIParse(input string, config EsiParserConfig) string {
 
 	logger.Debug("parse_start", "input_size", len(input), "token_count", len(tokens))
 
-	var semaphore chan struct{}
 	if config.MaxConcurrentRequests < 0 {
 		config.warn("max_concurrent_requests_invalid", "value", config.MaxConcurrentRequests)
 		config.MaxConcurrentRequests = 0
 	}
-	if config.MaxConcurrentRequests > 0 {
-		semaphore = make(chan struct{}, config.MaxConcurrentRequests)
-		config = config.setSemaphore(semaphore)
+	// A nested MESIParse made for an include body, a <esi:choose> branch or a
+	// <esi:try> attempt/except inherits the parent render's admission
+	// semaphore through the EsiParserConfig value copy. Installing a fresh
+	// one here would make the effective page-wide cap grow with the nesting
+	// depth (#453), so only a caller that arrives without a semaphore — the
+	// top-level render — creates one. An explicit MaxConcurrentRequests of 0
+	// (or an unset field) still means unlimited: no semaphore is installed
+	// and none is inherited from a top-level call.
+	if config.MaxConcurrentRequests > 0 && config.getSemaphore() == nil {
+		config = config.setSemaphore(make(chan struct{}, config.MaxConcurrentRequests))
 	}
 
 	config = config.normalizeMaxWorkers()
