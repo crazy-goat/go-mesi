@@ -4,6 +4,7 @@
 
 ### Fixed
 - `mesi`: a negative `EsiParserConfig.MaxWorkers` is no longer silently replaced by the library default. `MESIParse` now emits a `max_workers_invalid` warning (keys `value` and `using`, routed through the configured logger) and normalizes the value to `runtime.NumCPU()*4`, mirroring the `max_concurrent_requests_invalid` warn+normalize from #329. `0` keeps meaning the library default silently and positive values are untouched; normalization runs once per `MESIParse` call, so nested parses inherit the effective value and never warn twice. This closes the direct-Go-caller gap and gives unvalidated Caddy configs a core backstop; the CLI already rejected negatives before this change, and Apache, nginx, php-ext, Traefik and RoadRunner already reject them at config load. Unit tests cover `-1`/large-negative warn+normalize, `0` silent default, positive values unchanged and exactly one warning across a nested parse (#456)
+- `servers/test-server/Dockerfile` no longer uses `COPY --chmod=755`, which requires BuildKit and made the image — and the php-ext, Caddy, FrankenPHP and Traefik local suites that build it — fail on contributors without the buildx component (`the --chmod option requires BuildKit`). `go build` already emits an executable, so a plain `COPY` preserves the mode; the final image and the `/usr/bin/test-server` entrypoint are unchanged. `make -C servers/test-server check`, run by `bin/lint.sh`, fails if `--chmod` returns to the Dockerfile (#442)
 
 ## [0.12.0] - 2026-11-06
 

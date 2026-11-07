@@ -184,23 +184,32 @@ func TestMaxConcurrentRequestsLimitsConcurrency(t *testing.T) {
 }
 
 func TestMaxConcurrentRequestsZeroMeansUnlimited(t *testing.T) {
-	var maxConcurrent int64
-	var current atomic.Int64
+	// All three requests must be in flight at the same time. Every handler
+	// parks on release until all of them have arrived, so the overlap is a
+	// precondition instead of something a sleep hopes to widen. With
+	// MaxConcurrentRequests=0 there is no admission semaphore, so all three
+	// can arrive even though nothing can finish before the barrier opens.
+	const want = 3
+
+	var arrived sync.WaitGroup
+	arrived.Add(want)
+	var arrivedCount atomic.Int64
+
+	released := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(released) }) }
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		inc := current.Add(1)
-		old := atomic.LoadInt64(&maxConcurrent)
-		if inc > old {
-			atomic.CompareAndSwapInt64(&maxConcurrent, old, inc)
-		}
-
-		time.Sleep(20 * time.Millisecond)
-
-		current.Add(-1)
+		arrivedCount.Add(1)
+		arrived.Done()
+		<-released
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("content"))
 	}))
 	defer server.Close()
+	// Run before server.Close so a failed assertion cannot leave handlers
+	// parked on released and make Close block.
+	defer release()
 
 	config := CreateDefaultConfig()
 	config.MaxConcurrentRequests = 0
@@ -210,11 +219,30 @@ func TestMaxConcurrentRequestsZeroMeansUnlimited(t *testing.T) {
 
 	input := `<!--esi <esi:include src="` + server.URL + `/1"/>--><!--esi <esi:include src="` + server.URL + `/2"/>--><!--esi <esi:include src="` + server.URL + `/3"/>-->`
 
-	MESIParse(input, config)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		MESIParse(input, config)
+	}()
 
-	if atomic.LoadInt64(&maxConcurrent) != 3 {
-		t.Errorf("Max concurrent = %d, expected 3 (unlimited)", atomic.LoadInt64(&maxConcurrent))
+	reached := make(chan struct{})
+	go func() {
+		arrived.Wait()
+		close(reached)
+	}()
+
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		// A real cap would hold the missing requests in the semaphore, so
+		// fail with a clear message instead of hanging until the test binary
+		// times out.
+		t.Fatalf("only %d of %d requests reached the handler; "+
+			"MaxConcurrentRequests=0 is not behaving as unlimited", arrivedCount.Load(), want)
 	}
+
+	release()
+	<-done
 }
 
 func TestSharedHTTPClientIsUsed(t *testing.T) {
