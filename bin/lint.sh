@@ -42,6 +42,7 @@ step "php -l" bash -c 'git ls-files -z -- "*.php" | xargs -0 -r -n1 php -l >/dev
 step "shellcheck" bash -c 'git ls-files -z "*.sh" | xargs -0 -r shellcheck'
 step "check-darwin-rpath self-test" scripts/test-check-darwin-rpath.sh
 step "hadolint" bash -c 'git ls-files -z "*Dockerfile" "*Dockerfile.*" | xargs -0 -r hadolint'
+step "test-server Dockerfile (legacy builder)" make -s -C servers/test-server check
 step "docker build pins" scripts/check-docker-build-pins.sh
 step "generated artifacts" scripts/check-no-generated-artifacts.sh
 
