@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -581,11 +582,14 @@ func TestCLI_allowedHostsFlagDefaultEmpty(t *testing.T) {
 func TestCLI_allowPrivateIPsForAllowedHostsFlagInHelp(t *testing.T) {
 	stdout, stderr, _ := runCLI(t, "-h")
 	output := stdout + stderr
-	if !strings.Contains(output, "-allowPrivateIPsForAllowedHosts") {
-		t.Errorf("expected -allowPrivateIPsForAllowedHosts in help output, got stdout=%q stderr=%q", stdout, stderr)
+	if !strings.Contains(output, "-allow-private-ips-for-allowed-hosts") {
+		t.Errorf("expected -allow-private-ips-for-allowed-hosts in help output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	if strings.Contains(output, "allowPrivateIPsForAllowedHosts") {
+		t.Errorf("deprecated -allowPrivateIPsForAllowedHosts must not be advertised in help output, got stdout=%q stderr=%q", stdout, stderr)
 	}
 	if !strings.Contains(output, "hosts listed in -allowed-hosts") {
-		t.Errorf("expected -allowPrivateIPsForAllowedHosts description in help output, got stdout=%q stderr=%q", stdout, stderr)
+		t.Errorf("expected -allow-private-ips-for-allowed-hosts description in help output, got stdout=%q stderr=%q", stdout, stderr)
 	}
 }
 
@@ -597,12 +601,177 @@ func TestCLI_allowPrivateIPsForAllowedHostsFlag(t *testing.T) {
 	if err := os.WriteFile(inputFile, []byte("<!--esi Hello World-->"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	stdout, _, exitCode := runCLI(t, "-allowPrivateIPsForAllowedHosts", inputFile)
+	stdout, _, exitCode := runCLI(t, "-allow-private-ips-for-allowed-hosts", inputFile)
 	if exitCode != 0 {
 		t.Fatalf("unexpected exit code %d", exitCode)
 	}
 	if !strings.Contains(stdout, "Hello World") {
 		t.Errorf("expected 'Hello World' in output, got %q", stdout)
+	}
+}
+
+func TestCLI_deprecatedAllowPrivateIPsForAllowedHostsFlagStillAccepted(t *testing.T) {
+	// The camelCase spelling shipped in v0.11.0/v0.12.0, so it remains a
+	// hidden deprecated alias: it works and warns on stderr, but -h lists
+	// only the kebab-case name (#425).
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	if err := os.WriteFile(inputFile, []byte("<!--esi Hello World-->"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, exitCode := runCLI(t, "-allowPrivateIPsForAllowedHosts", inputFile)
+	if exitCode != 0 {
+		t.Fatalf("unexpected exit code %d, stderr=%q", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, "Hello World") {
+		t.Errorf("expected 'Hello World' in output, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "-allowPrivateIPsForAllowedHosts is deprecated; use -allow-private-ips-for-allowed-hosts") {
+		t.Errorf("expected deprecation warning on stderr, got %q", stderr)
+	}
+}
+
+func TestCLI_repeatedDeprecatedFlagWarnsOnceAndLastValueWins(t *testing.T) {
+	fragment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("Hello From Fragment"))
+	}))
+	defer fragment.Close()
+
+	tmpDir := t.TempDir()
+	inputFile := filepath.Join(tmpDir, "input.html")
+	page := fmt.Sprintf(`<html><body><esi:include src="%s/fragment"/></body></html>`, fragment.URL)
+	if err := os.WriteFile(inputFile, []byte(page), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name         string
+		args         []string
+		wantFragment bool
+	}{
+		{"old then old=false", []string{"-allowPrivateIPsForAllowedHosts", "-allowPrivateIPsForAllowedHosts=false"}, false},
+		{"old=false then old", []string{"-allowPrivateIPsForAllowedHosts=false", "-allowPrivateIPsForAllowedHosts"}, true},
+		{"old then new=false", []string{"-allowPrivateIPsForAllowedHosts", "-allow-private-ips-for-allowed-hosts=false"}, false},
+		{"new=false then old", []string{"-allow-private-ips-for-allowed-hosts=false", "-allowPrivateIPsForAllowedHosts"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The loopback fragment is only fetched when the final value of
+			// the bypass flag is true; -allowed-hosts alone must not bypass.
+			args := append([]string{"-allowed-hosts=127.0.0.1"}, tt.args...)
+			args = append(args, inputFile)
+			stdout, stderr, exitCode := runCLI(t, args...)
+			if exitCode != 0 {
+				t.Fatalf("unexpected exit code %d, stderr=%q", exitCode, stderr)
+			}
+			if got := strings.Contains(stdout, "Hello From Fragment"); got != tt.wantFragment {
+				t.Errorf("fragment fetched = %v, want %v (stdout=%q)", got, tt.wantFragment, stdout)
+			}
+			if n := strings.Count(stderr, "is deprecated"); n != 1 {
+				t.Errorf("expected exactly one deprecation warning, got %d (stderr=%q)", n, stderr)
+			}
+		})
+	}
+}
+
+func TestRewriteLegacyAllowPrivateIPsForAllowedHosts(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		want       []string
+		wantLegacy bool
+	}{
+		{
+			name:       "single dash",
+			args:       []string{"-allowPrivateIPsForAllowedHosts", "page.html"},
+			want:       []string{"-allow-private-ips-for-allowed-hosts", "page.html"},
+			wantLegacy: true,
+		},
+		{
+			name:       "double dash",
+			args:       []string{"--allowPrivateIPsForAllowedHosts"},
+			want:       []string{"-allow-private-ips-for-allowed-hosts"},
+			wantLegacy: true,
+		},
+		{
+			name:       "explicit true",
+			args:       []string{"-allowPrivateIPsForAllowedHosts=true"},
+			want:       []string{"-allow-private-ips-for-allowed-hosts=true"},
+			wantLegacy: true,
+		},
+		{
+			name:       "explicit false",
+			args:       []string{"--allowPrivateIPsForAllowedHosts=false"},
+			want:       []string{"-allow-private-ips-for-allowed-hosts=false"},
+			wantLegacy: true,
+		},
+		{
+			name: "new flag untouched",
+			args: []string{"-allow-private-ips-for-allowed-hosts", "page.html"},
+			want: []string{"-allow-private-ips-for-allowed-hosts", "page.html"},
+		},
+		{
+			name: "longer flag untouched",
+			args: []string{"-allowPrivateIPsForAllowedHostsExtra"},
+			want: []string{"-allowPrivateIPsForAllowedHostsExtra"},
+		},
+		{
+			name: "positional untouched",
+			args: []string{"allowPrivateIPsForAllowedHosts"},
+			want: []string{"allowPrivateIPsForAllowedHosts"},
+		},
+		{
+			name: "after terminator untouched",
+			args: []string{"--", "-allowPrivateIPsForAllowedHosts"},
+			want: []string{"--", "-allowPrivateIPsForAllowedHosts"},
+		},
+		{
+			name:       "after value-taking flag",
+			args:       []string{"-timeout", "10", "-allowPrivateIPsForAllowedHosts"},
+			want:       []string{"-timeout", "10", "-allow-private-ips-for-allowed-hosts"},
+			wantLegacy: true,
+		},
+		{
+			name: "after positional untouched",
+			args: []string{"page.html", "-allowPrivateIPsForAllowedHosts"},
+			want: []string{"page.html", "-allowPrivateIPsForAllowedHosts"},
+		},
+		{
+			// Regression guard: a legacy-shaped token that is the VALUE of
+			// a non-bool flag must not be rewritten. Without the
+			// expectValue branch this would turn a -default-url value into
+			// the SSRF-bypass flag.
+			name: "legacy-shaped value of non-bool flag untouched",
+			args: []string{"-default-url", "-allowPrivateIPsForAllowedHosts"},
+			want: []string{"-default-url", "-allowPrivateIPsForAllowedHosts"},
+		},
+		{
+			name:       "repeated aliases both rewritten",
+			args:       []string{"-allowPrivateIPsForAllowedHosts", "-allowPrivateIPsForAllowedHosts=false"},
+			want:       []string{"-allow-private-ips-for-allowed-hosts", "-allow-private-ips-for-allowed-hosts=false"},
+			wantLegacy: true,
+		},
+		{
+			name:       "attached value of non-bool flag does not consume next token",
+			args:       []string{"-timeout=10", "-allowPrivateIPsForAllowedHosts"},
+			want:       []string{"-timeout=10", "-allow-private-ips-for-allowed-hosts"},
+			wantLegacy: true,
+		},
+	}
+	fs := flag.NewFlagSet("rewrite-test", flag.ContinueOnError)
+	fs.String("timeout", "", "")
+	fs.String("default-url", "", "")
+	fs.Bool(allowPrivateIPsForAllowedHostsFlag, false, "")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, gotLegacy := rewriteLegacyAllowPrivateIPsForAllowedHosts(fs, tt.args)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("args = %v, want %v", got, tt.want)
+			}
+			if gotLegacy != tt.wantLegacy {
+				t.Errorf("usedLegacy = %v, want %v", gotLegacy, tt.wantLegacy)
+			}
+		})
 	}
 }
 
