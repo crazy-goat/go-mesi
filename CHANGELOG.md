@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Test infrastructure: `servers/apache/tests/.gitignore` allows fixture files by type (`*.html`, `*.txt`, `*.css`, `*.json`, `*.py`) instead of listing every tracked file with a `!` line, so a new Apache fixture is tracked without a `.gitignore` edit. Generated output, compiled binaries, caches and editor droppings stay ignored (#561)
+
 ### Fixed
 - `servers/test-server/Dockerfile` no longer uses `COPY --chmod=755`, which requires BuildKit and made the image — and the php-ext, Caddy, FrankenPHP and Traefik local suites that build it — fail on contributors without the buildx component (`the --chmod option requires BuildKit`). `go build` already emits an executable, so a plain `COPY` preserves the mode; the final image and the `/usr/bin/test-server` entrypoint are unchanged. `make -C servers/test-server check`, run by `bin/lint.sh`, fails if `--chmod` returns to the Dockerfile (#442)
 
