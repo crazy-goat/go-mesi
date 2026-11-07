@@ -451,9 +451,18 @@ make LIBGOMESI_PATH=/opt/libgomesi.so
 ## Testing
 
 ```bash
+# C unit tests (directive validators/setters/merge, no Apache server needed)
+make test-unit
+
+# Docker integration suite
 docker compose up --build
 ./test.sh
 ```
+
+The unit tests and `mod_mesi.c` include the same `mesi_config.h`, so the tests
+exercise the production validation code rather than a copy. `make test-unit`
+also runs `make test-no-mirrors`, which fails if a hand-copied validator or
+setter is reintroduced in `test_directives.c`.
 
 ## MPM Compatibility
 
