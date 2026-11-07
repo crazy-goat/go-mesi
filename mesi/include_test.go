@@ -1,9 +1,13 @@
 package mesi
 
 import (
+	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -14,25 +18,40 @@ type logEntry struct {
 
 var _ Logger = &recordingLogger{}
 
+// recordingLogger collects log entries for assertions. MESIParse drains
+// includes through a worker pool, so several goroutines can log concurrently:
+// the mutex makes the recorder safe in tests that parse more than one include.
 type recordingLogger struct {
+	mu      sync.Mutex
 	entries []logEntry
 }
 
 func (l *recordingLogger) Debug(msg string, keyvals ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.entries = append(l.entries, logEntry{msg: msg, keyvals: keyvals})
 }
 
 func (l *recordingLogger) Warn(msg string, keyvals ...interface{}) {
-	l.entries = append(l.entries, logEntry{msg: msg, keyvals: keyvals})
+	l.Debug(msg, keyvals...)
 }
 
 func (l *recordingLogger) containsMsg(substr string) bool {
+	return l.countMsg(substr) > 0
+}
+
+// countMsg reports how many entries carry substr, so a test can pin that a
+// diagnostic is emitted once per render instead of once per include.
+func (l *recordingLogger) countMsg(substr string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	count := 0
 	for _, e := range l.entries {
 		if strings.Contains(e.msg, substr) {
-			return true
+			count++
 		}
 	}
-	return false
+	return count
 }
 
 func TestParseIncludeAttributes(t *testing.T) {
@@ -188,6 +207,83 @@ func TestIncludeErrorMarkerCustom(t *testing.T) {
 	}
 	if err == nil {
 		t.Error("toString() expected error for unhandled include failure")
+	}
+}
+
+// TestIncludeMaxInt64ResponseCapFailsLoud covers #448 at the include level:
+// a MaxResponseSize the fetch path cannot enforce (math.MaxInt64 wraps the
+// MaxResponseSize+1 read bound negative) must surface as an include error with
+// a typed cause, never as a silently empty body. The diagnostic is emitted
+// once per render, not once per include, the convention #329 established for a
+// rejected configuration value.
+func TestIncludeMaxInt64ResponseCapFailsLoud(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("upstream body"))
+	}))
+	defer server.Close()
+
+	config := CreateDefaultConfig()
+	config.MaxDepth = 1
+	config.BlockPrivateIPs = false
+	config.IncludeErrorMarker = "[ERR]"
+	config.MaxResponseSize = math.MaxInt64
+	log := &recordingLogger{}
+	config.Logger = log
+
+	token := &esiIncludeToken{Src: server.URL + "/include"}
+
+	data, _, err := token.toString(config)
+	if err == nil {
+		t.Fatal("toString() expected an error for math.MaxInt64 MaxResponseSize, got nil")
+	}
+	var typed *ErrInvalidMaxResponseSize
+	if !errors.As(err, &typed) {
+		t.Errorf("toString() error = %T (%v), want a *ErrInvalidMaxResponseSize in the chain", err, err)
+	}
+	if data != "[ERR]" {
+		t.Errorf("toString() = %q, want the IncludeErrorMarker %q", data, "[ERR]")
+	}
+
+	// The rendered page must show the failure, not an empty body where the
+	// includes were, and the rejected value must be reported through the
+	// logger so the cause does not get lost between the rendered error marker
+	// and the operator. Two includes on one page, one warning.
+	src := server.URL + "/include"
+	input := "before<esi:include src=\"" + src + "\"></esi:include>mid<esi:include src=\"" + src + "\"></esi:include>after"
+	if got := MESIParse(input, config); got != "before[ERR]mid[ERR]after" {
+		t.Errorf("MESIParse() = %q, want %q", got, "before[ERR]mid[ERR]after")
+	}
+	if n := log.countMsg("max_response_size_invalid"); n != 1 {
+		t.Errorf("max_response_size_invalid logged %d times for one page with two includes, want 1", n)
+	}
+}
+
+// TestParseValidMaxResponseSizeIsNotWarned guards the hoisted diagnostic: a
+// cap inside the accepted range must not produce a warning, including the
+// documented unlimited value.
+func TestParseValidMaxResponseSizeIsNotWarned(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("upstream body"))
+	}))
+	defer server.Close()
+
+	for _, limit := range []int64{0, 1024, MaxMaxResponseSize} {
+		t.Run("max_response_size="+strconv.FormatInt(limit, 10), func(t *testing.T) {
+			config := CreateDefaultConfig()
+			config.MaxDepth = 1
+			config.BlockPrivateIPs = false
+			config.MaxResponseSize = limit
+			log := &recordingLogger{}
+			config.Logger = log
+
+			input := "<esi:include src=\"" + server.URL + "/include\"></esi:include>"
+			if got := MESIParse(input, config); got != "upstream body" {
+				t.Errorf("MESIParse() = %q, want %q", got, "upstream body")
+			}
+			if n := log.countMsg("max_response_size_invalid"); n != 0 {
+				t.Errorf("max_response_size_invalid logged %d times for an accepted cap, want 0", n)
+			}
+		})
 	}
 }
 
