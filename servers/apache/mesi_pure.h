@@ -6,8 +6,10 @@
  * them here adds no linker symbols: every function is file-local (static)
  * and mod_mesi.c includes this header exactly once.
  *
- * test_directives.c predates this header and still carries copies of the
- * directive parsers, whose Apache signatures require a cmd_parms.
+ * filter_lifecycle.h uses is_html_content() from here as well, so the
+ * media-type rule has a single implementation shared by the module and both
+ * unit suites. The directive parsers live in mesi_config.h; only their
+ * Apache cmd_parms glue stays in mod_mesi.c.
  */
 #ifndef MESI_PURE_H
 #define MESI_PURE_H

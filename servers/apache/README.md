@@ -489,11 +489,15 @@ docker compose up --build
 ```
 
 `make test-unit` builds and runs two harnesses: `test_directives.c`
-(directive parsers and server/vhost config merge) and `test_pure.c` (the real
-`is_html_content`, `mesi_base_url_host` and `mesi_build_base_url` from
-`mesi_pure.h`, not copies). `make test` runs both plus the integration,
-`build.sh`, and APR-include suites. CI runs `make test-unit` before building
-the Docker image.
+(directive parsers, server/vhost config merge and filter lifecycle) and
+`test_pure.c` (the real `is_html_content`, `mesi_base_url_host` and
+`mesi_build_base_url` from `mesi_pure.h`). Both include the production headers
+(`mesi_config.h`, `cache_config.h`, `filter_lifecycle.h`, `mesi_pure.h`), so
+the tests exercise the module's code rather than copies. `make test-unit` also
+runs `make test-no-mirrors`, which fails if a hand-copied validator, setter,
+merge or lifecycle helper is reintroduced. `make test` runs both harnesses
+plus the integration, `build.sh`, and APR-include suites. CI runs
+`make test-unit` before building the Docker image.
 
 ## MPM Compatibility
 
