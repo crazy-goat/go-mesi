@@ -224,7 +224,8 @@ MesiCacheTTL 60
   "unlimited" and is a legitimate configured value — it overrides an
   inherited global cap (`-1` unset sentinel, same rule as
   `MesiMaxDepth`/`MesiTimeout`/`MesiMaxResponseSize`). Must be an
-  integer in `[0, 999999999]` — neither core nor Caddy caps the value;
+  integer in `[0, 999999999]` — the core does not cap the value, but
+  Caddy validates the same bound at Caddyfile parse and `Provision` (#452);
   this bound is the portable transport range (the field is a C `int`
   parsed by `parse_nonneg_int`'s 9-digit guard, kept in sync with
   libgomesi's `config.MaxMaxConcurrentRequests` and validated Go-side
