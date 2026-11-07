@@ -245,10 +245,11 @@ typedef struct {
 // libgomesi/internal/config/max_response_size.go.
 #define MESI_MAX_MAX_RESPONSE_SIZE ((apr_off_t)9223372036854775806LL)
 // Cap on the MesiMaxConcurrentRequests directive (#170). Matches
-// libgomesi's config.MaxMaxConcurrentRequests. Neither the core
+// libgomesi's config.MaxMaxConcurrentRequests. The core
 // (mesi.EsiParserConfig.MaxConcurrentRequests is a bare int, "0 =
-// unlimited") nor Caddy (max_concurrent_requests via strconv.Atoi)
-// defines a maximum, so the bound is derived from the transport: the
+// unlimited") does not define a maximum, but Caddy validates the same
+// bound at Caddyfile parse and Provision (#452), so the bound is derived
+// from the transport: the
 // field is a C `int` (32-bit on every platform Apache 2.4 supports)
 // and the shared strict parser parse_nonneg_int guards at 9 digits —
 // 999999999 is the largest value both Apache and the Go-side check

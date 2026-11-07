@@ -283,15 +283,15 @@ fi
 echo ""
 echo "--- AllowPrivateIPsForAllowedHosts Tests ---"
 
-echo "Test 21: -allowPrivateIPsForAllowedHosts allows listed host on private IP (private block stays on)"
-RESULT=$("$CLI_BINARY" -allowed-hosts=127.0.0.1 -allowPrivateIPsForAllowedHosts -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
+echo "Test 21: -allow-private-ips-for-allowed-hosts allows listed host on private IP (private block stays on)"
+RESULT=$("$CLI_BINARY" -allowed-hosts=127.0.0.1 -allow-private-ips-for-allowed-hosts -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
 if echo "$RESULT" | grep -q "Hello World"; then
 	pass "Bypassed private-IP block for allowed host"
 else
 	fail "Bypass for allowed host" "Expected include resolved, got: $RESULT"
 fi
 
-echo "Test 22: without -allowPrivateIPsForAllowedHosts the private host stays blocked"
+echo "Test 22: without -allow-private-ips-for-allowed-hosts the private host stays blocked"
 RESULT=$("$CLI_BINARY" -allowed-hosts=127.0.0.1 -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
 if echo "$RESULT" | grep -q "Hello World"; then
 	fail "Control (no bypass flag)" "Expected blocked include, got: $RESULT"
@@ -299,12 +299,29 @@ else
 	pass "Private host still blocked without the bypass flag"
 fi
 
-echo "Test 23: -allowPrivateIPsForAllowedHosts does not bypass for hosts outside allowedHosts"
-RESULT=$("$CLI_BINARY" -allowed-hosts=other.example.com -allowPrivateIPsForAllowedHosts -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
+echo "Test 23: -allow-private-ips-for-allowed-hosts does not bypass for hosts outside allowedHosts"
+RESULT=$("$CLI_BINARY" -allowed-hosts=other.example.com -allow-private-ips-for-allowed-hosts -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>/dev/null)
 if echo "$RESULT" | grep -q "Hello World"; then
 	fail "Unlisted host with bypass flag" "Expected blocked include, got: $RESULT"
 else
 	pass "Unlisted host stays blocked with the bypass flag"
+fi
+
+echo "Test 23b: deprecated -allowPrivateIPsForAllowedHosts still works and warns on stderr"
+LEGACY_ERR="$TEST_DIR/legacy-flag.err"
+RESULT=$("$CLI_BINARY" -allowed-hosts=127.0.0.1 -allowPrivateIPsForAllowedHosts -default-url "http://127.0.0.1:18080/" "$TEST_DIR/allowed-host.html" 2>"$LEGACY_ERR")
+if echo "$RESULT" | grep -q "Hello World" && grep -q -- "-allowPrivateIPsForAllowedHosts is deprecated; use -allow-private-ips-for-allowed-hosts" "$LEGACY_ERR"; then
+	pass "Deprecated camelCase flag still resolves the include and warns"
+else
+	fail "Deprecated camelCase flag" "Expected include resolved plus deprecation warning, got result: $RESULT stderr: $(cat "$LEGACY_ERR")"
+fi
+
+echo "Test 23c: -h advertises only the kebab-case flag"
+HELP=$("$CLI_BINARY" -h 2>&1 || true)
+if echo "$HELP" | grep -q -- "-allow-private-ips-for-allowed-hosts" && ! echo "$HELP" | grep -q -- "allowPrivateIPsForAllowedHosts"; then
+	pass "Help lists the new flag and hides the deprecated one"
+else
+	fail "Help flag listing" "Unexpected help output: $HELP"
 fi
 
 echo ""

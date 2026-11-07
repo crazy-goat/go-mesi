@@ -113,8 +113,9 @@ typedef struct {
  * (mesi/fetch.go), which would wrap negative at math.MaxInt64. */
 #define MESI_MAX_MAX_RESPONSE_SIZE ((apr_off_t)9223372036854775806LL)
 /* Concurrent-fetch cap (#170) — mirrors mod_mesi.c; keep in sync
- * with libgomesi config.MaxMaxConcurrentRequests. Neither core nor
- * Caddy caps the value; the bound is parse_nonneg_int's 9-digit
+ * with libgomesi config.MaxMaxConcurrentRequests. The core does not
+ * cap the value, but Caddy validates the same bound (#452); the bound
+ * is parse_nonneg_int's 9-digit
  * int32-safe guard, the largest value the C `int` field and the
  * helper can both represent without a wrap. */
 #define MESI_MAX_MAX_CONCURRENT_REQUESTS 999999999
@@ -3620,8 +3621,9 @@ TEST(mcr_typical_accepted) {
 TEST(mcr_cap_accepted) {
     /* Boundary: 999999999 (MESI_MAX_MAX_CONCURRENT_REQUESTS) is the
      * configured max — the 9-digit int32-safe bound shared with
-     * libgomesi config.MaxMaxConcurrentRequests (neither core nor
-     * Caddy caps the value; this is the transport's portable range). */
+     * libgomesi config.MaxMaxConcurrentRequests (the core does not cap
+     * the value, but Caddy validates the same bound, #452; this is the
+     * transport's portable range). */
     mesi_config conf;
     init_config(&conf);
     ASSERT_NULL(set_max_concurrent_requests(&conf, "999999999"));

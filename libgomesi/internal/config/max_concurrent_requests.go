@@ -7,11 +7,11 @@ import (
 
 // MaxMaxConcurrentRequests is the documented upper bound for the
 // per-parse concurrent-fetch limit passed through libgomesi's ParseJson
-// entry point (#170). Neither the core (`mesi.EsiParserConfig.
+// entry point (#170). The core (`mesi.EsiParserConfig.
 // MaxConcurrentRequests` is a bare int documented only as "0 =
 // unlimited"; negatives are surfaced through the logger and normalized
-// to 0, mesi/parser.go — #329) nor Caddy (`max_concurrent_requests`
-// runs through strconv.Atoi uncapped) defines a maximum, so the bound
+// to 0, mesi/parser.go — #329) does not define a maximum, but Caddy
+// validates the same bound at Caddyfile parse and Provision (#452), so the bound
 // is derived from the transport: the value crosses into libgomesi as a
 // JSON number and out to the Apache module as a C `int` (32-bit on
 // every platform Apache 2.4 supports), whose shared strict parser
