@@ -60,8 +60,9 @@ func TestNewMaxResponseSizeRejectedValues(t *testing.T) {
 		{name: "negative_five", value: -5},
 		// math.MaxInt64 (= cap+1): the core computes
 		// MaxResponseSize+1 for io.LimitReader (mesi/fetch.go) — at
-		// MaxInt64 that wraps negative and the include would
-		// silently render an empty body instead of failing (#448).
+		// MaxInt64 that wraps negative and the include used to
+		// silently render an empty body instead of failing; the core
+		// rejects that value itself since #448.
 		{name: "rejected_max_MaxInt64", value: math.MaxInt64},
 	}
 	for _, tc := range cases {
