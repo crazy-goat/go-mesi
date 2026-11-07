@@ -489,8 +489,13 @@ docker compose up --build
    through before buffering starts (and without `Surrogate-Capability`).
    Bodiless responses (`HEAD`, `204`, `304`) and responses with a
    `Content-Encoding` other than `identity` (for example `gzip`) are
-   always passed through untouched — there is nothing to parse, or the
-   body is compressed and parsing it would corrupt it.
+   always passed through untouched. `204`/`304` carry no body to parse.
+   Apache hands the handler body to output filters even for `HEAD`, so
+   parsing it would fetch includes that can never be sent; the pass-through
+   returns the upstream `Content-Length` (the unprocessed source) instead
+   of the ESI-expanded length a GET would report — the same trade-off
+   nginx makes. An encoded body is compressed and parsing it would
+   corrupt it.
 3. Adds `Surrogate-Capability: ESI/1.0` header.
 4. Buffers response body until complete.
 5. Calls `InitCache(...)` from libgomesi once per worker process when

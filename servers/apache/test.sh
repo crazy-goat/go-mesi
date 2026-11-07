@@ -1331,12 +1331,15 @@ fi
 # --- HTTP method / status / encoding cases (#98) ---
 
 echo "=== Test 63: HEAD request returns headers and no body (#98) ==="
-# A HEAD response has no body, so the filter must not parse or fetch
-# includes. curl -I writes the header block as the "body", so read the
-# raw socket instead: send HEAD with Connection: close and split the
-# response at the header terminator to count actual body bytes.
-# The dedicated page references /head-fragment.txt from nowhere else, so
-# any backend GET for it means the filter processed the HEAD.
+# Apache hands the handler body to output filters even for HEAD, so the
+# old code expanded includes and returned the ESI-expanded GET length
+# (206). The pass-through must instead report the raw source length (238).
+# Asserting that Content-Length is what distinguishes the two paths
+# independently of logs and the libgomesi cache: a warm cache could expand
+# the page without a new backend GET. curl -I writes the header block as
+# the "body", so read the raw socket instead: send HEAD with
+# Connection: close and split the response at the header terminator to
+# count actual body bytes.
 # shellcheck disable=SC2016 # $1 is expanded by the inner bash, not this shell
 if ! timeout 10 bash -c 'exec 3<>/dev/tcp/127.0.0.1/"$1"; printf "HEAD /head-request.html HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; cat <&3' _ "$HTTP_PORT" > /tmp/mesi-head-raw.txt; then
     echo "FAIL: could not send raw HEAD request"
@@ -1346,14 +1349,17 @@ fi
 HEAD_STATUS=$(head -n1 /tmp/mesi-head-raw.txt | awk '{print $2}')
 HEAD_CT=$(grep -i '^Content-Type:' /tmp/mesi-head-raw.txt | tr -d '\r' || true)
 HEAD_BODY_SIZE=$(awk '{sub(/\r$/,"")} seen {print} !seen && $0=="" {seen=1}' /tmp/mesi-head-raw.txt | wc -c | tr -d ' ')
+HEAD_CL=$(grep -i '^Content-Length:' /tmp/mesi-head-raw.txt | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
+HEAD_SOURCE_SIZE=$(wc -c < "$SCRIPT_DIR/tests/head-request.html" | tr -d ' ')
 HEAD_FETCHES=$(docker compose logs --no-color backend 2>&1 | grep -c "GET /head-fragment.txt" || true)
 if [ "$HEAD_STATUS" = "200" ] \
     && [ "$HEAD_BODY_SIZE" -eq 0 ] \
     && echo "$HEAD_CT" | grep -qi "text/html" \
+    && [ "$HEAD_CL" = "$HEAD_SOURCE_SIZE" ] \
     && [ "$HEAD_FETCHES" -eq 0 ]; then
-    echo "PASS: HEAD returned 200 with empty body, text/html, and fetched no include"
+    echo "PASS: HEAD returned 200 with empty body, text/html, raw Content-Length $HEAD_CL, and fetched no include"
 else
-    echo "FAIL: HEAD handling wrong (status $HEAD_STATUS, body $HEAD_BODY_SIZE bytes, fragment fetches $HEAD_FETCHES)"
+    echo "FAIL: HEAD handling wrong (status $HEAD_STATUS, body $HEAD_BODY_SIZE bytes, Content-Length ${HEAD_CL:-missing}/$HEAD_SOURCE_SIZE, fragment fetches $HEAD_FETCHES)"
     cat /tmp/mesi-head-raw.txt
     docker compose down
     exit 1
