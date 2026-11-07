@@ -8,6 +8,7 @@
 #include "apr_strings.h"
 
 #include "filter_lifecycle.h"
+#include "cache_config.h"
 #include "parse_json_config.h"
 
 #include <dlfcn.h>
@@ -89,12 +90,18 @@ typedef struct {
     // Cached URI of the merged server config that owns the active
     // cache settings. Each child process uses this to lazy-init
     // InitCache once per cache_backend on first request, then skips.
-    const char *cache_backend;        // "" (off) | "memory" | "redis" | "memcached"
-    int cache_size;                   // >0 = configured, 0 = unset (default 10000)
-    int cache_ttl;                    // seconds; >=0 = configured, -1 = unset
-    const char *cache_redis_addr;     // "host:port" or NULL = unset (default localhost:6379)
-    const char *cache_redis_password; // "" or NULL = unset (default no auth)
-    int cache_redis_db;               // -1 = unset, >=0 = selected DB (Redis max 16)
+    // NULL = unset (inherit from the parent server config); "" = explicitly
+    // disabled by the operator; "memory"/"redis"/"memcached" = enabled. The
+    // NULL-vs-"" distinction lets a vhost clear a global backend (#617).
+    const char *cache_backend;
+    int cache_size; // >0 = configured, 0 = unset (default 10000)
+    int cache_ttl;  // seconds; >=0 = configured, -1 = unset
+    // NULL = unset (inherit); "" = explicitly cleared by the operator
+    // (libgomesi then applies its default localhost:6379, #617).
+    const char *cache_redis_addr;
+    // NULL = unset (inherit); "" = explicitly cleared (no AUTH, #617).
+    const char *cache_redis_password;
+    int cache_redis_db; // -1 = unset, >=0 = selected DB (Redis max 16)
     // Memcached backend fields (#176). The list is an apr_array_header_t
     // of const char * "host:port" entries. nelts > 0 means a list was
     // configured (even one server is enough). When backend is memcached
@@ -279,7 +286,9 @@ static void *create_server_config(apr_pool_t *p, server_rec *s) {
     conf->block_private_ips = -1;             // -1 = unset, default will be applied in filter
     conf->allow_private_ips_for_allowed = -1; // -1 = unset, default off
     conf->shared_http_client = -1;            // -1 = unset, default off
-    conf->cache_backend = "";
+    // NULL = unset/inherit; "" = explicitly disabled. Keeping the two
+    // distinct lets a vhost disable an inherited global backend (#617).
+    conf->cache_backend = NULL;
     conf->cache_size = 0;
     conf->cache_ttl = -1; // -1 = unset (no expiry)
     conf->cache_redis_addr = NULL;
@@ -317,26 +326,41 @@ static void *merge_server_config(apr_pool_t *p, void *basev, void *addv) {
     conf->shared_http_client = (add->shared_http_client != -1)
                                    ? add->shared_http_client
                                    : base->shared_http_client;
-    // Cache config: child overrides parent when child explicitly sets a
-    // backend ("" means "inherit from base"); size/ttl use 0 (unconfigured)
-    // sentinel so add's explicit value wins over base's explicit value.
-    conf->cache_backend = (add->cache_backend && add->cache_backend[0] != '\0')
-                              ? add->cache_backend
-                              : base->cache_backend;
-    conf->cache_size = (add->cache_size > 0) ? add->cache_size : base->cache_size;
-    conf->cache_ttl = (add->cache_ttl >= 0) ? add->cache_ttl : base->cache_ttl;
-    // Redis config: child overrides parent when child explicitly sets a
-    // non-NULL value; DB uses -1 sentinel for "unset".
-    conf->cache_redis_addr = add->cache_redis_addr ? add->cache_redis_addr : base->cache_redis_addr;
-    conf->cache_redis_password = add->cache_redis_password ? add->cache_redis_password : base->cache_redis_password;
-    conf->cache_redis_db = (add->cache_redis_db >= 0) ? add->cache_redis_db : base->cache_redis_db;
-    // Memcached: child wins when it parsed any servers (nelts > 0),
-    // matching the allowed_hosts "child with entries replaces parent
-    // entirely" rule. An empty child list inherits the parent's list.
-    conf->cache_memcached_servers = (add->cache_memcached_servers->nelts > 0)
-                                        ? add->cache_memcached_servers
-                                        : base->cache_memcached_servers;
-    conf->cache_key_template = add->cache_key_template ? add->cache_key_template : base->cache_key_template;
+    // Cache config: delegate to the shared helper so the unit tests exercise
+    // the real NULL-vs-"" selection instead of a mirror. NULL means "unset,
+    // inherit from base"; a non-NULL value — including "" ("explicitly
+    // disabled") — wins, so a vhost can turn off a globally configured cache
+    // (#617). size/ttl/db use their sentinels so add's explicit value wins.
+    mesi_cache_config base_cache = {
+        .backend = base->cache_backend,
+        .size = base->cache_size,
+        .ttl = base->cache_ttl,
+        .redis_addr = base->cache_redis_addr,
+        .redis_password = base->cache_redis_password,
+        .redis_db = base->cache_redis_db,
+        .memcached_servers = base->cache_memcached_servers,
+        .key_template = base->cache_key_template,
+    };
+    mesi_cache_config add_cache = {
+        .backend = add->cache_backend,
+        .size = add->cache_size,
+        .ttl = add->cache_ttl,
+        .redis_addr = add->cache_redis_addr,
+        .redis_password = add->cache_redis_password,
+        .redis_db = add->cache_redis_db,
+        .memcached_servers = add->cache_memcached_servers,
+        .key_template = add->cache_key_template,
+    };
+    mesi_cache_config merged_cache;
+    mesi_merge_cache_config(&merged_cache, &base_cache, &add_cache);
+    conf->cache_backend = merged_cache.backend;
+    conf->cache_size = merged_cache.size;
+    conf->cache_ttl = merged_cache.ttl;
+    conf->cache_redis_addr = merged_cache.redis_addr;
+    conf->cache_redis_password = merged_cache.redis_password;
+    conf->cache_redis_db = merged_cache.redis_db;
+    conf->cache_memcached_servers = merged_cache.memcached_servers;
+    conf->cache_key_template = merged_cache.key_template;
     // Max depth: child wins when explicitly set; -1 sentinel inherits.
     // Explicit 0 (passthrough) is a configured value and must win.
     conf->max_depth = (add->max_depth != -1) ? add->max_depth : base->max_depth;
@@ -559,7 +583,7 @@ static const char *build_cache_config_json(mesi_config *conf, apr_pool_t *pool) 
         return NULL;
     }
     if (strcmp(conf->cache_backend, "redis") == 0) {
-        const char *addr = conf->cache_redis_addr
+        const char *addr = (conf->cache_redis_addr && conf->cache_redis_addr[0] != '\0')
                                ? conf->cache_redis_addr
                                : "localhost:6379";
         // Escape any embedded '"' or '\' so a misconfig password can't
@@ -1239,34 +1263,68 @@ static const char *set_max_workers(cmd_parms *cmd, void *cfg, const char *arg) {
     return NULL;
 }
 
+// MesiCache* directives that document an explicit empty value are
+// AP_INIT_RAW_ARGS: TAKE1 rejects `""` before the setter runs (#617, the
+// #165/PR #607 class). Parse exactly one ap_getword_conf() token so a
+// missing argument, an unquoted value containing spaces, or a trailing
+// token still fails config load. `""` yields a non-NULL empty string.
+static const char *parse_one_conf_word(cmd_parms *cmd, const char *raw,
+                                       const char *directive,
+                                       const char **out) {
+    const char *p = raw;
+    while (p && *p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\v' || *p == '\f')) {
+        p++;
+    }
+    if (!p || *p == '\0') {
+        return apr_psprintf(cmd->pool,
+                            "%s requires exactly one argument "
+                            "(quote values containing spaces; use \"\" for an explicit empty value)",
+                            directive);
+    }
+    const char *rest = p;
+    const char *word = ap_getword_conf(cmd->pool, &rest);
+    if (*rest != '\0') {
+        return apr_psprintf(cmd->pool,
+                            "%s takes exactly one argument "
+                            "(quote values containing spaces; use \"\" for an explicit empty value)",
+                            directive);
+    }
+    *out = word;
+    return NULL;
+}
+
 static const char *set_cache_backend(cmd_parms *cmd, void *cfg, const char *arg) {
     mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
-    if (!arg) {
-        return "MesiCacheBackend requires an argument (use empty string to disable)";
+    const char *value = NULL;
+    const char *err = parse_one_conf_word(cmd, arg, "MesiCacheBackend", &value);
+    if (err) {
+        return err;
     }
     // Reject anything outside the supported set so a typo doesn't silently
     // fall back to "no cache" (which would change behavior without
     // operator awareness). Backends: "memory", "redis", "memcached".
-    if (strcmp(arg, "memory") == 0) {
+    if (strcmp(value, "memory") == 0) {
         conf->cache_backend = "memory";
         return NULL;
     }
-    if (strcmp(arg, "redis") == 0) {
+    if (strcmp(value, "redis") == 0) {
         conf->cache_backend = "redis";
         return NULL;
     }
-    if (strcmp(arg, "memcached") == 0) {
+    if (strcmp(value, "memcached") == 0) {
         conf->cache_backend = "memcached";
         return NULL;
     }
-    if (arg[0] == '\0') {
+    if (value[0] == '\0') {
+        // Non-NULL empty: explicitly disable. The merge treats it as a
+        // configured value, so a vhost can clear an inherited backend.
         conf->cache_backend = "";
         return NULL;
     }
     return apr_psprintf(cmd->pool,
                         "MesiCacheBackend: unknown backend %s "
                         "(supported: \"memory\", \"redis\", \"memcached\", or empty)",
-                        arg);
+                        value);
 }
 
 static const char *set_cache_size(cmd_parms *cmd, void *cfg, const char *arg) {
@@ -1355,65 +1413,68 @@ static const char *parse_nonneg_int_bounded(apr_pool_t *pool,
 
 static const char *set_cache_redis_addr(cmd_parms *cmd, void *cfg, const char *arg) {
     mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
-    if (!arg) {
-        return "MesiCacheRedisAddr requires a host:port argument";
+    const char *value = NULL;
+    const char *err = parse_one_conf_word(cmd, arg, "MesiCacheRedisAddr", &value);
+    if (err) {
+        return err;
     }
-    // Empty arg → unset (use default).
-    if (arg[0] == '\0') {
-        conf->cache_redis_addr = NULL;
+    // Empty arg → explicit clear (libgomesi falls back to localhost:6379).
+    // Store the non-NULL empty string, not NULL: the merge uses NULL for
+    // "unset/inherit", so NULL would silently keep a parent's address (#617).
+    if (value[0] == '\0') {
+        conf->cache_redis_addr = "";
         return NULL;
     }
     // Disallow embedded whitespace, control chars, or JSON meta chars
     // in the address — the value gets serialized into JSON.
-    for (const char *p = arg; *p; p++) {
+    for (const char *p = value; *p; p++) {
         unsigned char c = (unsigned char)*p;
         if (c == ' ' || c == '\t' || c == '"' || c == '\\' || c < 0x20) {
             return apr_psprintf(cmd->pool,
                                 "MesiCacheRedisAddr: invalid character %d in %s",
-                                (int)c, arg);
+                                (int)c, value);
         }
     }
     // Find last ':' (IPv6 addresses use [...] or no port — we keep it
     // simple: must contain a colon, port part must be digits in 1..65535).
-    const char *colon = strrchr(arg, ':');
-    if (!colon || colon == arg || *(colon + 1) == '\0') {
+    const char *colon = strrchr(value, ':');
+    if (!colon || colon == value || *(colon + 1) == '\0') {
         return apr_psprintf(cmd->pool,
-                            "MesiCacheRedisAddr: must be host:port (got: %s)", arg);
+                            "MesiCacheRedisAddr: must be host:port (got: %s)", value);
     }
     // Validate port is a positive decimal in [1, 65535]. We've already
     // rejected whitespace/JSON-meta chars, so colon+1 is digits-only
     // up to the NUL terminator.
     int port = 0;
     apr_size_t port_len = strlen(colon + 1);
-    const char *err = parse_nonneg_int_bounded(cmd->pool,
-                                               colon + 1,
-                                               colon + 1 + port_len,
-                                               "MesiCacheRedisAddr",
-                                               1, 65535, &port);
-    if (err) {
+    const char *perr = parse_nonneg_int_bounded(cmd->pool,
+                                                colon + 1,
+                                                colon + 1 + port_len,
+                                                "MesiCacheRedisAddr",
+                                                1, 65535, &port);
+    if (perr) {
         return apr_psprintf(cmd->pool,
-                            "MesiCacheRedisAddr: port invalid: %s", arg);
+                            "MesiCacheRedisAddr: port invalid: %s", value);
     }
-    conf->cache_redis_addr = apr_pstrdup(cmd->pool, arg);
+    conf->cache_redis_addr = apr_pstrdup(cmd->pool, value);
     return NULL;
 }
 
 // MesiCacheRedisPassword — raw Redis AUTH password. We do NOT log
 // the password value on error (don't leak creds into error.log).
-// Empty arg clears the password.
+// Empty arg explicitly clears the password (non-NULL empty, so a
+// vhost can override an inherited password); unset inherits.
 static const char *set_cache_redis_password(cmd_parms *cmd, void *cfg, const char *arg) {
     mesi_config *conf = (mesi_config *)ap_get_module_config(cmd->server->module_config, &mesi_module);
-    if (!arg) {
-        // AP_INIT_TAKE1 args are never NULL per Apache directive contract,
-        // but guard anyway — silently treating NULL as "clear" would mask
-        // misconfiguration. Treat NULL as an explicit empty string.
-        conf->cache_redis_password = "";
-        return NULL;
+    const char *value = NULL;
+    const char *err = parse_one_conf_word(cmd, arg, "MesiCacheRedisPassword", &value);
+    if (err) {
+        return err;
     }
     // Reject embedded control chars (< 0x20) and JSON-meta chars
     // (',",\\,<,>,&) only for control-char detection). Quotes/backslashes
     // are explicitly escaped by build_redis_config_json, so they're OK.
-    for (const char *p = arg; *p; p++) {
+    for (const char *p = value; *p; p++) {
         unsigned char c = (unsigned char)*p;
         if (c < 0x20) {
             return apr_psprintf(cmd->pool,
@@ -1421,7 +1482,7 @@ static const char *set_cache_redis_password(cmd_parms *cmd, void *cfg, const cha
                                 (unsigned)c);
         }
     }
-    conf->cache_redis_password = apr_pstrdup(cmd->pool, arg);
+    conf->cache_redis_password = apr_pstrdup(cmd->pool, value);
     return NULL;
 }
 
@@ -2351,11 +2412,11 @@ static const command_rec mesi_directives[] = {
     AP_INIT_FLAG("MesiSharedHTTPClient", set_shared_http_client, NULL, RSRC_CONF, "Share HTTP client across ESI includes for connection pooling (default: Off)"),
     AP_INIT_FLAG("MesiDebug", set_debug, NULL, RSRC_CONF, "Enable debug logging from the ESI parser (default: Off). Output goes to stderr, captured in the Apache error log"),
     AP_INIT_FLAG("MesiParseOnHeader", set_parse_on_header, NULL, RSRC_CONF, "Only process ESI when the HTML response carries Edge-control: dca=esi (default: Off)"),
-    AP_INIT_TAKE1("MesiCacheBackend", set_cache_backend, NULL, RSRC_CONF, "Cache backend: \"memory\", \"redis\", \"memcached\" (off when empty). Default: off"),
+    AP_INIT_RAW_ARGS("MesiCacheBackend", set_cache_backend, NULL, RSRC_CONF, "Cache backend: \"memory\", \"redis\", \"memcached\" (\"\" explicitly disables; unset inherits). Default: off"),
     AP_INIT_TAKE1("MesiCacheSize", set_cache_size, NULL, RSRC_CONF, "Memory cache max entries (1..1000000). Default: 10000"),
     AP_INIT_TAKE1("MesiCacheTTL", set_cache_ttl, NULL, RSRC_CONF, "Memory cache entry TTL in seconds (0..86400). Default: 0 (no expiry)"),
-    AP_INIT_TAKE1("MesiCacheRedisAddr", set_cache_redis_addr, NULL, RSRC_CONF, "Redis server address for ESI caching (default: localhost:6379). Used when MesiCacheBackend is redis"),
-    AP_INIT_TAKE1("MesiCacheRedisPassword", set_cache_redis_password, NULL, RSRC_CONF, "Redis AUTH password (default: none). Used when MesiCacheBackend is redis"),
+    AP_INIT_RAW_ARGS("MesiCacheRedisAddr", set_cache_redis_addr, NULL, RSRC_CONF, "Redis server address for ESI caching (\"\" resets to the libgomesi default localhost:6379; unset inherits). Used when MesiCacheBackend is redis"),
+    AP_INIT_RAW_ARGS("MesiCacheRedisPassword", set_cache_redis_password, NULL, RSRC_CONF, "Redis AUTH password (\"\" disables auth; unset inherits). Used when MesiCacheBackend is redis"),
     AP_INIT_TAKE1("MesiCacheRedisDB", set_cache_redis_db, NULL, RSRC_CONF, "Redis database number (0..15). Default: 0. Used when MesiCacheBackend is redis"),
     AP_INIT_RAW_ARGS("MesiCacheMemcachedServers", set_cache_memcached_servers, NULL, RSRC_CONF, "Space-separated list of Memcached servers (host:port). Used when MesiCacheBackend is memcached"),
     AP_INIT_TAKE1("MesiCacheKeyTemplate", set_cache_key_template, NULL, RSRC_CONF, "Cache key template: ${url}, ${header:Name}, ${cookie:Name} (default: mesi:${url}). Unknown placeholders stay literal."),
