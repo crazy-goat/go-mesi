@@ -79,8 +79,9 @@
 // MESI_MAX_MAX_CONCURRENT_REQUESTS / php-ext `max_concurrent_requests`
 // / CLI `-max-concurrent-requests`: values outside
 // [0, MESI_MAX_MAX_CONCURRENT_REQUESTS] are rejected at config load.
-// The upper bound is 999999999 — neither core nor Caddy caps the
-// value, so the bound is derived from the transport (a C `int` parsed
+// The upper bound is 999999999 — the core does not cap the value
+// (Caddy validates the same bound at Caddyfile parse and Provision,
+// #452), so the bound is derived from the transport (a C `int` parsed
 // by the shared strict 9-digit parsers), the largest value every
 // platform can represent without a wrap (the #170 rationale). 0 is a
 // LEGITIMATE configured value ("unlimited" — the core only installs

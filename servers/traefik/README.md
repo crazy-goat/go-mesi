@@ -287,9 +287,9 @@ Traefik plugin had no way to configure this limit.
   (#214), the PHP extension's `max_concurrent_requests` (#206) and the CLI
   `-max-concurrent-requests` (#192) — libgomesi's
   `config.MaxMaxConcurrentRequests`. The bound is transport-derived (a C
-  `int` + the shared 9-digit strict parsers) — neither the core nor Caddy
-  caps the value (Caddy's uncapped `strconv.Atoi` belongs to the #452 gap
-  family and is deliberately not inherited).
+  `int` + the shared 9-digit strict parsers) — the core does not cap the
+  value, but Caddy validates the same bound at Caddyfile parse and `Provision`
+  (#452).
 - **Scope: per-page-render, NOT Traefik-global.** The limit applies within
   ONE `mesi.MESIParse` call — one page render. Each concurrent request's own
   parse builds its own admission semaphore, so with 4 Traefik workers each
