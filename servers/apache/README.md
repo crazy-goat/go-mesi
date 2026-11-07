@@ -224,7 +224,8 @@ MesiCacheTTL 60
   "unlimited" and is a legitimate configured value — it overrides an
   inherited global cap (`-1` unset sentinel, same rule as
   `MesiMaxDepth`/`MesiTimeout`/`MesiMaxResponseSize`). Must be an
-  integer in `[0, 999999999]` — neither core nor Caddy caps the value;
+  integer in `[0, 999999999]` — the core does not cap the value, but
+  Caddy validates the same bound at Caddyfile parse and `Provision` (#452);
   this bound is the portable transport range (the field is a C `int`
   parsed by `parse_nonneg_int`'s 9-digit guard, kept in sync with
   libgomesi's `config.MaxMaxConcurrentRequests` and validated Go-side
@@ -401,25 +402,47 @@ MesiCacheTTL 60
    `libgomesi.so` built with the `InitHTTPClient` entry point (#178); older
    builds log an error and fall back to per-include clients.
 - `MesiCacheBackend memory|redis|memcached` — Cache backend. Accepts
-  only `memory`, `redis`, `memcached`, or empty (disable); any other
-  value (including a typo) is rejected at startup so a misconfig never
-  silently disables caching. Empty string explicitly disables caching.
-  When unset, no cache. The Redis/Memcached backends require
-  libgomesi `InitCacheWithConfig` (rebuild the .so if upgrading).
+  only `memory`, `redis`, `memcached`, or an explicit empty string
+  (`MesiCacheBackend ""`); any other value (including a typo) is
+  rejected at startup so a misconfig never silently disables caching.
+  The directive parses exactly one token. An empty string explicitly
+  disables caching. When unset, the vhost inherits the parent (global)
+  value. Because unset and `""` are distinct, a vhost can disable a
+  globally configured cache with `MesiCacheBackend ""`. **Process-wide
+  cache caveat:** libgomesi keeps one shared cache per worker process,
+  initialized once (see step 5 under "How it works"). The first vhost
+  that initializes the cache in a worker fixes the backend, size, TTL,
+  Redis address/password/DB and Memcached server list for that whole
+  worker. A later vhost's unset fields inherit the global config, and
+  its `""` values only take effect if that vhost is the one that
+  initializes the cache — a worker already initialized from another
+  vhost keeps serving cached includes with the old settings. The
+  Redis/Memcached backends require libgomesi `InitCacheWithConfig`
+  (rebuild the .so if upgrading).
 - `MesiCacheSize N` — Max entries for the in-memory cache. Must be a
   positive integer in `[1, 1000000]`. Default: 10000.
 - `MesiCacheTTL N` — TTL in seconds for cached entries. Must be in
   `[0, 86400]`. Default: 0 (no expiry).
 - `MesiCacheRedisAddr host:port` — Redis server address used when
   `MesiCacheBackend redis`. Required format: `host:port` with port in
-  `[1, 65535]`. Empty clears the field (libgomesi default
-  `localhost:6379` applies). Embedded whitespace, control chars, or
+  `[1, 65535]`. An explicit empty value (`MesiCacheRedisAddr ""`) clears
+  the field, so libgomesi's default `localhost:6379` applies and a vhost
+  can drop an inherited address; unset inherits the parent value. This is
+  subject to the process-wide cache caveat under `MesiCacheBackend`: if
+  another vhost already initialized the worker's cache, the worker keeps
+  the old address. The directive parses exactly one token, so quote
+  values containing spaces. Embedded whitespace, control chars, or
   JSON-meta chars (`"`, `\`) are rejected so the value is safe to embed
   in the JSON config passed to libgomesi.
 - `MesiCacheRedisPassword secret` — Redis AUTH password used when
-  `MesiCacheBackend redis`. Empty disables auth. Embedded control
-  chars (`< 0x20`) are rejected; the value is never echoed back into
-  error logs.
+  `MesiCacheBackend redis`. An explicit empty value
+  (`MesiCacheRedisPassword ""`) disables auth and can override an
+  inherited password; unset inherits the parent value. This is subject
+  to the process-wide cache caveat under `MesiCacheBackend`: if another
+  vhost already initialized the worker's cache, the worker keeps the old
+  password. The directive parses exactly one token, so quote a password
+  containing spaces. Embedded control chars (`< 0x20`) are rejected; the
+  value is never echoed back into error logs.
 - `MesiCacheRedisDB N` — Redis logical database number used when
   `MesiCacheBackend redis`. Must be a non-negative integer in `[0, 15]`
   (Redis `databases 16`). Default: 0.

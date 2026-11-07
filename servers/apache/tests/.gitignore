@@ -1,56 +1,19 @@
+# This directory is a deny-all list with a small set of allowed fixture file
+# types, so a new fixture is tracked without touching this file (see #561).
+# Anything not matched by an allow rule below (build output, editor droppings,
+# compiled binaries, caches) stays ignored.
 *
 !.gitignore
-!allowed.txt
-!body-limit-small.html
-!body-limit-large.html
-!cached-fragment.txt
-!cache-test.html
-!comment.html
-!fallback.html
-!include-error-marker.html
-!include-error-onerror.html
-!include.txt
-!index.html
-!large.html
-!nested.html
-!nested.txt
-!parse-on-header.html
-!parse-on-header-nested.html
-!noesi.css
-!noesi.json
-!noesi.txt
-!remove.html
-!ssrf-allowed.html
-!ssrf-blocked.html
-!ssrf-localhost.html
-!ssrf-allow-private-on.html
-!ssrf-allow-private-off.html
-!ssrf-allow-private-notallowed.html
-!shared-http-client.html
-!shared-fragment.txt
-!cache-key-template.html
-!cache-key-fragment.txt
-!server.py
-!timeout-2s.html
-!timeout-30s.html
-!timeout-default.html
-!max-response-accept.html
-!max-response-reject.html
-!max-response-unlimited.html
-!max-response-unset.html
-!concurrent-capped.html
-!concurrent-unlimited.html
-!concurrent-unset.html
-!max-workers-deep.html
-!max-workers-pool.html
-!max-workers-zero.html
-!max-workers-unset.html
-!debug-failed-include.html
-!mw-lvl-1.html
-!mw-lvl-2.html
-!mw-lvl-3.html
-!mw-lvl-4.html
-!gzip-esi.html
-!head-request.html
-!head-fragment.txt
-!empty.html
+!*.html
+!*.txt
+!*.css
+!*.json
+!*.py
+
+# Match an allowed type but are still generated/editor artifacts.
+coverage.html
+.#*
+._*
+
+# Local manual test artifact, not a fixture.
+test.txt

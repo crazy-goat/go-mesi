@@ -297,7 +297,7 @@ Semantics:
 - **Scope: per-page-render, NOT nginx-worker-global.** The limit applies within ONE `MESIParse` call — one page render in one worker. Each concurrent nginx request's own parse builds its own admission semaphore, so with 4 workers each rendering a page under `mesi_max_concurrent_requests 5`, total outbound ESI connections can reach 20 (4 × 5). Includes queued beyond the cap **wait** for a free slot (bounded by the `mesi_timeout` fetch budget — the admission wait shares the same deadline); they are never dropped.
 - **Unset** → **unlimited**. Omitting the directive keeps the request on the legacy `ParseWithConfigCtx`/`ParseWithConfigEx`/`ParseWithConfig`/`Parse` path byte-for-byte: libgomesi leaves `EsiParserConfig.MaxConcurrentRequests` at `0`, and the core only installs the admission-control semaphore when the value is `> 0` (`mesi/parser.go`) — there is no hidden default anywhere on this path (`mesi.CreateDefaultConfig()` never sets the field either).
 - **`0` is accepted and means "unlimited"** — the documented core contract shared with Apache `MesiMaxConcurrentRequests 0` (#170), Caddy `max_concurrent_requests 0`, the PHP extension (#206) and the CLI (#192). Because `0` *is* storable, the unset sentinel is `NGX_CONF_UNSET` (`-1`, re-installed in `create_loc_conf` because `ngx_pcalloc` zeroes): a child location's explicit `mesi_max_concurrent_requests 0` overrides an inherited cap while an unset child inherits it.
-- **`1`–`999999999`** cap concurrent `<esi:include>` fetches within one parse. The bound is transport-derived (a C `int` + the shared 9-digit strict parsers) — neither the core nor Caddy caps the value. **Negatives are rejected at config load**: the core would only warn (`max_concurrent_requests_invalid`) and normalize a negative to `0` = unlimited (#329), so a malformed explicit value must never silently pass as the documented "unlimited".
+- **`1`–`999999999`** cap concurrent `<esi:include>` fetches within one parse. The bound is transport-derived (a C `int` + the shared 9-digit strict parsers) — the core does not cap the value, but Caddy validates the same bound at Caddyfile parse and `Provision` (#452). **Negatives are rejected at config load**: the core would only warn (`max_concurrent_requests_invalid`) and normalize a negative to `0` = unlimited (#329), so a malformed explicit value must never silently pass as the documented "unlimited".
 
 Validation is strict and happens at config load (`nginx -t` fails — no silent default): the argument must be a non-empty, digits-only plain integer within `[0, 999999999]`. Negatives (`-1`), signs (`+1`), decimals (`1.5`), non-integers (`abc`, `3foo`), empty values (`""`), anything above the cap (`1000000000`, oversized digit strings), a bare argument-less `mesi_max_concurrent_requests;` and a repeated directive in the same scope (`"is duplicate"`) are all rejected with an error naming the directive and the offending value. **Deviation from the issue's `ngx_conf_set_num_slot` sketch:** the stock slot setter only runs `ngx_atoi`, which has no upper bound (`1000000000` would pass and diverge from every other platform) — the custom setter (the `mesi_max_depth` #180 / `mesi_timeout` #184 / `mesi_max_response_size` #208 pattern) guards per digit against the cap *before* the multiply, so no intermediate can ever overflow `ngx_int_t`.
 
@@ -650,16 +650,22 @@ Enables the LRU cache. Use `memory` for an in-process in-memory cache (per-worke
 - **Syntax:** `mesi_cache_size <number>`
 - **Default:** `10000`
 - **Context:** `location`
+- **Range:** `[1, 1000000]` entries (the same bound as Apache `MesiCacheSize` and the PHP extension's `cache_size`)
 
 Maximum number of cache entries. When the cache is full, the least-recently-used entry is evicted. Only applies to the `memory` backend, Redis and Memcached backends ignore this setting.
+
+Validation is strict and happens at config load (`nginx -t` fails — no silent default): the argument must be a non-empty, digits-only integer within `[1, 1000000]`. Negatives (`-1`), signs (`+1`), decimals (`1.5`), non-integers (`abc`, `3foo`), trailing garbage (`100abc`), empty values (`""`), explicit `0`, anything above the cap (`1000001`), values in `(2^31, MaxInt64]` and oversized digit strings are all rejected with an error naming the directive and the offending value. Explicit `0` is rejected rather than treated as "use the default": libgomesi maps `size <= 0` back to its 10000-entry default silently, so accepting it would reintroduce the silent default this validation removes. The check is done by a custom setter rather than `ngx_conf_set_num_slot`, whose `ngx_atoi`-based parse has no upper bound (`mesi_cache_size 2000000000` would otherwise load fine and produce an effectively unbounded cache, while a value in `(2^31, MaxInt64]` narrows to a negative C `int` at the libgomesi call site).
 
 #### `mesi_cache_ttl`
 
 - **Syntax:** `mesi_cache_ttl <seconds>`
 - **Default:** `30`
 - **Context:** `location`
+- **Range:** `[0, 86400]` seconds (`24h`, the same bound as Apache `MesiCacheTTL` and the PHP extension's `cache_ttl`)
 
-Time-to-live in seconds for cached entries. After TTL expiry, the next request hits the origin and refreshes the cache.
+Time-to-live in seconds for cached entries. After TTL expiry, the next request hits the origin and refreshes the cache. `0` means "no expiry", matching the core's memory cache (`cache_memory.Set` treats `<= 0` as no expiry).
+
+Validation is strict and happens at config load (`nginx -t` fails — no silent default): the argument must be a non-empty, digits-only integer within `[0, 86400]`. Negatives (`-1`), signs (`+1`), decimals (`1.5`), non-integers (`abc`, `3foo`), trailing garbage (`30abc`), empty values (`""`), anything above the cap (`86401`), values in `(2^31, MaxInt64]` and oversized digit strings are all rejected with an error naming the directive and the offending value. A negative TTL would otherwise silently mean "no expiry" (indistinguishable from the documented `0`); the custom setter keeps the failure at `nginx -t` instead of the stock slot setter's unbounded `ngx_atoi` parse.
 
 #### `mesi_cache_memcached_servers`
 
@@ -692,8 +698,11 @@ Redis server password. If unset, no password is sent.
 - **Syntax:** `mesi_cache_redis_db <number>`
 - **Default:** `0`
 - **Context:** `location`
+- **Range:** `[0, 15]` — Redis ships 16 logical databases by default (`databases 16` in `redis.conf`), the same bound as Apache `MesiCacheRedisDB` and the PHP extension's `cache_redis_db`
 
-Redis database number (0–15). Defaults to 0 if not set.
+Redis database number. Defaults to 0 if not set.
+
+Validation is strict and happens at config load (`nginx -t` fails — no silent default): the argument must be a non-empty, digits-only integer within `[0, 15]`. Negatives (`-1`), signs (`+1`), decimals (`1.5`), non-integers (`abc`, `3foo`), trailing garbage (`2db`), empty values (`""`), anything above the cap (`16`), values in `(2^31, MaxInt64]` and oversized digit strings are all rejected with an error naming the directive and the offending value. The custom setter replaces `ngx_conf_set_num_slot`, whose unbounded `ngx_atoi` parse accepted `mesi_cache_redis_db 99`; a value in `(2^31, MaxInt64]` used to narrow to a wrapped C `int` and silently select an unrelated database. Because config load now guarantees `[0, 15]`, the old runtime `db < 0 → 0` clamp in the Redis JSON builder is gone.
 
 ### Example
 
@@ -834,3 +843,12 @@ location /pages/ {
     proxy_pass http://backend;
 }
 ```
+
+## Failure Handling
+
+Directive values are copied into the request pool before they reach libgomesi (`ngx_str_to_cstr`). If such a copy fails under pool memory pressure, the module never uses the NULL result:
+
+- the parse-path copies (`mesi_cache_backend`, the ESI response body, the request base URL and `mesi_allowed_hosts`) log an `ERR` naming the failing directive/path and return the module's fail-closed empty terminal response — the request is never rendered with a guessed or defaulted value;
+- a cache config blob that cannot be built (`mesi_cache_memcached_servers`, `mesi_cache_redis_addr`/`mesi_cache_redis_password`) logs an `ERR` naming the directive(s) and skips `InitCacheWithConfig` instead of dereferencing NULL — the same contract the Memcached builder already had.
+
+No default is substituted for a failed allocation (#429).
