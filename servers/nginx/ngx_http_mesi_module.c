@@ -95,8 +95,9 @@
 // MESI_MAX_MAX_CONCURRENT_REQUESTS / php-ext `max_concurrent_requests`
 // / CLI `-max-concurrent-requests`: values outside
 // [0, MESI_MAX_MAX_CONCURRENT_REQUESTS] are rejected at config load.
-// The upper bound is 999999999 — neither core nor Caddy caps the
-// value, so the bound is derived from the transport (a C `int` parsed
+// The upper bound is 999999999 — the core does not cap the value
+// (Caddy validates the same bound at Caddyfile parse and Provision,
+// #452), so the bound is derived from the transport (a C `int` parsed
 // by the shared strict 9-digit parsers), the largest value every
 // platform can represent without a wrap (the #170 rationale). 0 is a
 // LEGITIMATE configured value ("unlimited" — the core only installs
@@ -874,6 +875,13 @@ static char *build_redis_config_json(ngx_http_mesi_loc_conf_t *lcf, ngx_pool_t *
   char *password = lcf->cache_redis_password.len > 0
                        ? ngx_str_to_cstr(&lcf->cache_redis_password, pool)
                        : "";
+
+  // Pool allocation failures must fail the cache init, never reach the
+  // ngx_strlen calls below with a NULL pointer (worker crash). Same
+  // contract as the `servers == NULL` check in
+  // build_memcached_config_json: return NULL so the caller logs and
+  // skips InitCacheWithConfig.
+  if (addr == NULL || password == NULL) return NULL;
 
   // Measure: {"redisAddr":"...","redisPassword":"...","redisDB":N}
   // addr and password are escaped (worst case: double the length).
@@ -1702,6 +1710,12 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
        cache_last_backend.len != lcf->cache_backend.len ||
        ngx_strncmp(cache_last_backend.data, lcf->cache_backend.data, lcf->cache_backend.len) != 0)) {
     char *backend = ngx_str_to_cstr(&lcf->cache_backend, r->pool);
+    if (backend == NULL) {
+      ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                    "mesi: failed to allocate mesi_cache_backend value; "
+                    "failing request (fail closed)");
+      return (ngx_str_t){0, (u_char *)""};
+    }
     if (strcmp(backend, "memcached") == 0) {
       // For memcached we need InitCacheWithConfig with a JSON config blob.
       if (!EsiInitCacheWithConfig) {
@@ -1711,7 +1725,8 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
         char *config_json = build_memcached_config_json(lcf, r->pool);
         if (config_json == NULL) {
           ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                        "mesi: failed to build memcached config JSON");
+                        "mesi: failed to build memcached config JSON for "
+                        "mesi_cache_memcached_servers");
         } else {
           int rc = EsiInitCacheWithConfig(backend, lcf->cache_size, lcf->cache_ttl, config_json);
           if (rc < 0) {
@@ -1730,7 +1745,8 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
         char *config_json = build_redis_config_json(lcf, r->pool);
         if (config_json == NULL) {
           ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                        "mesi: failed to build redis config JSON");
+                        "mesi: failed to build redis config JSON for "
+                        "mesi_cache_redis_addr/mesi_cache_redis_password");
         } else {
           int rc = EsiInitCacheWithConfig(backend, lcf->cache_size, lcf->cache_ttl, config_json);
           if (rc < 0) {
@@ -1766,13 +1782,32 @@ static ngx_str_t parse(ngx_str_t input, ngx_http_request_t *r) {
   ngx_snprintf(base_url.data, len + 1, "%V://%V/", &scheme, &host);
 
   char *input_cstr = ngx_str_to_cstr(&input, r->pool);
+  if (input_cstr == NULL) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "mesi: failed to allocate ESI response body buffer; "
+                  "failing request (fail closed)");
+    return (ngx_str_t){0, (u_char *)""};
+  }
+
   char *base_url_cstr = ngx_str_to_cstr(&base_url, r->pool);
+  if (base_url_cstr == NULL) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "mesi: failed to allocate base URL (Host) buffer; "
+                  "failing request (fail closed)");
+    return (ngx_str_t){0, (u_char *)""};
+  }
 
   // AllowedHosts is checked by hostname before any dial; BlockPrivateIPs
   // runs at dial time. Empty string = no hostname restriction.
   char *hosts_cstr = lcf->allowed_hosts.len > 0
                          ? ngx_str_to_cstr(&lcf->allowed_hosts, r->pool)
                          : "";
+  if (hosts_cstr == NULL) {
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "mesi: failed to allocate mesi_allowed_hosts value; "
+                  "failing request (fail closed)");
+    return (ngx_str_t){0, (u_char *)""};
+  }
 
   char *message = NULL;
 

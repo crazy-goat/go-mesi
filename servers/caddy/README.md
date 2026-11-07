@@ -312,6 +312,8 @@ mesi {
 Limits the number of concurrent HTTP requests made during ESI processing.
 Without this, a page with 100 `<esi:include>` tags spawns 100 concurrent
 HTTP goroutines, which can overwhelm upstream services or the Caddy instance itself.
+Valid range: `[0, 999999999]`. Values outside that range (negatives, `1000000000`
+and above) are rejected at Caddyfile parse and JSON provision.
 
 ```
 mesi {
@@ -321,7 +323,7 @@ mesi {
 
 | Value | Behaviour |
 |---|---|
-| `1–N` | At most N concurrent HTTP fetches across all includes in a single request. |
+| `1–999999999` | At most N concurrent HTTP fetches across all includes in a single request. |
 | `0` | Unlimited (backward compatible default). |
 | absent | Unlimited. |
 
@@ -330,6 +332,7 @@ mesi {
 - This controls HTTP fetch goroutines, not token-processing goroutines (see `max_workers` for that).
 - For pages with many parallel includes, set this to a reasonable value (e.g. `5–20`) to prevent goroutine explosion.
 - Works well with `timeout` to bound both concurrency and latency.
+- Invalid values are rejected at config load (no silent default; the range mirrors libgomesi's `config.MaxMaxConcurrentRequests`).
 
 ### `max_workers`
 
