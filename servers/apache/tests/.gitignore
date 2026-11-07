@@ -10,5 +10,10 @@
 !*.json
 !*.py
 
+# Match an allowed type but are still generated/editor artifacts.
+coverage.html
+.#*
+._*
+
 # Local manual test artifact, not a fixture.
 test.txt
