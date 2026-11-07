@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- `servers/test-server/Dockerfile` no longer uses `COPY --chmod=755`, which requires BuildKit and made the image — and the php-ext, Caddy, FrankenPHP and Traefik local suites that build it — fail on contributors without the buildx component (`the --chmod option requires BuildKit`). `go build` already emits an executable, so a plain `COPY` preserves the mode; the final image and the `/usr/bin/test-server` entrypoint are unchanged. `make -C servers/test-server check`, run by `bin/lint.sh`, fails if `--chmod` returns to the Dockerfile (#442)
+
 ## [0.12.0] - 2026-11-06
 
 ### Security

@@ -8,6 +8,9 @@ ENV GOARCH=amd64
 RUN go build test-server.go
 
 FROM alpine:3.20
-COPY --from=build --chmod=755 /tmp/example-server/test-server /usr/bin
+# No --chmod: the flag is BuildKit-only and `go build` already emits 0755, so
+# COPY preserves an executable mode. This keeps the image buildable with the
+# legacy builder (docker build, DOCKER_BUILDKIT=0, docker compose).
+COPY --from=build /tmp/example-server/test-server /usr/bin
 
 ENTRYPOINT ["/usr/bin/test-server"]
