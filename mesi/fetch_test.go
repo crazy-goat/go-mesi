@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1201,6 +1202,124 @@ func TestSingleFetchUrlWithContext_ExactLimit(t *testing.T) {
 	}
 	if int64(len(data)) != limit {
 		t.Errorf("Expected %d bytes, got %d", limit, len(data))
+	}
+}
+
+// TestSingleFetchUrlWithContext_MaxResponseSizeBoundaries covers the boundary
+// classes of EsiParserConfig.MaxResponseSize: the documented unlimited value,
+// an ordinary cap at and above its limit, the largest cap the fetch path can
+// honour, and the one unrepresentable int64 value that used to make every
+// include render an empty body with a nil error (#448).
+func TestSingleFetchUrlWithContext_MaxResponseSizeBoundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		// limit is EsiParserConfig.MaxResponseSize under test.
+		limit int64
+		// bodySize is the number of bytes the test backend returns.
+		bodySize int
+		// wantErr, when set, must match the returned error.
+		wantErr *ErrInvalidMaxResponseSize
+		// wantErrContains, when set, must appear in the returned error.
+		wantErrContains string
+		// wantBody is the number of bytes expected in the result; an errored
+		// fetch must return an empty string.
+		wantBody int
+		// wantRequests is how often the backend must have been called. A
+		// rejected cap is caught before the request, so it never dials out.
+		wantRequests int
+	}{
+		{
+			name:         "zero_unlimited",
+			limit:        0,
+			bodySize:     100 * 1024,
+			wantBody:     100 * 1024,
+			wantRequests: 1,
+		},
+		{
+			name:         "ordinary_cap_body_at_limit",
+			limit:        1024,
+			bodySize:     1024,
+			wantBody:     1024,
+			wantRequests: 1,
+		},
+		{
+			name:            "ordinary_cap_body_over_limit",
+			limit:           1024,
+			bodySize:        1025,
+			wantErrContains: "exceeds maximum allowed size of 1024 bytes",
+			wantBody:        0,
+			wantRequests:    1,
+		},
+		{
+			name: "accepted_max",
+			// math.MaxInt64-1 is the largest cap whose MaxResponseSize+1 read
+			// bound stays positive: the body must come back whole, not empty.
+			limit:        math.MaxInt64 - 1,
+			bodySize:     1024,
+			wantBody:     1024,
+			wantRequests: 1,
+		},
+		{
+			name: "max_int64_rejected",
+			// math.MaxInt64 wraps the read bound negative; it must fail loud
+			// instead of returning an empty body with a nil error.
+			limit:        math.MaxInt64,
+			bodySize:     1024,
+			wantErr:      &ErrInvalidMaxResponseSize{},
+			wantBody:     0,
+			wantRequests: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int32
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				_, _ = w.Write(make([]byte, tc.bodySize))
+			}))
+			defer ts.Close()
+
+			config := CreateDefaultConfig()
+			config.MaxResponseSize = tc.limit
+			config.Timeout = 5 * time.Second
+			config.BlockPrivateIPs = false
+
+			data, _, err := singleFetchUrlWithContext(ts.URL, config, context.Background())
+
+			if tc.wantErr != nil {
+				if err == nil {
+					t.Fatalf("MaxResponseSize = %d: expected an error, got body of %d bytes and a nil error", tc.limit, len(data))
+				}
+				var typed *ErrInvalidMaxResponseSize
+				if !errors.As(err, &typed) {
+					t.Fatalf("MaxResponseSize = %d: error = %T (%v), want *ErrInvalidMaxResponseSize", tc.limit, err, err)
+				}
+				if typed.Size != tc.limit {
+					t.Errorf("error Size = %d, want %d", typed.Size, tc.limit)
+				}
+			} else if tc.wantErrContains != "" {
+				if err == nil {
+					t.Fatalf("MaxResponseSize = %d: expected error containing %q, got a %d byte body", tc.limit, tc.wantErrContains, len(data))
+				}
+				if !strings.Contains(err.Error(), tc.wantErrContains) {
+					t.Errorf("MaxResponseSize = %d: error = %v, want it to contain %q", tc.limit, err, tc.wantErrContains)
+				}
+			} else if err != nil {
+				t.Fatalf("MaxResponseSize = %d: unexpected error: %v", tc.limit, err)
+			}
+
+			// An errored fetch must never look like a successful empty one.
+			if err != nil && data != "" {
+				t.Errorf("MaxResponseSize = %d: errored fetch returned %d bytes, want an empty body", tc.limit, len(data))
+			}
+			if len(data) != tc.wantBody {
+				t.Errorf("MaxResponseSize = %d: body = %d bytes, want %d", tc.limit, len(data), tc.wantBody)
+			}
+			if got := int(requests.Load()); got != tc.wantRequests {
+				t.Errorf("MaxResponseSize = %d: backend called %d times, want %d", tc.limit, got, tc.wantRequests)
+			}
+		})
 	}
 }
 
