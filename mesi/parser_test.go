@@ -1948,6 +1948,50 @@ func TestMESIParseMaxWorkersWarningOnlyForNegative(t *testing.T) {
 	}
 }
 
+func TestMESIParseNegativeMaxWorkersWithNestedIncludesWarnsOnce(t *testing.T) {
+	var log recordingLogger
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/outer":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<!--esi <esi:include src="` + serverURL + `/inner"/>-->`))
+		case "/inner":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("inner:INNER"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	config := CreateDefaultConfig()
+	config.DefaultUrl = serverURL + "/"
+	config.MaxDepth = 2
+	config.BlockPrivateIPs = false
+	config.MaxWorkers = -1
+	config.Logger = &log
+
+	input := `<!--esi <esi:include src="` + serverURL + `/outer"/>-->`
+	result := MESIParse(input, config)
+
+	if !strings.Contains(result, "inner:INNER") {
+		t.Fatalf("MESIParse() = %q, want it to contain %q", result, "inner:INNER")
+	}
+
+	warnings := 0
+	for _, entry := range log.entries {
+		if entry.msg == "max_workers_invalid" {
+			warnings++
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("max_workers_invalid entries = %d, want exactly 1 across the nested parse (entries: %+v)",
+			warnings, log.entries)
+	}
+}
+
 func TestMESIParseMaxDepthValidOverridesApplied(t *testing.T) {
 	// Positive path: a well-formed max-depth override must tighten the
 	// parent's depth exactly as documented.

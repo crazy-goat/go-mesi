@@ -348,7 +348,8 @@ Each nested parse creates its own pool and inherits the configured cap.
   `MesiMaxWorkers`, nginx `mesi_max_workers`, the PHP extension `max_workers`
   and CLI `-max-workers`.
 - **Default / absent:** `0` = the core's library default
-  `runtime.NumCPU()*4` (`mesi/parser.go:119-122`) — byte-identical to prior
+  `runtime.NumCPU()*4` (`mesi/parser.go` `normalizeMaxWorkers`, called at the
+  start of `MESIParse`) — byte-identical to prior
   behaviour, because `ServeHTTP` did not set the field and
   `CreateConfig()` does not seed it. Explicit `0` has the same library-default
   meaning as absent. This differs from `maxConcurrentRequests`, where `0`
