@@ -279,7 +279,8 @@ Traefik plugin had no way to configure this limit.
   behaviour: `ServeHTTP` is Go-direct — it builds `mesi.EsiParserConfig`
   itself and never set the field, so it stayed at its zero value `0`, and
   the core only installs the admission-control semaphore when the value is
-  `> 0` (`mesi/parser.go:78`). There is no hidden default on this path
+  `> 0` and no semaphore is already installed (`mesi/parser.go:99`), so a
+  nested parse inherits the parent render's. There is no hidden default on this path
   (`mesi.CreateDefaultConfig()` never sets the field either —
   `mesi/config.go`).
 - **Range:** `[0, 999999999]` — the same cap as Apache
