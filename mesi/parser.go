@@ -76,6 +76,16 @@ func (c EsiParserConfig) normalizeMaxWorkers() EsiParserConfig {
 }
 
 func MESIParse(input string, config EsiParserConfig) string {
+	// EsiParserConfig is passed by value, but Variables is a map: nested
+	// parses for include bodies, <esi:choose> branches and <esi:try>
+	// attempts share it with their siblings and with the caller. Work on a
+	// per-render copy so sibling fragments cannot race on the map (or crash
+	// with "fatal error: concurrent map writes") and a render never mutates
+	// a caller-supplied map. A nested parse clones again on entry, so it
+	// inherits the parent's variables as of that moment while staying
+	// isolated from its siblings (#645).
+	config = config.withClonedVariables()
+
 	if config.Context == nil {
 		config.Context = context.Background()
 	}

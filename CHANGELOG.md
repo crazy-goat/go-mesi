@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- mESI core: `EsiParserConfig.Variables` is now copied once per `MESIParse` render instead of being shared with nested parses through the by-value config copy. A caller-supplied map, or a top-level `<esi:vars>` block, used to be merged into by every fragment that defined its own `<esi:vars>`, so sibling includes wrote the same map from different worker goroutines — a data race that `go test -race` reports and that can end a render in `fatal error: concurrent map writes`. Each nested parse now clones the parent map on entry: fragments still inherit the variables the parent had defined so far, sibling definitions stay isolated from each other, and the caller's map is never mutated. Regression test: `mesi/nested_vars_test.go` with eight sibling fragments that each define `<esi:vars>` on top of a pre-populated map (#645)
+
 ## [0.13.0] - 2026-11-07
 
 ### Changed
