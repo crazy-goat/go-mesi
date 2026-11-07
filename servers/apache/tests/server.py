@@ -21,6 +21,7 @@
 # with `Edge-control: dca=esi` for "esi"/"nested" and without it for
 # "plain"; /poh-nolen-html/<esi|plain>/<size> is the streamed, length-less
 # body of /nolen-html with the same optional signal.
+import gzip
 import os
 import threading
 import time
@@ -212,6 +213,34 @@ class Handler(SimpleHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
+        if self.path.split('?', 1)[0] in ('/gzip-esi', '/plain-esi'):
+            # /gzip-esi and /plain-esi serve the same checked-in HTML
+            # fixture; /gzip-esi sends it gzip-compressed with
+            # Content-Encoding: gzip (Content-Type stays text/html). The
+            # ESI filter must pass an encoded body through untouched, while
+            # the plain control page must be processed. Used by test.sh
+            # (#98).
+            fixture = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gzip-esi.html')
+            try:
+                with open(fixture, 'rb') as fh:
+                    body = fh.read()
+            except OSError:
+                self.send_error(500, 'missing gzip-esi fixture')
+                return
+            gzipped = self.path.split('?', 1)[0] == '/gzip-esi'
+            if gzipped:
+                body = gzip.compress(body)
+            try:
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                if gzipped:
+                    self.send_header('Content-Encoding', 'gzip')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         if len(parts) >= 3 and parts[1] == 'bytes':
             # /bytes/<size> (#169): exactly <size> bytes, prefixed with a
             # "MesiBytesPayload <size>" marker line when the size leaves
@@ -242,5 +271,56 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
 
+class ChunkedHandler(SimpleHTTPRequestHandler):
+    """HTTP/1.1 instance on port 8001 for the chunked-streaming test (#98).
+
+    The main handler speaks HTTP/1.0 on purpose: several body-limit tests
+    rely on a length-less response being delimited by connection close.
+    A real `Transfer-Encoding: chunked` response needs HTTP/1.1, so it
+    lives on its own port and is proxied under /chunked/ in httpd.conf.
+    """
+
+    protocol_version = 'HTTP/1.1'
+
+    def do_GET(self):
+        parts = self.path.split('?', 1)[0].split('/')
+        if len(parts) >= 3 and parts[1] == 'chunked-html':
+            # /chunked-html/<size>: an HTML body sent in explicit HTTP/1.1
+            # chunks (no Content-Length) with an include tag at the start
+            # and a marker at the end. test.sh asserts the include was
+            # expanded, every padding byte arrived, and the end marker is
+            # present — no truncation across the streamed brigades.
+            try:
+                size = int(parts[2])
+            except ValueError:
+                size = -1
+            if 0 <= size <= 1000000:
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                self.send_header('Transfer-Encoding', 'chunked')
+                self.end_headers()
+
+                def write_chunk(data):
+                    self.wfile.write(('%X\r\n' % len(data)).encode() + data + b'\r\n')
+                    self.wfile.flush()
+
+                try:
+                    write_chunk(b'<esi:include src="http://backend:8000/include.txt" />\n')
+                    sent = 0
+                    while sent < size:
+                        chunk = b'y' * min(500, size - sent)
+                        write_chunk(chunk)
+                        sent += len(chunk)
+                    write_chunk(b'\n<p>chunked-end-marker</p>\n')
+                    self.wfile.write(b'0\r\n\r\n')
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+        super().do_GET()
+
+
 if __name__ == '__main__':
+    chunked_server = ThreadingHTTPServer(('0.0.0.0', 8001), ChunkedHandler)
+    threading.Thread(target=chunked_server.serve_forever, daemon=True).start()
     ThreadingHTTPServer(('0.0.0.0', 8000), Handler).serve_forever()
