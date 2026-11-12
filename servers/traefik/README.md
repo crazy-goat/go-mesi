@@ -36,6 +36,33 @@ http:
     # some service config here
 ```
 
+## Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxDepth` | int | `5` | Maximum ESI recursion depth. Omit for the default. Explicit `0` is passthrough (no ESI fetch). Values outside `[0, 10000]` are rejected. |
+| `timeout` | string | `"10s"` | Per-include fetch budget as a Go duration (e.g. `"5s"`, `"1m"`); range `[1s, 24h]`. Malformed or out-of-range explicit values fail middleware creation (no silent default). |
+| `maxResponseSize` | int64 | `0` (unlimited) | Per-include response body cap in **bytes** (per SINGLE include, not per page; over-limit includes fail closed through the include-error path — never truncated); range `[0, 9223372036854775806]`. Absent = unlimited (no implicit 10 MB). Negative / `MaxInt64` explicit values fail middleware creation; above-`int64` values fail the config decode (no silent default). |
+| `maxConcurrentRequests` | int | `0` (unlimited) | Concurrent `<esi:include>` fetch cap per **page render** (one `MESIParse` — not Traefik-global; each concurrent request's own parse builds its own semaphore, 4 workers × 5 → up to 20 outbound); range `[0, 999999999]`. Absent = unlimited. Includes beyond the cap **wait** for a slot (bounded by `timeout`), never dropped. Negative / `1000000000` explicit values fail middleware creation; non-integers / overflow fail the config decode (no silent default). The cap is page-wide across nesting levels (#453) |
+| `maxWorkers` | int | `0` (`runtime.NumCPU()*4`) | Token-processing drain-pool cap per page-render parse/nesting level; each nested parse creates its own pool. Explicit `0` and absent both select the core library default (unlike `maxConcurrentRequests`, where `0` means unlimited); range `[0, 999999999]`. Negative values fail middleware creation rather than being accepted and relying on the core's `max_workers_invalid` warn+normalize (#456); over-cap values fail creation, decode-invalid values fail config loading. |
+| `maxBodySize` | int64 | `0` (unlimited) | Size cap in **bytes** for the **parent** HTML body that is buffered for ESI processing (#538); not the per-include `maxResponseSize`. Absent = unlimited. A negative value fails middleware creation. |
+| `onOversize` | string | `pass` | What happens when the parent body is over `maxBodySize`: `pass` sends it unchanged without ESI processing and logs a warning, `error` logs an error and answers `502 Bad Gateway`. Other values fail middleware creation. |
+| `parseOnHeader` | bool | `false` | Only parse `text/html` responses carrying `Edge-control: dca=esi` (case-insensitive, comma-separated list). Other responses are passed through unchanged; `maxBodySize` applies only to parsed pages. Absent and `false` are equivalent. |
+| `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
+| `debug` | bool | `false` | Enable verbose core diagnostics (`parse_start`, `include_*`, `fetch_*`) on stderr, captured in Traefik's logs. Absent and `false` are equivalent. Logs include every include URL — avoid in production |
+| `includeErrorMarker` | string | `""` | String rendered for failed includes (empty = silent) |
+| `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis`, `memcached` |
+| `cacheTTL` | string | `""` | Cache TTL as Go duration (e.g., `"60s"`, `"5m"`) |
+| `cacheSize` | int | `10000` | Max entries for memory cache |
+| `cacheRedisAddr` | string | `"localhost:6379"` | Redis server address |
+| `cacheRedisPassword` | string | `""` | Redis AUTH password |
+| `cacheRedisDb` | int | `0` | Redis database number |
+| `cacheMemcachedServers` | []string | `[]` | Memcached server addresses (host:port) |
+| `allowedHosts` | []string | `[]` | ESI include host whitelist (exact or subdomain-suffix match); empty = allow all |
+| `blockPrivateIPs` | bool | `true` | Block ESI includes to private/reserved IPs at dial time. Under Yaegi the dial-time transport is stubbed, so this is not enforced in the interpreted plugin; URL-level `allowedHosts` remains effective. |
+| `allowPrivateIPsForAllowedHosts` | bool | `false` | Let `allowedHosts` entries resolve to private/reserved IPs when `blockPrivateIPs` is on (trusts DNS; no effect under `sharedHTTPClient`) |
+| `cacheKeyTemplate` | string | `""` | Custom cache key template: `${url}`, `${header:Name}`, `${cookie:Name}`; unknown placeholders left literal; empty = default URL-only key |
+
 ## Include Error Marker
 
 When `includeErrorMarker` is set, the specified string is rendered in place of
@@ -490,6 +517,29 @@ http:
           cacheRedisDb: 0
 ```
 
+#### Redis Features
+
+
+- **Cache sharing**: Share ESI fragments across multiple Traefik instances
+- **Persistence**: Cache survives Traefik restarts
+- **TTL support**: Automatic expiration of cached entries
+- **Connection pooling**: Managed by go-redis library
+
+#### Redis Key Format
+
+Cached entries are stored with key format: `mesi:<url>` when no template is set.
+
+With `cacheKeyTemplate` the key is the rendered template result (e.g. `pfx:http://backend/fragment:sfx`), plus an SSRF-policy fingerprint suffix (see `mesi/fetch.go:200`) so different policies never share a cache entry.
+
+Example: `mesi:http://backend/fragment`
+
+#### Redis Connection Failure
+
+When Redis is unreachable, the plugin continues to work in degraded mode:
+- ESI processing continues without caching
+- Origin server is hit for each request
+- When Redis becomes available, caching resumes
+
 ### Memcached Cache
 
 Memcached-backed cache for distributed ESI fragment caching:
@@ -507,31 +557,18 @@ http:
             - "10.0.0.2:11211"
 ```
 
-#### Configuration Options
+#### Memcached Features
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `maxDepth` | int | `5` | Maximum ESI recursion depth. Omit for the default. Explicit `0` is passthrough (no ESI fetch). Values outside `[0, 10000]` are rejected. |
-| `timeout` | string | `"10s"` | Per-include fetch budget as a Go duration (e.g. `"5s"`, `"1m"`); range `[1s, 24h]`. Malformed or out-of-range explicit values fail middleware creation (no silent default). |
-| `maxResponseSize` | int64 | `0` (unlimited) | Per-include response body cap in **bytes** (per SINGLE include, not per page; over-limit includes fail closed through the include-error path — never truncated); range `[0, 9223372036854775806]`. Absent = unlimited (no implicit 10 MB). Negative / `MaxInt64` explicit values fail middleware creation; above-`int64` values fail the config decode (no silent default). |
-| `maxConcurrentRequests` | int | `0` (unlimited) | Concurrent `<esi:include>` fetch cap per **page render** (one `MESIParse` — not Traefik-global; each concurrent request's own parse builds its own semaphore, 4 workers × 5 → up to 20 outbound); range `[0, 999999999]`. Absent = unlimited. Includes beyond the cap **wait** for a slot (bounded by `timeout`), never dropped. Negative / `1000000000` explicit values fail middleware creation; non-integers / overflow fail the config decode (no silent default). The cap is page-wide across nesting levels (#453) |
-| `maxWorkers` | int | `0` (`runtime.NumCPU()*4`) | Token-processing drain-pool cap per page-render parse/nesting level; each nested parse creates its own pool. Explicit `0` and absent both select the core library default (unlike `maxConcurrentRequests`, where `0` means unlimited); range `[0, 999999999]`. Negative values fail middleware creation rather than being accepted and relying on the core's `max_workers_invalid` warn+normalize (#456); over-cap values fail creation, decode-invalid values fail config loading. |
-| `maxBodySize` | int64 | `0` (unlimited) | Size cap in **bytes** for the **parent** HTML body that is buffered for ESI processing (#538); not the per-include `maxResponseSize`. Absent = unlimited. A negative value fails middleware creation. |
-| `onOversize` | string | `pass` | What happens when the parent body is over `maxBodySize`: `pass` sends it unchanged without ESI processing and logs a warning, `error` logs an error and answers `502 Bad Gateway`. Other values fail middleware creation. |
-| `parseOnHeader` | bool | `false` | Only parse `text/html` responses carrying `Edge-control: dca=esi` (case-insensitive, comma-separated list). Other responses are passed through unchanged; `maxBodySize` applies only to parsed pages. Absent and `false` are equivalent. |
-| `sharedHTTPClient` | bool | `false` | Enable shared HTTP client for connection pooling |
-| `debug` | bool | `false` | Enable verbose core diagnostics (`parse_start`, `include_*`, `fetch_*`) on stderr, captured in Traefik's logs. Absent and `false` are equivalent. Logs include every include URL — avoid in production |
-| `includeErrorMarker` | string | `""` | String rendered for failed includes (empty = silent) |
-| `cacheBackend` | string | `""` | Cache backend: `""` (off), `memory`, `redis`, `memcached` |
-| `cacheTTL` | string | `""` | Cache TTL as Go duration (e.g., `"60s"`, `"5m"`) |
-| `cacheSize` | int | `10000` | Max entries for memory cache |
-| `cacheRedisAddr` | string | `"localhost:6379"` | Redis server address |
-| `cacheRedisPassword` | string | `""` | Redis AUTH password |
-| `cacheRedisDb` | int | `0` | Redis database number |
-| `cacheMemcachedServers` | []string | `[]` | Memcached server addresses (host:port) |
-| `allowedHosts` | []string | `[]` | ESI include host whitelist (exact or subdomain-suffix match); empty = allow all |
-| `allowPrivateIPsForAllowedHosts` | bool | `false` | Let `allowedHosts` entries resolve to private/reserved IPs when `blockPrivateIPs` is on (trusts DNS; no effect under `sharedHTTPClient`) |
-| `cacheKeyTemplate` | string | `""` | Custom cache key template: `${url}`, `${header:Name}`, `${cookie:Name}`; unknown placeholders left literal; empty = default URL-only key |
+- **Distributed cache**: Share ESI fragments across multiple Traefik instances
+- **Consistent hashing**: Cache is distributed across multiple Memcached servers
+- **Lightweight**: Simpler than Redis for simple key-value workloads
+- **TTL support**: Automatic expiration of cached entries
+
+#### Memcached Limitations
+
+- **1 MB value size limit**: ESI includes larger than 1 MB cannot be cached
+- **No TLS support**: Use a sidecar proxy (e.g., stunnel) for encrypted connections
+- **Server format**: `host:port` separated by spaces or YAML list items
 
 ### Custom cache key template
 
@@ -557,42 +594,6 @@ http:
 - Unknown placeholders (e.g. `${unknown:foo}`) are left literal — no error.
 - Empty / absent `cacheKeyTemplate` = default URL-only key (`mesi.DefaultCacheKey`).
 - **Warning:** a template without `${url}` collapses all include URLs to a single cache key — different URLs will share the same cached body (cross-URL collision). Always include `${url}` unless you intentionally want one entry for every URL.
-
-#### Redis Features
-
-
-- **Cache sharing**: Share ESI fragments across multiple Traefik instances
-- **Persistence**: Cache survives Traefik restarts
-- **TTL support**: Automatic expiration of cached entries
-- **Connection pooling**: Managed by go-redis library
-
-#### Redis Key Format
-
-Cached entries are stored with key format: `mesi:<url>` when no template is set.
-
-With `cacheKeyTemplate` the key is the rendered template result (e.g. `pfx:http://backend/fragment:sfx`), plus an SSRF-policy fingerprint suffix (see `mesi/fetch.go:200`) so different policies never share a cache entry.
-
-Example: `mesi:http://backend/fragment`
-
-#### Redis Connection Failure
-
-When Redis is unreachable, the plugin continues to work in degraded mode:
-- ESI processing continues without caching
-- Origin server is hit for each request
-- When Redis becomes available, caching resumes
-
-#### Memcached Features
-
-- **Distributed cache**: Share ESI fragments across multiple Traefik instances
-- **Consistent hashing**: Cache is distributed across multiple Memcached servers
-- **Lightweight**: Simpler than Redis for simple key-value workloads
-- **TTL support**: Automatic expiration of cached entries
-
-#### Memcached Limitations
-
-- **1 MB value size limit**: ESI includes larger than 1 MB cannot be cached
-- **No TLS support**: Use a sidecar proxy (e.g., stunnel) for encrypted connections
-- **Server format**: `host:port` separated by spaces or YAML list items
 
 ## Development
 
