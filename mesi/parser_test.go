@@ -325,23 +325,31 @@ func TestMESIParseWorkerPoolRespectsMaxWorkers(t *testing.T) {
 		t.Skip("skipping concurrency test in short mode")
 	}
 
-	var maxConcurrent atomic.Int64
-	var current atomic.Int64
+	const maxWorkers = 2
+
+	// Handlers hold until maxWorkers of them are running, so the overlap is
+	// forced instead of hoped for with a sleep. The fallback timeout only
+	// fires when the pool is serialised, and then the lower-bound assertion
+	// below fails instead of hanging the test.
+	var arrived atomic.Int64
+	released := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(released) }) }
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		v := current.Add(1)
-		for {
-			old := maxConcurrent.Load()
-			if v <= old || maxConcurrent.CompareAndSwap(old, v) {
-				break
-			}
+		if arrived.Add(1) >= maxWorkers {
+			release()
 		}
-		time.Sleep(50 * time.Millisecond)
-		current.Add(-1)
+		select {
+		case <-released:
+		case <-time.After(2 * time.Second):
+		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("content"))
+		_, _ = w.Write([]byte("fragment" + r.URL.Path))
 	}))
 	defer server.Close()
+
+	transport := &countingTransport{rt: http.DefaultTransport}
 
 	config := CreateDefaultConfig()
 	config.MaxWorkers = 2
@@ -350,17 +358,29 @@ func TestMESIParseWorkerPoolRespectsMaxWorkers(t *testing.T) {
 	config.BlockPrivateIPs = false
 	// Disable HTTP-level semaphore to test worker pool independently
 	config.MaxConcurrentRequests = 0
+	config.HTTPClient = &http.Client{Transport: transport}
 
+	const includes = 10
 	var input string
-	for i := 0; i < 10; i++ {
+	for i := 0; i < includes; i++ {
 		input += `<!--esi <esi:include src="` + server.URL + `/` + strconv.Itoa(i) + `"/>-->`
 	}
 
-	MESIParse(input, config)
+	result := MESIParse(input, config)
 
-	mc := maxConcurrent.Load()
-	if mc > 2 {
-		t.Errorf("max concurrent includes = %d, want <= 2 (MaxWorkers=2)", mc)
+	for i := 0; i < includes; i++ {
+		want := "fragment/" + strconv.Itoa(i)
+		if !strings.Contains(result, want) {
+			t.Errorf("result %q is missing %q", result, want)
+		}
+	}
+
+	mc := transport.max.Load()
+	if mc > maxWorkers {
+		t.Errorf("max concurrent includes = %d, want <= %d (MaxWorkers=%d)", mc, maxWorkers, maxWorkers)
+	}
+	if mc != maxWorkers {
+		t.Errorf("max concurrent includes = %d, expected the worker pool to reach %d", mc, maxWorkers)
 	}
 }
 

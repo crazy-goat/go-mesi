@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Make the MaxWorkers test assert exact overlap deterministically (#587)
+
 ## [0.13.0] - 2026-11-07
 
 ### Changed
