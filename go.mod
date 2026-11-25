@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/bradfitz/gomemcache v0.0.0-20250403215159-8d39553ac7cf
 	github.com/redis/go-redis/v9 v9.23.0
-	github.com/sergi/go-diff v1.4.0
+	github.com/sergi/go-diff v1.4.5
 	go.uber.org/goleak v1.3.0
 )
 
